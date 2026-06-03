@@ -97,6 +97,7 @@ impl HistoryManager {
             let Some(layer) = layers.get_mut(&snapshot.layer_id) else {
                 continue;
             };
+            layer.thumbnail_dirty = true;
 
             // Capture the current state for the redo command
             let current_pixels = layer.tiles.remove(&snapshot.coords).map(|t| t.pixels);
@@ -141,6 +142,7 @@ impl HistoryManager {
             let Some(layer) = layers.get_mut(&snapshot.layer_id) else {
                 continue;
             };
+            layer.thumbnail_dirty = true;
 
             // Capture the current state for the undo command
             let current_pixels = layer.tiles.remove(&snapshot.coords).map(|t| t.pixels);

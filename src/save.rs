@@ -144,7 +144,10 @@ fn perform_save(task: SaveTask) -> std::io::Result<()> {
     file.sync_all()?;
     drop(file);
 
-    // Atomic rename
+    // Atomic rename (Windows compatibility: remove destination file if it exists first)
+    if task.filepath.exists() {
+        let _ = std::fs::remove_file(&task.filepath);
+    }
     std::fs::rename(&temp_path, &task.filepath)?;
 
     Ok(())
@@ -193,10 +196,18 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
     let json_offset = u64::from_le_bytes(offsets[0..8].try_into().unwrap());
     let tile_dir_offset = u64::from_le_bytes(offsets[8..16].try_into().unwrap());
 
+    let metadata_len = file.metadata()?.len();
+    if json_offset > metadata_len || tile_dir_offset > metadata_len || tile_dir_offset < json_offset {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid offsets in header"));
+    }
+
     // 1. Read JSON metadata
     file.seek(SeekFrom::Start(json_offset))?;
     let mut json_bytes = Vec::new();
     let json_len = (tile_dir_offset - json_offset) as usize;
+    if json_len > 50 * 1024 * 1024 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "JSON metadata block too large"));
+    }
     json_bytes.resize(json_len, 0);
     file.read_exact(&mut json_bytes)?;
     
@@ -238,13 +249,21 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
     // 3. Load and Decompress Tiles
     let mut loaded_tiles = Vec::with_capacity(entry_count);
     for entry in directory {
+        if entry.compressed_size > 1024 * 1024 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Tile compressed size too large"));
+        }
+        if entry.offset > metadata_len || entry.offset + entry.compressed_size as u64 > metadata_len {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Tile offset out of file bounds"));
+        }
         file.seek(SeekFrom::Start(entry.offset))?;
         let mut comp_bytes = vec![0u8; entry.compressed_size as usize];
         file.read_exact(&mut comp_bytes)?;
 
         let mut decoder = DeflateDecoder::new(&comp_bytes[..]);
         let mut uncomp_bytes = vec![0u8; 64 * 64 * 8];
-        decoder.read_exact(&mut uncomp_bytes)?;
+        if let Err(e) = decoder.read_exact(&mut uncomp_bytes) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Failed to decompress tile: {}", e)));
+        }
 
         let mut pixels = hokusai::tile::empty_tile();
         let pixels_u16: &[u16] = bytemuck::cast_slice(&uncomp_bytes);

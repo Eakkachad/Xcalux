@@ -147,6 +147,8 @@ pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<Vec<u8>>) -> std:
         texture_id,
         texture_scale: meta.texture_scale,
         bristle_id,
+        stabilizer_level: crate::input::StabilizerLevel::default(),
+        stabilizer_mode: crate::input::StabilizerMode::SpringMassDamper,
     })
 }
 

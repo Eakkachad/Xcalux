@@ -1,54 +1,83 @@
 use crate::canvas::{Layer, SelectionMask, Tile};
 use std::collections::VecDeque;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillDetectionMode {
+    TransparencyStrict,
+    TransparencyFuzzy,
+    ColorDifference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillReference {
+    CurrentLayer,
+    SelectionSourceLayers,
+    AllVisibleLayers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillWith {
+    ForegroundColor,
+    #[allow(dead_code)]
+    Transparent,
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct FillOptions {
     pub tolerance: u8,
+    pub transp_diff: u8,
     pub expand_px: u8,
+    #[allow(dead_code)]
     pub close_gap: u8,
     pub antialias: bool,
-    pub sample_all_layers: bool,
     pub respect_selection: bool,
+    pub fill_transparent_only: bool,
+    #[allow(dead_code)]
+    pub treat_alpha_as_boundary: bool,
+    pub detection_mode: FillDetectionMode,
+    pub reference: FillReference,
+    #[allow(dead_code)]
+    pub fill_with: FillWith,
 }
 
 impl Default for FillOptions {
     fn default() -> Self {
         Self {
             tolerance: 32,
+            transp_diff: 32,
             expand_px: 1,
             close_gap: 0,
             antialias: true,
-            sample_all_layers: false,
             respect_selection: true,
+            fill_transparent_only: false,
+            treat_alpha_as_boundary: true,
+            detection_mode: FillDetectionMode::ColorDifference,
+            reference: FillReference::CurrentLayer,
+            fill_with: FillWith::ForegroundColor,
         }
     }
 }
 
-#[derive(Clone, Copy)]
-struct FillSpan {
-    y: i32,
-    x_start: i32,
-    x_end: i32,
-}
+
 
 pub fn flood_fill(
     layer: &mut Layer,
-    layers: Option<&[Layer]>,
+    all_layers: Option<&[Layer]>,
     selection: &SelectionMask,
     start_x: i32,
     start_y: i32,
-    fill_color: [u16; 4], // fix15 premultiplied RGBA
+    fill_color: [u16; 4],
     options: &FillOptions,
+    canvas_width: i32,
+    canvas_height: i32,
 ) -> Vec<(i32, i32)> {
-    let sample_layer = if options.sample_all_layers {
-        layers
-    } else {
-        None
-    };
+    if start_x < 0 || start_x >= canvas_width || start_y < 0 || start_y >= canvas_height {
+        return Vec::new();
+    }
 
-    let target_color = sample_pixel(sample_layer, layer, start_x, start_y);
-    if color_distance(target_color, fill_color, options.tolerance) {
+    let target_color = sample_reference(all_layers, layer, options.reference, start_x, start_y);
+    if is_seed_same_as_fill(target_color, fill_color, options) {
         return Vec::new();
     }
 
@@ -59,79 +88,145 @@ pub fn flood_fill(
         }
     }
 
-    let mut dirty_tiles: Vec<(i32, i32)> = Vec::new();
     let mut visited: std::collections::HashMap<(i32, i32), [u64; 64]> = std::collections::HashMap::new();
-    let mut spans: VecDeque<FillSpan> = VecDeque::new();
+    let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
+    let mut pixels_to_fill: Vec<(i32, i32)> = Vec::new();
 
-    if !check_and_mark_visited(&mut visited, start_x, start_y) {
-        return dirty_tiles;
+    let is_visited = |visited: &std::collections::HashMap<(i32, i32), [u64; 64]>, x: i32, y: i32| -> bool {
+        let tx = x.div_euclid(64);
+        let ty = y.div_euclid(64);
+        let lx = x.rem_euclid(64) as usize;
+        let ly = y.rem_euclid(64) as usize;
+        if let Some(tile) = visited.get(&(tx, ty)) {
+            (tile[ly] & (1u64 << lx)) != 0
+        } else {
+            false
+        }
+    };
+
+    let mark_visited = |visited: &mut std::collections::HashMap<(i32, i32), [u64; 64]>, x: i32, y: i32| {
+        let tx = x.div_euclid(64);
+        let ty = y.div_euclid(64);
+        let lx = x.rem_euclid(64) as usize;
+        let ly = y.rem_euclid(64) as usize;
+        let tile = visited.entry((tx, ty)).or_insert([0u64; 64]);
+        tile[ly] |= 1u64 << lx;
+    };
+
+    queue.push_back((start_x, start_y));
+
+    while let Some((cx, cy)) = queue.pop_front() {
+        if is_visited(&visited, cx, cy) {
+            continue;
+        }
+        if !is_fillable(all_layers, layer, cx, cy, target_color, options) {
+            continue;
+        }
+        if options.respect_selection && selection.is_active && selection.get_value(cx, cy) == 0 {
+            continue;
+        }
+
+        // Find left limit
+        let mut left = cx;
+        while left > 0 {
+            let nx = left - 1;
+            if is_visited(&visited, nx, cy) {
+                break;
+            }
+            if !is_fillable(all_layers, layer, nx, cy, target_color, options) {
+                break;
+            }
+            if options.respect_selection && selection.is_active && selection.get_value(nx, cy) == 0 {
+                break;
+            }
+            left = nx;
+        }
+
+        // Find right limit
+        let mut right = cx;
+        while right < canvas_width - 1 {
+            let nx = right + 1;
+            if is_visited(&visited, nx, cy) {
+                break;
+            }
+            if !is_fillable(all_layers, layer, nx, cy, target_color, options) {
+                break;
+            }
+            if options.respect_selection && selection.is_active && selection.get_value(nx, cy) == 0 {
+                break;
+            }
+            right = nx;
+        }
+
+        // Mark visited and collect coordinates
+        for x in left..=right {
+            pixels_to_fill.push((x, cy));
+            mark_visited(&mut visited, x, cy);
+        }
+
+        // Scan row above
+        if cy > 0 {
+            let ny = cy - 1;
+            let mut in_span = false;
+            for x in left..=right {
+                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options)
+                    && (!options.respect_selection || !selection.is_active || selection.get_value(x, ny) > 0)
+                    && !is_visited(&visited, x, ny);
+                if fillable {
+                    if !in_span {
+                        queue.push_back((x, ny));
+                        in_span = true;
+                    }
+                } else {
+                    in_span = false;
+                }
+            }
+        }
+
+        // Scan row below
+        if cy < canvas_height - 1 {
+            let ny = cy + 1;
+            let mut in_span = false;
+            for x in left..=right {
+                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options)
+                    && (!options.respect_selection || !selection.is_active || selection.get_value(x, ny) > 0)
+                    && !is_visited(&visited, x, ny);
+                if fillable {
+                    if !in_span {
+                        queue.push_back((x, ny));
+                        in_span = true;
+                    }
+                } else {
+                    in_span = false;
+                }
+            }
+        }
     }
 
-    spans.push_back(FillSpan { y: start_y, x_start: start_x, x_end: start_x });
+    // Now write to the layer using the collected coordinates
+    let mut dirty_tiles: Vec<(i32, i32)> = Vec::new();
+    for (x, y) in pixels_to_fill {
+        set_pixel(layer, x, y, fill_color, options, canvas_width, canvas_height);
 
-    while let Some(span) = spans.pop_front() {
-        let y = span.y;
-
-        let mut x = span.x_start;
-        while x >= span.x_start - 1 {
-            if x < 0 { break; }
-            if !color_match(sample_layer, layer, x, y, target_color, options) {
-                break;
+        if options.expand_px > 0 {
+            for dy in -(options.expand_px as i32)..=options.expand_px as i32 {
+                for dx in -(options.expand_px as i32)..=options.expand_px as i32 {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_width && ny >= 0 && ny < canvas_height {
+                        let tx = nx.div_euclid(64);
+                        let ty = ny.div_euclid(64);
+                        if !dirty_tiles.contains(&(tx, ty)) {
+                            dirty_tiles.push((tx, ty));
+                        }
+                    }
+                }
             }
-            if options.respect_selection && selection.is_active && selection.get_value(x, y) == 0 {
-                break;
-            }
-            if !check_and_mark_visited(&mut visited, x, y) {
-                break;
-            }
-            x -= 1;
-        }
-        let left = x + 1;
-
-        x = span.x_start.max(span.x_end);
-        while x <= span.x_end + 1 {
-            if !color_match(sample_layer, layer, x, y, target_color, options) {
-                break;
-            }
-            if options.respect_selection && selection.is_active && selection.get_value(x, y) == 0 {
-                break;
-            }
-            if !check_and_mark_visited(&mut visited, x, y) {
-                break;
-            }
-            x += 1;
-        }
-        let right = x - 1;
-
-        let tx = left.div_euclid(64);
-        let ty = y.div_euclid(64);
-        if !dirty_tiles.contains(&(tx, ty)) {
-            dirty_tiles.push((tx, ty));
-        }
-        let tx2 = right.div_euclid(64);
-        if tx2 != tx && !dirty_tiles.contains(&(tx2, ty)) {
-            dirty_tiles.push((tx2, ty));
-        }
-
-        for fx in left..=right {
-            set_pixel(layer, fx, y, fill_color, options);
-
-            // Check row above
-            if !check_and_mark_visited(&mut visited, fx, y - 1)
-                && color_match(sample_layer, layer, fx, y - 1, target_color, options)
-                && (!options.respect_selection || !selection.is_active || selection.get_value(fx, y - 1) > 0)
-            {
-                check_and_mark_visited(&mut visited, fx, y - 1);
-                spans.push_back(FillSpan { y: y - 1, x_start: fx, x_end: fx });
-            }
-
-            // Check row below
-            if !check_and_mark_visited(&mut visited, fx, y + 1)
-                && color_match(sample_layer, layer, fx, y + 1, target_color, options)
-                && (!options.respect_selection || !selection.is_active || selection.get_value(fx, y + 1) > 0)
-            {
-                check_and_mark_visited(&mut visited, fx, y + 1);
-                spans.push_back(FillSpan { y: y + 1, x_start: fx, x_end: fx });
+        } else {
+            let tx = x.div_euclid(64);
+            let ty = y.div_euclid(64);
+            if !dirty_tiles.contains(&(tx, ty)) {
+                dirty_tiles.push((tx, ty));
             }
         }
     }
@@ -139,23 +234,117 @@ pub fn flood_fill(
     dirty_tiles
 }
 
-fn check_and_mark_visited(visited: &mut std::collections::HashMap<(i32, i32), [u64; 64]>, x: i32, y: i32) -> bool {
-    let tx = x.div_euclid(64);
-    let ty = y.div_euclid(64);
-    let lx = x.rem_euclid(64) as usize;
-    let ly = y.rem_euclid(64) as usize;
-
-    let tile = visited.entry((tx, ty)).or_insert([0u64; 64]);
-    let bit = 1u64 << lx;
-    if tile[ly] & bit != 0 {
-        return false;
+fn is_seed_same_as_fill(target: [u16; 4], fill: [u16; 4], options: &FillOptions) -> bool {
+    match options.detection_mode {
+        FillDetectionMode::TransparencyStrict | FillDetectionMode::TransparencyFuzzy => {
+            target[3] >= 32768
+        }
+        FillDetectionMode::ColorDifference => {
+            let dr = (target[0] as i32 - fill[0] as i32).abs();
+            let dg = (target[1] as i32 - fill[1] as i32).abs();
+            let db = (target[2] as i32 - fill[2] as i32).abs();
+            let da = (target[3] as i32 - fill[3] as i32).abs();
+            let max_diff = (options.tolerance as i32 * 32768) / 255;
+            let dist = dr + dg + db + da;
+            dist <= max_diff * 4
+        }
     }
-    tile[ly] |= bit;
-    true
 }
 
-fn sample_pixel(sample_layers: Option<&[Layer]>, layer: &Layer, x: i32, y: i32) -> [u16; 4] {
-    if let Some(layers) = sample_layers {
+fn is_fillable(
+    all_layers: Option<&[Layer]>,
+    layer: &Layer,
+    x: i32,
+    y: i32,
+    seed: [u16; 4],
+    options: &FillOptions,
+) -> bool {
+    let pixel = sample_reference(all_layers, layer, options.reference, x, y);
+
+    match options.detection_mode {
+        FillDetectionMode::TransparencyStrict => {
+            pixel[3] == 0
+        }
+        FillDetectionMode::TransparencyFuzzy => {
+            pixel[3] <= ((options.transp_diff as u32 * 32768) / 255) as u16
+        }
+        FillDetectionMode::ColorDifference => {
+            let dr = (pixel[0] as i32 - seed[0] as i32).abs();
+            let dg = (pixel[1] as i32 - seed[1] as i32).abs();
+            let db = (pixel[2] as i32 - seed[2] as i32).abs();
+            let da = (pixel[3] as i32 - seed[3] as i32).abs();
+            let max_diff = (options.tolerance as i32 * 32768) / 255;
+            let dist = dr + dg + db + da;
+            dist <= max_diff * 4
+        }
+    }
+}
+
+pub fn sample_reference(
+    all_layers: Option<&[Layer]>,
+    layer: &Layer,
+    reference: FillReference,
+    x: i32,
+    y: i32,
+ ) -> [u16; 4] {
+    match reference {
+        FillReference::CurrentLayer => sample_pixel(None, layer, x, y),
+        FillReference::SelectionSourceLayers => {
+            if let Some(layers) = all_layers {
+                let mut acc = [0u16; 4];
+                let mut count = 0u32;
+                for l in layers {
+                    if !l.visible || !l.selection_source { continue; }
+                    let tx = x.div_euclid(64);
+                    let ty = y.div_euclid(64);
+                    let lx = x.rem_euclid(64) as usize;
+                    let ly = y.rem_euclid(64) as usize;
+                    if let Some(tile) = l.tiles.get(&(tx, ty)) {
+                        let p = tile.pixels[ly][lx];
+                        acc[0] = acc[0].saturating_add(p[0]);
+                        acc[1] = acc[1].saturating_add(p[1]);
+                        acc[2] = acc[2].saturating_add(p[2]);
+                        acc[3] = acc[3].saturating_add(p[3]);
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    return [acc[0] / count as u16, acc[1] / count as u16, acc[2] / count as u16, acc[3] / count as u16];
+                }
+            }
+            sample_pixel(None, layer, x, y)
+        }
+        FillReference::AllVisibleLayers => {
+            if let Some(layers) = all_layers {
+                let mut acc = [0u16; 4];
+                let mut count = 0u32;
+                for l in layers {
+                    if !l.visible { continue; }
+                    let tx = x.div_euclid(64);
+                    let ty = y.div_euclid(64);
+                    let lx = x.rem_euclid(64) as usize;
+                    let ly = y.rem_euclid(64) as usize;
+                    if let Some(tile) = l.tiles.get(&(tx, ty)) {
+                        let p = tile.pixels[ly][lx];
+                        acc[0] = acc[0].saturating_add(p[0]);
+                        acc[1] = acc[1].saturating_add(p[1]);
+                        acc[2] = acc[2].saturating_add(p[2]);
+                        acc[3] = acc[3].saturating_add(p[3]);
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    return [acc[0] / count as u16, acc[1] / count as u16, acc[2] / count as u16, acc[3] / count as u16];
+                }
+            }
+            sample_pixel(None, layer, x, y)
+        }
+    }
+}
+
+
+fn sample_pixel(layers: Option<&[Layer]>, layer: &Layer, x: i32, y: i32) -> [u16; 4] {
+    if let Some(layers) = layers {
         let mut acc = [0u16; 4];
         let mut count = 0u32;
         for l in layers {
@@ -189,7 +378,19 @@ fn sample_pixel(sample_layers: Option<&[Layer]>, layer: &Layer, x: i32, y: i32) 
     }
 }
 
-fn set_pixel(layer: &mut Layer, x: i32, y: i32, color: [u16; 4], options: &FillOptions) {
+fn set_pixel(
+    layer: &mut Layer,
+    x: i32,
+    y: i32,
+    color: [u16; 4],
+    options: &FillOptions,
+    canvas_width: i32,
+    canvas_height: i32,
+) {
+    if x < 0 || x >= canvas_width || y < 0 || y >= canvas_height {
+        return;
+    }
+
     let tx = x.div_euclid(64);
     let ty = y.div_euclid(64);
     let lx = x.rem_euclid(64) as usize;
@@ -197,50 +398,31 @@ fn set_pixel(layer: &mut Layer, x: i32, y: i32, color: [u16; 4], options: &FillO
 
     let tile = layer.tiles.entry((tx, ty)).or_insert_with(Tile::new);
 
+    if options.fill_transparent_only {
+        let old = tile.pixels[ly][lx];
+        if old[3] > 0 {
+            return;
+        }
+    }
+
     if options.expand_px > 0 {
         for dy in -(options.expand_px as i32)..=(options.expand_px as i32) {
             for dx in -(options.expand_px as i32)..=(options.expand_px as i32) {
                 let nx = x + dx;
                 let ny = y + dy;
-                let ntx = nx.div_euclid(64);
-                let nty = ny.div_euclid(64);
-                let nlx = nx.rem_euclid(64) as usize;
-                let nly = ny.rem_euclid(64) as usize;
-                let ntile = layer.tiles.entry((ntx, nty)).or_insert_with(Tile::new);
-                ntile.pixels[nly][nlx] = color;
-                ntile.is_dirty = true;
+                if nx >= 0 && nx < canvas_width && ny >= 0 && ny < canvas_height {
+                    let ntx = nx.div_euclid(64);
+                    let nty = ny.div_euclid(64);
+                    let nlx = nx.rem_euclid(64) as usize;
+                    let nly = ny.rem_euclid(64) as usize;
+                    let ntile = layer.tiles.entry((ntx, nty)).or_insert_with(Tile::new);
+                    ntile.pixels[nly][nlx] = color;
+                    ntile.is_dirty = true;
+                }
             }
         }
     } else {
         tile.pixels[ly][lx] = color;
         tile.is_dirty = true;
     }
-}
-
-fn color_match(
-    sample_layers: Option<&[Layer]>,
-    layer: &Layer,
-    x: i32,
-    y: i32,
-    target: [u16; 4],
-    options: &FillOptions,
-) -> bool {
-    let pixel = sample_pixel(sample_layers, layer, x, y);
-    let dr = (pixel[0] as i32 - target[0] as i32).abs();
-    let dg = (pixel[1] as i32 - target[1] as i32).abs();
-    let db = (pixel[2] as i32 - target[2] as i32).abs();
-    let da = (pixel[3] as i32 - target[3] as i32).abs();
-
-    let max_diff = options.tolerance as i32 * 256 / 255;
-    let dist = dr + dg + db + da;
-    dist <= max_diff * 4
-}
-
-fn color_distance(a: [u16; 4], b: [u16; 4], tolerance: u8) -> bool {
-    let dr = (a[0] as i32 - b[0] as i32).abs();
-    let dg = (a[1] as i32 - b[1] as i32).abs();
-    let db = (a[2] as i32 - b[2] as i32).abs();
-    let da = (a[3] as i32 - b[3] as i32).abs();
-    let max_diff = tolerance as i32 * 256 / 255;
-    dr + dg + db + da <= max_diff * 4
 }

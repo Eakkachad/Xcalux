@@ -89,10 +89,7 @@ impl InputManager {
         let mut local = self.axis_state;
         let mut has_events = false;
 
-        // PumpError::WaylandDispatch only occurs on Wayland; on Windows (our target),
-        // pump() is infallible. We unwrap safely here.
-        let events = self.manager.pump().unwrap();
-
+        let Ok(events) = self.manager.pump();
         for event in events {
             has_events = true;
             match event {
@@ -343,11 +340,18 @@ impl StrokeStabilizer {
         };
 
         // 1. Queue raw coordinates into circular ring buffers
-        push_ring(&mut self.pos_x_buf, &mut self.pos_start, &mut self.pos_len, raw_x);
-        // Position buffer shares the same start and len as pos_x
-        let mut dummy_start = self.pos_start;
-        let mut dummy_len = self.pos_len;
-        push_ring(&mut self.pos_y_buf, &mut dummy_start, &mut dummy_len, raw_y);
+        let cap = 128;
+        if self.pos_len < cap {
+            let idx = (self.pos_start + self.pos_len) % cap;
+            self.pos_x_buf[idx] = raw_x;
+            self.pos_y_buf[idx] = raw_y;
+            self.pos_len += 1;
+        } else {
+            let idx = self.pos_start;
+            self.pos_x_buf[idx] = raw_x;
+            self.pos_y_buf[idx] = raw_y;
+            self.pos_start = (self.pos_start + 1) % cap;
+        }
 
         // Adjust pos length to match current window size
         while self.pos_len > window_size {

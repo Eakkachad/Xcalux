@@ -88,6 +88,9 @@ pub struct Layer {
     // History & dirty tracking fields
     pub in_atomic: bool,
     pub dirty_tiles: HashSet<(i32, i32)>,
+
+    // Thumbnail dirty flag — set when any tile changes, cleared after thumbnail regenerated
+    pub thumbnail_dirty: bool,
 }
 
 impl Layer {
@@ -106,7 +109,53 @@ impl Layer {
             vector_data: None,
             in_atomic: false,
             dirty_tiles: HashSet::default(),
+            thumbnail_dirty: true,
         }
+    }
+
+    /// Generate a downscaled RGBA thumbnail (max_dim² max pixels, aspect-correct).
+    /// Returns (pixels, width, height) as RGBA bytes.
+    pub fn generate_thumbnail(&self, max_dim: u32) -> (Vec<u8>, u32, u32) {
+        if self.tiles.is_empty() {
+            return (vec![0u8; (max_dim * max_dim * 4) as usize], max_dim, max_dim);
+        }
+
+        let tx_min = self.tiles.keys().map(|&(tx, _)| tx).min().unwrap_or(0);
+        let tx_max = self.tiles.keys().map(|&(tx, _)| tx).max().unwrap_or(0);
+        let ty_min = self.tiles.keys().map(|&(_, ty)| ty).min().unwrap_or(0);
+        let ty_max = self.tiles.keys().map(|&(_, ty)| ty).max().unwrap_or(0);
+
+        let pix_w = ((tx_max - tx_min + 1) * 64) as u32;
+        let pix_h = ((ty_max - ty_min + 1) * 64) as u32;
+
+        let scale = (max_dim as f32 / pix_w as f32).min(max_dim as f32 / pix_h as f32).min(1.0);
+        let thumb_w = (pix_w as f32 * scale).max(1.0) as u32;
+        let thumb_h = (pix_h as f32 * scale).max(1.0) as u32;
+
+        let mut result = vec![0u8; (thumb_w * thumb_h * 4) as usize];
+
+        for (tile_key, tile) in &self.tiles {
+            let base_x = (tile_key.0 - tx_min) * 64;
+            let base_y = (tile_key.1 - ty_min) * 64;
+            for ly in 0..64 {
+                for lx in 0..64 {
+                    let src_x = base_x + lx as i32;
+                    let src_y = base_y + ly as i32;
+                    let dst_x = (src_x as f32 * scale) as u32;
+                    let dst_y = (src_y as f32 * scale) as u32;
+                    if dst_x < thumb_w && dst_y < thumb_h {
+                        let dst_idx = ((dst_y * thumb_w + dst_x) * 4) as usize;
+                        let px = tile.pixels[ly][lx];
+                        result[dst_idx] = (px[0].min(32768) as u32 * 255 / 32768) as u8;
+                        result[dst_idx + 1] = (px[1].min(32768) as u32 * 255 / 32768) as u8;
+                        result[dst_idx + 2] = (px[2].min(32768) as u32 * 255 / 32768) as u8;
+                        result[dst_idx + 3] = (px[3].min(32768) as u32 * 255 / 32768) as u8;
+                    }
+                }
+            }
+        }
+
+        (result, thumb_w, thumb_h)
     }
 }
 
@@ -137,7 +186,11 @@ impl TiledSurface for Layer {
 
     fn end_atomic(&mut self) -> Vec<(i32, i32)> {
         self.in_atomic = false;
-        self.dirty_tiles.drain().collect()
+        let tiles: Vec<(i32, i32)> = self.dirty_tiles.drain().collect();
+        if !tiles.is_empty() {
+            self.thumbnail_dirty = true;
+        }
+        tiles
     }
 }
 

@@ -35,6 +35,8 @@ pub struct BrushPreset {
     pub texture_id: u8,
     pub texture_scale: f32,
     pub bristle_id: u8,
+    pub stabilizer_level: StabilizerLevel,
+    pub stabilizer_mode: StabilizerMode,
 }
 
 pub struct PaintApp {
@@ -160,10 +162,9 @@ pub struct PaintApp {
     pub quick_bar_visible: bool,
 
     // Color history
-    #[allow(unused)]
     pub color_history: Vec<[f32; 3]>,
-    #[allow(unused)]
     pub color_history_max: usize,
+    pub color_wheel_drag_zone: Option<u8>,
 
     // Layer operations
     #[allow(unused)]
@@ -174,6 +175,16 @@ pub struct PaintApp {
     pub shortcut_search: String,
     pub shortcut_edit_idx: Option<usize>,
     pub shortcut_listen_idx: Option<usize>,
+
+    // Autosave recovery
+    pub show_recovery_dialog: bool,
+    pub recovery_files: Vec<String>,
+
+    // Layer thumbnails cache (keyed by layer_id, regenerated when thumbnail_dirty)
+    pub layer_thumbnails: ahash::AHashMap<u32, egui::ColorImage>,
+    pub thumbnail_textures: ahash::AHashMap<u32, egui::TextureHandle>,
+    #[allow(dead_code)]
+    pub thumbnail_regenerate_counter: u32,
 }
 
 // Tool ID enum used in app
@@ -446,6 +457,8 @@ impl PaintApp {
                 texture_id: 0,
                 texture_scale: 1.0,
                 bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
             },
             BrushPreset {
                 id: 2,
@@ -461,6 +474,8 @@ impl PaintApp {
                 texture_id: 0,
                 texture_scale: 1.0,
                 bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
             },
             BrushPreset {
                 id: 3,
@@ -476,6 +491,8 @@ impl PaintApp {
                 texture_id: 0,
                 texture_scale: 1.0,
                 bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
             },
             BrushPreset {
                 id: 4,
@@ -491,6 +508,8 @@ impl PaintApp {
                 texture_id: 0,
                 texture_scale: 1.0,
                 bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
             },
             BrushPreset {
                 id: 5,
@@ -506,6 +525,8 @@ impl PaintApp {
                 texture_id: 0,
                 texture_scale: 1.0,
                 bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
             },
         ];
 
@@ -514,7 +535,7 @@ impl PaintApp {
             crate::save::save_worker_loop(save_receiver);
         });
 
-        Self {
+        let mut app = Self {
             active_layer_id: 1,
             layers,
             layer_order: vec![1],
@@ -589,7 +610,7 @@ impl PaintApp {
             export_png_path: "export.png".to_string(),
             autosave_enabled: true,
             autosave_interval_secs: 180.0,
-            autosave_path: "autosave.arty".to_string(),
+            autosave_path: ".autosave.arty".to_string(),
             last_autosave_time: 0.0,
             document_modified: false,
             autosave_status: "".to_string(),
@@ -599,12 +620,35 @@ impl PaintApp {
             quick_bar_visible: true,
             color_history: Vec::with_capacity(12),
             color_history_max: 12,
+            color_wheel_drag_zone: None,
             show_layer_properties: false,
             show_shortcut_editor: false,
             shortcut_search: String::new(),
             shortcut_edit_idx: None,
             shortcut_listen_idx: None,
+            show_recovery_dialog: false,
+            recovery_files: Vec::new(),
+            layer_thumbnails: ahash::AHashMap::default(),
+            thumbnail_textures: ahash::AHashMap::default(),
+            thumbnail_regenerate_counter: 0,
+        };
+
+        // Check for autosave recovery files on startup
+        if let Ok(entries) = std::fs::read_dir(".") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(".autosave.") && name.ends_with(".arty") {
+                        app.recovery_files.push(name.to_string());
+                    }
+                }
+            }
         }
+        if !app.recovery_files.is_empty() {
+            app.show_recovery_dialog = true;
+        }
+
+        app
     }
 
     fn set_constant(brush: &mut Brush, s: BrushSetting, v: f32) {
@@ -634,6 +678,28 @@ impl PaintApp {
         (self.pressure_min + normalized * (1.0 - self.pressure_min)).clamp(0.01, 1.0)
     }
 
+    fn record_color(&mut self, color: [f32; 3]) {
+        // Don't record if it's the same as the most recent entry
+        if let Some(last) = self.color_history.last() {
+            if (last[0] - color[0]).abs() < 0.001
+                && (last[1] - color[1]).abs() < 0.001
+                && (last[2] - color[2]).abs() < 0.001
+            {
+                return;
+            }
+        }
+        // Remove existing duplicate elsewhere in history
+        self.color_history.retain(|c| {
+            (c[0] - color[0]).abs() > 0.001
+                || (c[1] - color[1]).abs() > 0.001
+                || (c[2] - color[2]).abs() > 0.001
+        });
+        self.color_history.push(color);
+        if self.color_history.len() > self.color_history_max {
+            self.color_history.remove(0);
+        }
+    }
+
     /// Synchronize the local UI sliders back into the active brush's base parameters and rebuild curves.
     /// Only runs when `brush_settings_dirty` is set, avoiding per-frame Hokusai parameter rebuilds.
     fn sync_brush_settings(&mut self) {
@@ -653,6 +719,8 @@ impl PaintApp {
         preset.texture_id = self.brush_texture_id;
         preset.texture_scale = self.brush_texture_scale;
         preset.bristle_id = self.brush_bristle_id;
+        preset.stabilizer_level = self.stabilizer.level;
+        preset.stabilizer_mode = self.stabilizer.mode;
 
         let active_brush = &mut self.brushes[self.active_preset_index];
 
@@ -727,9 +795,20 @@ impl PaintApp {
         if idx >= self.presets.len() {
             return;
         }
+
+        // Save current stabilizer into the outgoing preset before switching
+        let current_preset = &mut self.presets[self.active_preset_index];
+        current_preset.stabilizer_level = self.stabilizer.level;
+        current_preset.stabilizer_mode = self.stabilizer.mode;
+
         self.active_preset_index = idx;
 
         let preset = &self.presets[idx];
+        self.active_tool = if preset.is_eraser {
+            ToolId::Eraser
+        } else {
+            ToolId::Brush
+        };
         self.brush_radius_log = preset.radius_log;
         self.brush_opacity = preset.opacity;
         self.brush_hardness = preset.hardness;
@@ -739,6 +818,11 @@ impl PaintApp {
         self.brush_texture_id = preset.texture_id;
         self.brush_texture_scale = preset.texture_scale;
         self.brush_bristle_id = preset.bristle_id;
+
+        // Restore per-preset stabilizer settings
+        self.stabilizer.set_level(preset.stabilizer_level);
+        self.stabilizer.mode = preset.stabilizer_mode;
+
         // Mark dirty so pressure curves are rebuilt for the newly-selected preset
         self.brush_settings_dirty = true;
     }
@@ -770,6 +854,8 @@ impl PaintApp {
             texture_id: 0,
             texture_scale: 1.0,
             bristle_id: 0,
+            stabilizer_level: StabilizerLevel::default(),
+            stabilizer_mode: StabilizerMode::SpringMassDamper,
         };
 
         // Create matching Brush setting up the correct pressure curves natively
@@ -1076,6 +1162,61 @@ impl PaintApp {
         }
     }
 
+    fn cleanup_autosave(&self) {
+        let autosave = std::path::Path::new(&self.autosave_path);
+        if autosave.exists() {
+            let _ = std::fs::remove_file(autosave);
+        }
+    }
+
+    /// Regenerate thumbnails for layers marked as `thumbnail_dirty`
+    fn regenerate_dirty_thumbnails(&mut self) {
+        let mut new_images: ahash::AHashMap<u32, egui::ColorImage> = ahash::AHashMap::default();
+        for id in &self.layer_order.clone() {
+            if let Some(layer) = self.layers.get(id) {
+                if layer.thumbnail_dirty {
+                    let (pixels, w, h) = layer.generate_thumbnail(64);
+                    if w > 0 && h > 0 {
+                        let image = egui::ColorImage::from_rgba_unmultiplied(
+                            [w as usize, h as usize],
+                            &pixels,
+                        );
+                        new_images.insert(*id, image);
+                        // Invalidate egui texture cache to force reload on next frame!
+                        self.thumbnail_textures.remove(id);
+                    }
+                }
+            }
+        }
+        if !new_images.is_empty() {
+            self.layer_thumbnails.extend(new_images);
+        }
+        // Clear dirty flags after regeneration
+        for id in &self.layer_order.clone() {
+            if let Some(layer) = self.layers.get_mut(id) {
+                layer.thumbnail_dirty = false;
+            }
+        }
+    }
+
+    /// Get or create a texture handle for a layer thumbnail
+    fn get_layer_thumbnail_texture(&mut self, ctx: &egui::Context, layer_id: u32) -> Option<egui::TextureHandle> {
+        if let Some(thumb) = self.layer_thumbnails.get(&layer_id) {
+            if self.thumbnail_textures.contains_key(&layer_id) {
+                return self.thumbnail_textures.get(&layer_id).cloned();
+            }
+            let handle = ctx.load_texture(
+                &format!("layer_thumb_{}", layer_id),
+                thumb.clone(),
+                egui::TextureOptions::LINEAR,
+            );
+            self.thumbnail_textures.insert(layer_id, handle.clone());
+            Some(handle)
+        } else {
+            None
+        }
+    }
+
     pub fn load_from_document(&mut self, doc: crate::save::LoadedDocument) {
         self.canvas_width = doc.canvas_width;
         self.canvas_height = doc.canvas_height;
@@ -1125,15 +1266,19 @@ impl PaintApp {
     pub fn command(&mut self, cmd: CommandId) {
         match cmd {
             // File
-            CommandId::NewDocument => self.show_new_canvas_dialog = true,
+            CommandId::NewDocument => {
+                self.show_new_canvas_dialog = true;
+            }
             CommandId::Save => {
                 self.save_canvas(std::path::Path::new(&self.document_path));
                 self.document_modified = false;
+                self.cleanup_autosave();
             }
             CommandId::SaveAs => {
                 // Would open save dialog; for now just save
                 self.save_canvas(std::path::Path::new(&self.document_path));
                 self.document_modified = false;
+                self.cleanup_autosave();
             }
             CommandId::ExportPng => self.show_export_png_dialog = true,
             CommandId::Exit => {
@@ -1160,11 +1305,15 @@ impl PaintApp {
             CommandId::Clear => {
                 if self.selection_mask.is_active && !self.selection_mask.is_empty() {
                     self.clear_selected_area();
+                } else {
+                    self.clear_entire_layer();
                 }
             }
             CommandId::Fill => {
                 if self.selection_mask.is_active && !self.selection_mask.is_empty() {
                     self.fill_selected_area();
+                } else {
+                    self.fill_entire_layer();
                 }
             }
 
@@ -1192,11 +1341,31 @@ impl PaintApp {
             // Layer
             CommandId::NewRasterLayer => self.create_raster_layer(),
             CommandId::NewFolder => self.create_folder_layer(),
-            CommandId::DuplicateLayer => self.duplicate_active_layer(),
+            CommandId::DuplicateLayer => {
+                self.duplicate_active_layer();
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.thumbnail_dirty = true;
+                }
+            }
             CommandId::DeleteLayer => self.delete_active_layer(),
-            CommandId::MergeDown => self.merge_down(),
-            CommandId::MergeVisible => self.merge_visible(),
-            CommandId::FlattenImage => self.flatten_image(),
+            CommandId::MergeDown => {
+                self.merge_down();
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.thumbnail_dirty = true;
+                }
+            }
+            CommandId::MergeVisible => {
+                self.merge_visible();
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.thumbnail_dirty = true;
+                }
+            }
+            CommandId::FlattenImage => {
+                self.flatten_image();
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.thumbnail_dirty = true;
+                }
+            }
             CommandId::ToggleLockAlpha => {
                 if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
                     layer.lock_alpha = !layer.lock_alpha;
@@ -1442,6 +1611,19 @@ impl PaintApp {
         if !self.selection_mask.is_active { return; }
         let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
         let sel = &self.selection_mask;
+
+        // Capture undo snapshots for all existing tiles
+        let mut snapshots = Vec::new();
+        for (&(tx, ty), tile) in &layer.tiles {
+            let mut pixels = self.history.alloc_tile();
+            *pixels = *tile.pixels;
+            snapshots.push(crate::history::TileSnapshot {
+                layer_id: layer.id,
+                coords: (tx, ty),
+                pixels: Some(pixels),
+            });
+        }
+
         for (&(tx, ty), tile) in &mut layer.tiles {
             for ly in 0usize..64 {
                 for lx in 0usize..64 {
@@ -1453,6 +1635,14 @@ impl PaintApp {
                     }
                 }
             }
+        }
+
+        if !snapshots.is_empty() {
+            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.document_modified = true;
+        }
+        if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+            layer.thumbnail_dirty = true;
         }
     }
 
@@ -1466,6 +1656,19 @@ impl PaintApp {
             (self.brush_color[2] * 32768.0) as u16,
             32768,
         ];
+
+        // Capture undo snapshots for all existing tiles
+        let mut snapshots = Vec::new();
+        for (&(tx, ty), tile) in &layer.tiles {
+            let mut pixels = self.history.alloc_tile();
+            *pixels = *tile.pixels;
+            snapshots.push(crate::history::TileSnapshot {
+                layer_id: layer.id,
+                coords: (tx, ty),
+                pixels: Some(pixels),
+            });
+        }
+
         for (&(tx, ty), tile) in &mut layer.tiles {
             for ly in 0usize..64 {
                 for lx in 0usize..64 {
@@ -1477,6 +1680,101 @@ impl PaintApp {
                     }
                 }
             }
+        }
+
+        if !snapshots.is_empty() {
+            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.document_modified = true;
+        }
+    }
+
+    fn clear_entire_layer(&mut self) {
+        let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
+
+        let mut snapshots = Vec::new();
+        for (&(tx, ty), tile) in &layer.tiles {
+            let mut pixels = self.history.alloc_tile();
+            *pixels = *tile.pixels;
+            snapshots.push(crate::history::TileSnapshot {
+                layer_id: layer.id,
+                coords: (tx, ty),
+                pixels: Some(pixels),
+            });
+        }
+
+        for tile in layer.tiles.values_mut() {
+            for ly in 0usize..64 {
+                for lx in 0usize..64 {
+                    tile.pixels[ly][lx] = [0, 0, 0, 0];
+                }
+            }
+            tile.is_dirty = true;
+        }
+
+        if !snapshots.is_empty() {
+            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.document_modified = true;
+        }
+        if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+            layer.thumbnail_dirty = true;
+        }
+    }
+
+    fn fill_entire_layer(&mut self) {
+        let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
+        let fill_color: [u16; 4] = [
+            (self.brush_color[0] * 32768.0) as u16,
+            (self.brush_color[1] * 32768.0) as u16,
+            (self.brush_color[2] * 32768.0) as u16,
+            32768,
+        ];
+
+        // If layer has no tiles, create one covering the canvas
+        if layer.tiles.is_empty() {
+            let tw = (self.canvas_width + 63) / 64;
+            let th = (self.canvas_height + 63) / 64;
+            for ty in 0..th as i32 {
+                for tx in 0..tw as i32 {
+                    let mut tile = crate::canvas::Tile::new();
+                    for ly in 0usize..64 {
+                        for lx in 0usize..64 {
+                            tile.pixels[ly][lx] = fill_color;
+                        }
+                    }
+                    tile.is_dirty = true;
+                    layer.tiles.insert((tx, ty), tile);
+                }
+            }
+            self.document_modified = true;
+            if let Some(r) = &mut self.renderer {
+                r.clear_cache();
+            }
+            return;
+        }
+
+        let mut snapshots = Vec::new();
+        for (&(tx, ty), tile) in &layer.tiles {
+            let mut pixels = self.history.alloc_tile();
+            *pixels = *tile.pixels;
+            snapshots.push(crate::history::TileSnapshot {
+                layer_id: layer.id,
+                coords: (tx, ty),
+                pixels: Some(pixels),
+            });
+        }
+
+        for tile in layer.tiles.values_mut() {
+            for ly in 0usize..64 {
+                for lx in 0usize..64 {
+                    tile.pixels[ly][lx] = fill_color;
+                }
+            }
+            tile.is_dirty = true;
+        }
+
+        if !snapshots.is_empty() {
+            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.document_modified = true;
         }
     }
 }
@@ -1527,6 +1825,65 @@ impl eframe::App for PaintApp {
                 250
             };
             ctx.request_repaint_after(std::time::Duration::from_millis(interval_ms));
+        }
+
+        // 0a. AUTOSAVE RECOVERY DIALOG
+        if self.show_recovery_dialog && !self.recovery_files.is_empty() {
+            let mut close = false;
+            let mut recover_file: Option<String> = None;
+            egui::Window::new("Autosave Recovery")
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("Recover unsaved work?").strong());
+                    });
+                    ui.add_space(4.0);
+                    ui.label("The following autosave files were found from previous sessions:");
+                    ui.add_space(4.0);
+                    for file in &self.recovery_files.clone() {
+                        ui.horizontal(|ui| {
+                            if ui.button("Recover").clicked() {
+                                recover_file = Some(file.clone());
+                            }
+                            ui.label(file);
+                        });
+                    }
+                    ui.add_space(8.0);
+                    ui.label("Tip: recover a file, then Save As to keep it.");
+                    ui.add_space(4.0);
+                    if ui.button("Discard All").clicked() {
+                        for file in &self.recovery_files {
+                            let _ = std::fs::remove_file(file);
+                        }
+                        self.recovery_files.clear();
+                        close = true;
+                    }
+                });
+            if let Some(file) = recover_file {
+                let file_for_retain = file.clone();
+                let path = std::path::PathBuf::from(&file);
+                match crate::save::load_document(&path) {
+                    Ok(doc) => {
+                        self.load_from_document(doc);
+                        log::info!("Recovered from autosave: {:?}", path);
+                        self.document_path = file;
+                        self.autosave_status = "Recovered from autosave".to_string();
+                    }
+                    Err(e) => {
+                        log::error!("Failed to recover autosave: {:?}", e);
+                        self.autosave_status = "Autosave recovery failed".to_string();
+                    }
+                }
+                self.recovery_files.retain(|f| f != &file_for_retain);
+                if self.recovery_files.is_empty() {
+                    close = true;
+                }
+            }
+            if close {
+                self.show_recovery_dialog = false;
+            }
         }
 
         // 0. NEW CANVAS DIALOG OVERLAY
@@ -1610,6 +1967,7 @@ impl eframe::App for PaintApp {
                 });
 
             if create_canvas {
+                self.cleanup_autosave();
                 self.canvas_width = self.new_canvas_width;
                 self.canvas_height = self.new_canvas_height;
 
@@ -1913,6 +2271,7 @@ impl eframe::App for PaintApp {
                     });
                 if response.inner.unwrap_or(false) {
                     ctx.request_repaint();
+                    self.brush_settings_dirty = true;
                 }
 
                 ui.label("Mode:");
@@ -1938,6 +2297,7 @@ impl eframe::App for PaintApp {
                     });
                 if response.inner.unwrap_or(false) {
                     ctx.request_repaint();
+                    self.brush_settings_dirty = true;
                 }
             });
         });
@@ -1946,24 +2306,24 @@ impl eframe::App for PaintApp {
         if self.quick_bar_visible && !self.show_minimal_ui {
             egui::TopBottomPanel::top("quick_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("↶ Undo").clicked() { self.command(CommandId::Undo); }
-                    if ui.button("↷ Redo").clicked() { self.command(CommandId::Redo); }
+                    if ui.button("Undo").clicked() { self.command(CommandId::Undo); }
+                    if ui.button("Redo").clicked() { self.command(CommandId::Redo); }
                     ui.separator();
-                    if ui.button("💾 Save").clicked() { self.command(CommandId::Save); }
+                    if ui.button("Save").clicked() { self.command(CommandId::Save); }
                     ui.separator();
                     if ui.button("Select All").clicked() { self.command(CommandId::SelectAll); }
                     if ui.button("Deselect").clicked() { self.command(CommandId::Deselect); }
                     if ui.button("Invert").clicked() { self.command(CommandId::InvertSelection); }
                     ui.separator();
-                    if ui.button("✂ Cut").clicked() { self.command(CommandId::Clear); }
-                    if ui.button("📋 Fill").clicked() { self.command(CommandId::Fill); }
+                    if ui.button("Cut").clicked() { self.command(CommandId::Clear); }
+                    if ui.button("Fill").clicked() { self.command(CommandId::Fill); }
                     ui.separator();
                     if ui.button("Fit").clicked() { self.command(CommandId::FitToScreen); }
                     if ui.button("100%").clicked() { self.command(CommandId::ActualSize); }
                     if ui.button("Reset").clicked() { self.command(CommandId::ResetView); }
                     ui.separator();
                     ui.label("Zoom:");
-                    if ui.button("−").clicked() {
+                    if ui.button("-").clicked() {
                         self.viewport_zoom = (self.viewport_zoom - 0.25).max(0.1);
                     }
                     ui.label(format!("{:.0}%", self.viewport_zoom * 100.0));
@@ -1971,11 +2331,11 @@ impl eframe::App for PaintApp {
                         self.viewport_zoom = (self.viewport_zoom + 0.25).min(10.0);
                     }
                     ui.separator();
-                    if ui.button("⟲ -15°").clicked() {
+                    if ui.button("-15°").clicked() {
                         self.rotation_angle = (self.rotation_angle - 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
                     }
                     ui.label(format!("{:.0}°", self.rotation_angle.to_degrees()));
-                    if ui.button("⟳ +15°").clicked() {
+                    if ui.button("+15°").clicked() {
                         self.rotation_angle = (self.rotation_angle + 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
                     }
                     ui.separator();
@@ -1991,26 +2351,34 @@ impl eframe::App for PaintApp {
                         StabilizerLevel::Level(val) => format!("L{}", val),
                         StabilizerLevel::SLevel(val) => format!("S-{}", val),
                     };
-                    egui::ComboBox::from_id_source("quick_bar_stab")
+                    let stab_changed = egui::ComboBox::from_id_source("quick_bar_stab")
                         .selected_text(text)
                         .width(60.0)
                         .show_ui(ui, |ui| {
+                            let mut changed = false;
                             if ui.selectable_label(matches!(current_level, StabilizerLevel::Off), "Off").clicked() {
                                 self.stabilizer.set_level(StabilizerLevel::Off);
+                                changed = true;
                             }
                             for val in 1..=15 {
                                 let is_sel = matches!(current_level, StabilizerLevel::Level(v) if v == val);
                                 if ui.selectable_label(is_sel, format!("L{}", val)).clicked() {
                                     self.stabilizer.set_level(StabilizerLevel::Level(val));
+                                    changed = true;
                                 }
                             }
                             for val in 1..=5 {
                                 let is_sel = matches!(current_level, StabilizerLevel::SLevel(v) if v == val);
                                 if ui.selectable_label(is_sel, format!("S-{}", val)).clicked() {
                                     self.stabilizer.set_level(StabilizerLevel::SLevel(val));
+                                    changed = true;
                                 }
                             }
-                        });
+                            changed
+                        }).inner.unwrap_or(false);
+                    if stab_changed {
+                        self.brush_settings_dirty = true;
+                    }
                     ui.separator();
                     if !self.autosave_status.is_empty() {
                         ui.label(&self.autosave_status);
@@ -2203,12 +2571,22 @@ impl eframe::App for PaintApp {
         // Autosave check
         if self.autosave_enabled {
             let current_time = ctx.input(|i| i.time);
-            if current_time - self.last_autosave_time > self.autosave_interval_secs && self.document_modified {
+            let time_elapsed = current_time - self.last_autosave_time;
+            if time_elapsed > self.autosave_interval_secs && self.document_modified {
                 self.save_canvas(std::path::Path::new(&self.autosave_path));
-                self.last_autosave_time = current_time;
                 self.document_modified = false;
-                self.autosave_status = format!("Autosaved {:?}", std::time::Duration::from_secs_f64(current_time - self.last_autosave_time));
+                self.last_autosave_time = current_time;
                 log::info!("Autosaved to {}", self.autosave_path);
+            }
+
+            // Update status text dynamically
+            let current_time = ctx.input(|i| i.time);
+            let time_elapsed = current_time - self.last_autosave_time;
+            if self.document_modified {
+                let remaining = (self.autosave_interval_secs - time_elapsed).max(0.0);
+                self.autosave_status = format!("Autosave in {:.0}s", remaining);
+            } else {
+                self.autosave_status = "Autosaved (Clean)".to_string();
             }
         }
 
@@ -2243,16 +2621,70 @@ impl eframe::App for PaintApp {
         // 2. LEFT SIDEBAR TOOLPANEL (Creation inputs)
         egui::SidePanel::left("left_sidebar")
             .resizable(false)
-            .default_width(220.0)
+            .default_width(160.0)
+            .min_width(120.0)
             .show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    // Brush Tool Selection Grid (Scrollable SAI box)
+                egui::ScrollArea::vertical()
+                    .id_source("left_sidebar_scroll")
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                    // Combined TOOLS + BRUSH PRESETS (SAI-style)
                     ui.group(|ui| {
-                        ui.label("DRAWING TOOLS");
+                        ui.label("TOOLS / BRUSH PRESETS");
 
-                        egui::ScrollArea::vertical()
-                            .max_height(140.0)
-                            .show(ui, |ui| {
+                                egui::Grid::new("tools_grid")
+                                    .num_columns(4)
+                                    .spacing([4.0, 4.0])
+                                    .show(ui, |ui| {
+                                        let tools: [(ToolId, &str); 16] = [
+                                            (ToolId::RectSelect, "Rect"),
+                                            (ToolId::EllipseSelect, "Oval"),
+                                            (ToolId::Lasso, "Lasso"),
+                                            (ToolId::MagicWand, "Wand"),
+                                            (ToolId::Move, "Move"),
+                                            (ToolId::Transform, "Xfrm"),
+                                            (ToolId::ColorPicker, "Picker"),
+                                            (ToolId::Hand, "Hand"),
+                                            (ToolId::Zoom, "Zoom"),
+                                            (ToolId::RotateView, "Rot."),
+                                            (ToolId::Brush, "Brush"),
+                                            (ToolId::Eraser, "Eraser"),
+                                            (ToolId::Fill, "Bucket"),
+                                            (ToolId::Line, "Line"),
+                                            (ToolId::Shape, "Shape"),
+                                            (ToolId::Reference, "Ref"),
+                                        ];
+                                        for (i, (tool_id, label)) in tools.iter().enumerate() {
+                                            let is_active = self.active_tool == *tool_id;
+                                            let btn = egui::Button::new(
+                                                egui::RichText::new(*label).size(10.0)
+                                            )
+                                            .selected(is_active);
+                                            let r = ui.add_sized([32.0, 24.0], btn).on_hover_text(tool_id.name());
+                                            if r.clicked() {
+                                                self.active_tool = *tool_id;
+                                                if *tool_id == ToolId::Brush {
+                                                    if self.presets[self.active_preset_index].is_eraser {
+                                                        if let Some(pos) = self.presets.iter().position(|p| !p.is_eraser) {
+                                                            self.select_preset(pos);
+                                                        }
+                                                    }
+                                                } else if *tool_id == ToolId::Eraser {
+                                                    if !self.presets[self.active_preset_index].is_eraser {
+                                                        if let Some(pos) = self.presets.iter().position(|p| p.is_eraser) {
+                                                            self.select_preset(pos);
+                                                        }
+                                                    }
+                                                }
+                                                ctx.request_repaint();
+                                            }
+                                            if i % 4 == 3 {
+                                                ui.end_row();
+                                            }
+                                        }
+                                    });
+                                ui.separator();
+                                ui.label("BRUSH PRESETS");
                                 egui::Grid::new("presets_grid")
                                     .num_columns(4)
                                     .spacing([4.0, 4.0])
@@ -2262,25 +2694,25 @@ impl eframe::App for PaintApp {
                                             if i < num_presets {
                                                 let preset_icon = self.presets[i].icon;
                                                 let preset_name = self.presets[i].name.clone();
-                                                let is_selected = self.active_preset_index == i;
+                                                let is_selected = self.active_preset_index == i && matches!(self.active_tool, ToolId::Brush | ToolId::Eraser);
                                                 
-                                                let icon_emoji = match preset_icon {
-                                                    PresetIcon::Pencil => "✏",
-                                                    PresetIcon::InkPen => "✒",
-                                                    PresetIcon::PaintBrush => "🖌",
-                                                    PresetIcon::Smudge => "💧",
-                                                    PresetIcon::Eraser => "🧹",
+                                                let type_tag = match preset_icon {
+                                                    PresetIcon::Pencil => "[P]",
+                                                    PresetIcon::InkPen => "[I]",
+                                                    PresetIcon::PaintBrush => "[B]",
+                                                    PresetIcon::Smudge => "[S]",
+                                                    PresetIcon::Eraser => "[E]",
                                                 };
                                                 
-                                                let label = format!("{}\n{}", icon_emoji, preset_name);
+                                                let label = format!("{}\n{}", type_tag, preset_name);
                                                 let btn = egui::Button::new(
                                                     egui::RichText::new(&label)
-                                                        .size(9.0)
-                                                        .line_height(Some(11.0))
+                                                        .size(8.0)
+                                                        .line_height(Some(10.0))
                                                 )
                                                 .selected(is_selected);
                                                 
-                                                let btn_response = ui.add_sized([48.0, 48.0], btn);
+                                                let btn_response = ui.add_sized([32.0, 36.0], btn);
                                                 
                                                 // Border highlight if active (contrasting deep blue)
                                                 if is_selected {
@@ -2321,7 +2753,7 @@ impl eframe::App for PaintApp {
                                                         .color(egui::Color32::GRAY)
                                                 )
                                                 .fill(egui::Color32::from_gray(245));
-                                                let btn_response = ui.add_sized([48.0, 48.0], btn);
+                                                let btn_response = ui.add_sized([32.0, 36.0], btn);
                                                 
                                                 // Left click or right click context menu to create
                                                 let mut show_creation_menu = false;
@@ -2330,23 +2762,23 @@ impl eframe::App for PaintApp {
                                                 }
                                                 btn_response.context_menu(|ui| {
                                                     ui.label("Create New Brush:");
-                                                    if ui.button("✏ Pencil").clicked() {
+                                                    if ui.button("Pencil").clicked() {
                                                         self.create_preset(PresetIcon::Pencil);
                                                         ui.close_menu();
                                                     }
-                                                    if ui.button("✒ Ink Pen").clicked() {
+                                                    if ui.button("Ink Pen").clicked() {
                                                         self.create_preset(PresetIcon::InkPen);
                                                         ui.close_menu();
                                                     }
-                                                    if ui.button("🖌 Paint Brush").clicked() {
+                                                    if ui.button("Paint Brush").clicked() {
                                                         self.create_preset(PresetIcon::PaintBrush);
                                                         ui.close_menu();
                                                     }
-                                                    if ui.button("💧 Smudge").clicked() {
+                                                    if ui.button("Smudge").clicked() {
                                                         self.create_preset(PresetIcon::Smudge);
                                                         ui.close_menu();
                                                     }
-                                                    if ui.button("🧹 Eraser").clicked() {
+                                                    if ui.button("Eraser").clicked() {
                                                         self.create_preset(PresetIcon::Eraser);
                                                         ui.close_menu();
                                                     }
@@ -2356,7 +2788,7 @@ impl eframe::App for PaintApp {
                                                         ui.label("Path:");
                                                         ui.text_edit_singleline(&mut self.brush_import_path);
                                                     });
-                                                    if ui.button("📥 Load .artybrush").clicked() {
+                                                    if ui.button("Load .artybrush").clicked() {
                                                         let path = std::path::Path::new(&self.brush_import_path);
                                                         match crate::brush_io::load_artybrush(path, &mut self.brush_textures) {
                                                             Ok(mut new_preset) => {
@@ -2415,6 +2847,8 @@ impl eframe::App for PaintApp {
                                                                     texture_id,
                                                                     texture_scale: 1.0,
                                                                     bristle_id: 0,
+                                                                    stabilizer_level: StabilizerLevel::default(),
+                                                                    stabilizer_mode: StabilizerMode::SpringMassDamper,
                                                                 };
 
                                                                 let mut brush = Brush::new();
@@ -2448,7 +2882,6 @@ impl eframe::App for PaintApp {
                                             }
                                         }
                                     });
-                            });
 
                         // Inline renaming text box
                         if let Some(idx) = self.renaming_preset_index {
@@ -2513,6 +2946,7 @@ impl eframe::App for PaintApp {
                                     });
                                 if response.inner.unwrap_or(false) {
                                     ctx.request_repaint();
+                                    self.brush_settings_dirty = true;
                                 }
                             });
 
@@ -2540,6 +2974,7 @@ impl eframe::App for PaintApp {
                                     });
                                 if response.inner.unwrap_or(false) {
                                     ctx.request_repaint();
+                                    self.brush_settings_dirty = true;
                                 }
                             });
                         });
@@ -2553,15 +2988,55 @@ impl eframe::App for PaintApp {
                         match self.active_tool {
                             ToolId::Fill => {
                                 ui.horizontal(|ui| {
-                                    ui.label("Tolerance:");
-                                    ui.add(egui::Slider::new(&mut self.fill_options.tolerance, 0..=255));
+                                    ui.label("Detection:");
+                                    egui::ComboBox::from_id_source("fill_detection")
+                                        .selected_text(match self.fill_options.detection_mode {
+                                            fill::FillDetectionMode::TransparencyStrict => "Transp Strict",
+                                            fill::FillDetectionMode::TransparencyFuzzy => "Transp Fuzzy",
+                                            fill::FillDetectionMode::ColorDifference => "Color Diff",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyStrict, "Transp Strict");
+                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyFuzzy, "Transp Fuzzy");
+                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::ColorDifference, "Color Diff");
+                                        });
+                                });
+                                match self.fill_options.detection_mode {
+                                    fill::FillDetectionMode::ColorDifference => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Color Diff:");
+                                            ui.add(egui::Slider::new(&mut self.fill_options.tolerance, 0..=255));
+                                        });
+                                    }
+                                    fill::FillDetectionMode::TransparencyFuzzy => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Transp Diff:");
+                                            ui.add(egui::Slider::new(&mut self.fill_options.transp_diff, 0..=255));
+                                        });
+                                    }
+                                    fill::FillDetectionMode::TransparencyStrict => {}
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label("Reference:");
+                                    egui::ComboBox::from_id_source("fill_reference")
+                                        .selected_text(match self.fill_options.reference {
+                                            fill::FillReference::CurrentLayer => "Current Layer",
+                                            fill::FillReference::SelectionSourceLayers => "Selection Source",
+                                            fill::FillReference::AllVisibleLayers => "All Visible",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::CurrentLayer, "Current Layer");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Selection Source");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::AllVisibleLayers, "All Visible");
+                                        });
                                 });
                                 ui.horizontal(|ui| {
                                     ui.label("Expand:");
                                     ui.add(egui::Slider::new(&mut self.fill_options.expand_px, 0..=10));
                                 });
-                                ui.checkbox(&mut self.fill_options.sample_all_layers, "Sample all layers");
+                                ui.checkbox(&mut self.fill_options.antialias, "Anti-alias");
                                 ui.checkbox(&mut self.fill_options.respect_selection, "Respect selection");
+                                ui.checkbox(&mut self.fill_options.fill_transparent_only, "Fill transparent only");
                             }
                             ToolId::RectSelect | ToolId::EllipseSelect | ToolId::Lasso => {
                                 ui.horizontal(|ui| {
@@ -2590,7 +3065,20 @@ impl eframe::App for PaintApp {
                                     ui.label("Tolerance:");
                                     ui.add(egui::Slider::new(&mut self.fill_options.tolerance, 0..=255));
                                 });
-                                ui.checkbox(&mut self.fill_options.sample_all_layers, "Sample all layers");
+                                ui.horizontal(|ui| {
+                                    ui.label("Reference:");
+                                    egui::ComboBox::from_id_source("wand_reference")
+                                        .selected_text(match self.fill_options.reference {
+                                            fill::FillReference::CurrentLayer => "Current",
+                                            fill::FillReference::SelectionSourceLayers => "Source",
+                                            fill::FillReference::AllVisibleLayers => "Visible",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::CurrentLayer, "Current");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Source");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::AllVisibleLayers, "Visible");
+                                        });
+                                });
                             }
                             ToolId::Transform => {
                                 ui.horizontal(|ui| {
@@ -2800,13 +3288,20 @@ impl eframe::App for PaintApp {
                 }
             });
             });
+            });
+
+        // 2b. Update layer thumbnails
+        self.regenerate_dirty_thumbnails();
 
         // 3. RIGHT SIDEBAR UTILITY PANEL (Asset Management & Color Picking)
         egui::SidePanel::right("right_sidebar")
             .resizable(false)
             .default_width(260.0)
             .show(ctx, |ui| {
-                ui.vertical(|ui| {
+                egui::ScrollArea::vertical()
+                    .id_source("right_sidebar_scroll")
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
                     // NAVIGATOR PANEL
                     ui.group(|ui| {
                         ui.label("NAVIGATOR");
@@ -2832,8 +3327,12 @@ impl eframe::App for PaintApp {
 
                         // Custom HSV Color Wheel
                         ui.vertical_centered(|ui| {
-                            if draw_hsv_color_wheel(ui, &mut self.brush_color).changed() {
+                            let res = draw_hsv_color_wheel(ui, &mut self.brush_color, &mut self.color_wheel_drag_zone);
+                            if res.changed() {
                                 self.brush_settings_dirty = true;
+                            }
+                            if res.drag_stopped() || res.clicked() {
+                                self.record_color(self.brush_color);
                             }
                         });
 
@@ -2847,15 +3346,19 @@ impl eframe::App for PaintApp {
                                 (self.brush_color[2] * 255.0) as u8,
                             );
 
-                            if egui::color_picker::color_edit_button_srgba(
+                            let edit_res = egui::color_picker::color_edit_button_srgba(
                                 ui,
                                 &mut color32,
                                 egui::color_picker::Alpha::Opaque,
-                            ).changed() {
+                            );
+                            if edit_res.changed() {
                                 self.brush_color[0] = color32.r() as f32 / 255.0;
                                 self.brush_color[1] = color32.g() as f32 / 255.0;
                                 self.brush_color[2] = color32.b() as f32 / 255.0;
                                 self.brush_settings_dirty = true;
+                            }
+                            if edit_res.drag_stopped() || edit_res.clicked() {
+                                self.record_color(self.brush_color);
                             }
 
                             let hex_str = format!(
@@ -2869,6 +3372,7 @@ impl eframe::App for PaintApp {
 
                         ui.add_space(4.0);
                         let mut sync_needed = false;
+                        let mut history_needed = false;
                         egui::Grid::new("color_palette")
                             .num_columns(6)
                             .spacing([4.0, 4.0])
@@ -2893,8 +3397,10 @@ impl eframe::App for PaintApp {
                                         );
                                     }
                                     if btn_response.clicked() {
-                                        self.brush_color = *color;
+                                        let picked = *color;
+                                        self.brush_color = picked;
                                         self.selected_palette_index = Some(i);
+                                        history_needed = true;
                                         sync_needed = true;
                                     }
                                     if i % 6 == 5 {
@@ -2902,9 +3408,42 @@ impl eframe::App for PaintApp {
                                     }
                                 }
                             });
+                        if history_needed {
+                            self.record_color(self.brush_color);
+                        }
                         if sync_needed {
                             self.brush_settings_dirty = true;
                         }
+
+                        // Color history
+                        if !self.color_history.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label("HISTORY");
+                            ui.horizontal_wrapped(|ui| {
+                                let hist_len = self.color_history.len();
+                                for (i, color) in self.color_history.iter().rev().enumerate() {
+                                    if i >= 12 { break; }
+                                    let fill = Color32::from_rgb(
+                                        (color[0] * 255.0) as u8,
+                                        (color[1] * 255.0) as u8,
+                                        (color[2] * 255.0) as u8,
+                                    );
+                                    let btn = ui.add(
+                                        egui::Button::new("")
+                                            .min_size(Vec2::splat(16.0))
+                                            .fill(fill),
+                                    );
+                                    if btn.clicked() {
+                                        self.brush_color = *color;
+                                        self.brush_settings_dirty = true;
+                                    }
+                                    if i < hist_len.min(12) - 1 {
+                                        ui.add_space(2.0);
+                                    }
+                                }
+                            });
+                        }
+
                         ui.horizontal(|ui| {
                             if ui.button("Save").clicked() {
                                 if let Some(i) = self.selected_palette_index {
@@ -3043,77 +3582,98 @@ impl eframe::App for PaintApp {
                         ui.separator();
 
                         // Scrollable Layer Selection List
-                        egui::ScrollArea::vertical()
-                            .max_height(160.0)
-                            .show(ui, |ui| {
-                                let order = self.layer_order.clone();
-                                for id in order {
-                                    let pointer_released =
-                                        ui.ctx().input(|i| i.pointer.any_released());
-                                    let is_active = self.active_layer_id == id;
-                                    let mut row_hovered = false;
+                        // Pre-compute thumbnail textures to avoid borrow conflicts
+                        let mut thumb_textures: ahash::AHashMap<u32, egui::TextureHandle> = ahash::AHashMap::default();
+                        for id in &self.layer_order.clone() {
+                            if let Some(tex) = self.get_layer_thumbnail_texture(ctx, *id) {
+                                thumb_textures.insert(*id, tex);
+                            }
+                        }
+                        let order = self.layer_order.clone();
+                        for id in order {
+                            let pointer_released =
+                                ui.ctx().input(|i| i.pointer.any_released());
+                            let is_active = self.active_layer_id == id;
+                            let mut row_hovered = false;
 
-                                    ui.horizontal(|ui| {
-                                        let drag_response = ui.add(
-                                            egui::Label::new("::")
-                                                .sense(egui::Sense::click_and_drag()),
+                            ui.horizontal(|ui| {
+                                let drag_response = ui.add(
+                                    egui::Label::new("::")
+                                        .sense(egui::Sense::click_and_drag()),
+                                );
+                                row_hovered |= drag_response.hovered();
+                                if drag_response.drag_started() {
+                                    self.dragging_layer_id = Some(id);
+                                    self.active_layer_id = id;
+                                }
+                                if let Some(layer) = self.layers.get_mut(&id) {
+                                    // Visibility check
+                                    let visible_response = ui.checkbox(&mut layer.visible, "");
+                                    row_hovered |= visible_response.hovered();
+
+                                    // Selection Source toggle (for Bucket/Magic Wand reference)
+                                    ui.checkbox(&mut layer.selection_source, "Ref");
+
+                                    // Layer thumbnail (with white background and thin border for empty layers visibility)
+                                    let thumb_size = egui::Vec2::splat(24.0);
+                                    let (thumb_rect, _thumb_resp) = ui.allocate_exact_size(thumb_size, egui::Sense::hover());
+                                    ui.painter().rect_filled(thumb_rect, 1.0, egui::Color32::WHITE);
+                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(180)));
+                                    if let Some(tex) = thumb_textures.get(&id) {
+                                        ui.painter().image(
+                                            tex.id(),
+                                            thumb_rect,
+                                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                                            egui::Color32::WHITE,
                                         );
-                                        row_hovered |= drag_response.hovered();
-                                        if drag_response.drag_started() {
-                                            self.dragging_layer_id = Some(id);
-                                            self.active_layer_id = id;
-                                        }
-                                        let layer = self.layers.get_mut(&id).unwrap();
+                                    }
 
-                                        // Visibility check
-                                        let visible_response = ui.checkbox(&mut layer.visible, "");
-                                        row_hovered |= visible_response.hovered();
-
-                                        // Highlight active layer
-                                        let prefix = match &layer.kind {
-                                            crate::canvas::LayerType::Folder { .. } => "📁 ",
-                                            crate::canvas::LayerType::Vector => "🖋 ",
-                                            crate::canvas::LayerType::Raster => "🖼 ",
-                                        };
-                                        let display_name = format!("{}{}", prefix, layer.name);
-                                        let label_response = ui.add(egui::SelectableLabel::new(
-                                            is_active,
-                                            &display_name,
-                                        ));
-                                        if is_active {
-                                            ui.painter().rect_stroke(
-                                                label_response.rect.expand(1.0),
-                                                1.0,
-                                                egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215))
-                                            );
-                                        }
-                                        row_hovered |= label_response.hovered();
-                                        if label_response.clicked() {
-                                            self.active_layer_id = id;
-                                        }
-                                    });
-
-                                    if let Some(dragging_id) = self.dragging_layer_id {
-                                        if dragging_id != id && row_hovered {
-                                            if let (Some(from), Some(to)) = (
-                                                self.layer_order
-                                                    .iter()
-                                                    .position(|&layer_id| layer_id == dragging_id),
-                                                self.layer_order
-                                                    .iter()
-                                                    .position(|&layer_id| layer_id == id),
-                                            ) {
-                                                self.layer_order.swap(from, to);
-                                            }
-                                        }
-                                        if pointer_released {
-                                            self.dragging_layer_id = None;
-                                        }
+                                    // Highlight active layer
+                                    let prefix = match &layer.kind {
+                                        crate::canvas::LayerType::Folder { .. } => "[F] ",
+                                        crate::canvas::LayerType::Vector => "[V] ",
+                                        crate::canvas::LayerType::Raster => "[R] ",
+                                    };
+                                    let display_name = format!("{}{}", prefix, layer.name);
+                                    let label_response = ui.add(egui::SelectableLabel::new(
+                                        is_active,
+                                        &display_name,
+                                    ));
+                                    if is_active {
+                                        ui.painter().rect_stroke(
+                                            label_response.rect.expand(1.0),
+                                            1.0,
+                                            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215))
+                                        );
+                                    }
+                                    row_hovered |= label_response.hovered();
+                                    if label_response.clicked() {
+                                        self.active_layer_id = id;
                                     }
                                 }
                             });
+
+                            if let Some(dragging_id) = self.dragging_layer_id {
+                                if dragging_id != id && row_hovered {
+                                    if let (Some(from), Some(to)) = (
+                                        self.layer_order
+                                            .iter()
+                                            .position(|&layer_id| layer_id == dragging_id),
+                                        self.layer_order
+                                            .iter()
+                                            .position(|&layer_id| layer_id == id),
+                                    ) {
+                                        self.layer_order.swap(from, to);
+                                    }
+                                }
+                                if pointer_released {
+                                    self.dragging_layer_id = None;
+                                }
+                            }
+                        }
                     });
                 });
+            });
             });
 
         // 4. BOTTOM STATUS BAR
@@ -3241,7 +3801,9 @@ impl eframe::App for PaintApp {
                 }
 
                 // STROKE DRAWING INTERACTION
-                let pointer_down = response.dragged_by(egui::PointerButton::Primary) && !space_down && !r_down;
+                let pointer_down = (response.dragged_by(egui::PointerButton::Primary)
+                    || (response.is_pointer_button_down_on() && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
+                    && !space_down && !r_down;
                 let pointer_clicked = response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
 
                 // Handle selection tool dragging
@@ -3250,7 +3812,9 @@ impl eframe::App for PaintApp {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         if !self.is_selecting {
                             self.is_selecting = true;
-                            selection::clear_selection(&mut self.selection_mask);
+                            if self.selection_mode == selection::SelectionMode::Replace {
+                                selection::clear_selection(&mut self.selection_mask);
+                            }
                             self.selection_rect = Some(selection::SelectionRect {
                                 x0: world_pos.x, y0: world_pos.y,
                                 x1: world_pos.x, y1: world_pos.y,
@@ -3270,7 +3834,9 @@ impl eframe::App for PaintApp {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         if !self.is_selecting {
                             self.is_selecting = true;
-                            selection::clear_selection(&mut self.selection_mask);
+                            if self.selection_mode == selection::SelectionMode::Replace {
+                                selection::clear_selection(&mut self.selection_mask);
+                            }
                             self.lasso_points = Some(selection::LassoPoints { points: Vec::new() });
                         }
                         if let Some(ref mut lp) = self.lasso_points {
@@ -3294,12 +3860,23 @@ impl eframe::App for PaintApp {
                                 32768,
                             ];
                             let all_layers: Vec<Layer> = self.layers.values().cloned().collect();
-                            let all_layers_ref: Option<&[Layer]> = if self.fill_options.sample_all_layers {
-                                Some(&all_layers)
-                            } else {
-                                None
-                            };
+                            let all_layers_ref: Option<&[Layer]> = Some(&all_layers);
                             if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                                // Capture pre-fill snapshots of all existing tiles
+                                let mut snapshots: Vec<crate::history::TileSnapshot> = Vec::new();
+                                let tile_keys: Vec<(i32, i32)> = layer.tiles.keys().copied().collect();
+                                for &tk in &tile_keys {
+                                    if let Some(tile) = layer.tiles.get(&tk) {
+                                        let mut pixels = self.history.alloc_tile();
+                                        *pixels = *tile.pixels;
+                                        snapshots.push(crate::history::TileSnapshot {
+                                            layer_id: layer.id,
+                                            coords: tk,
+                                            pixels: Some(pixels),
+                                        });
+                                    }
+                                }
+
                                 let dirty = fill::flood_fill(
                                     layer,
                                     all_layers_ref,
@@ -3307,8 +3884,23 @@ impl eframe::App for PaintApp {
                                     fx, fy,
                                     fill_color,
                                     &self.fill_options,
+                                    self.canvas_width as i32,
+                                    self.canvas_height as i32,
                                 );
                                 if !dirty.is_empty() {
+                                    // Capture snapshots for any newly created tiles
+                                    let new_keys: Vec<(i32, i32)> = layer.tiles.keys().copied().collect();
+                                    for &tk in &new_keys {
+                                        if !tile_keys.contains(&tk) {
+                                            snapshots.push(crate::history::TileSnapshot {
+                                                layer_id: layer.id,
+                                                coords: tk,
+                                                pixels: None, // tile did not exist before
+                                            });
+                                        }
+                                    }
+
+                                    self.history.push_command(crate::history::UndoCommand { snapshots });
                                     self.document_modified = true;
                                     if let Some(r) = &mut self.renderer {
                                         r.clear_cache();
@@ -3319,39 +3911,85 @@ impl eframe::App for PaintApp {
                     }
                 }
 
+                // Handle magic wand click
+                if pointer_clicked && matches!(self.active_tool, ToolId::MagicWand) {
+                    if let Some(ptr_pos) = response.hover_pos() {
+                        let world_pos = self.screen_to_world(ptr_pos, rect);
+                        let wx = world_pos.x as i32;
+                        let wy = world_pos.y as i32;
+                        if wx >= 0 && wx < self.canvas_width as i32 && wy >= 0 && wy < self.canvas_height as i32 {
+                            let (layer_refs, layer_order) = match self.fill_options.reference {
+                                fill::FillReference::CurrentLayer => {
+                                    (self.layers.get(&self.active_layer_id).map(|l| vec![l]).unwrap_or_default(), vec![])
+                                }
+                                fill::FillReference::SelectionSourceLayers => {
+                                    let order: Vec<u32> = self.layer_order.iter().filter(|id| self.layers.get(id).map_or(false, |l| l.selection_source)).copied().collect();
+                                    let refs: Vec<&Layer> = order.iter().filter_map(|id| self.layers.get(id)).collect();
+                                    (refs, order)
+                                }
+                                fill::FillReference::AllVisibleLayers => {
+                                    (self.layers.values().collect(), self.layer_order.clone())
+                                }
+                            };
+                            let sample_all = self.fill_options.reference != fill::FillReference::CurrentLayer;
+                            selection::magic_wand_select(
+                                &mut self.selection_mask,
+                                &layer_refs,
+                                &layer_order,
+                                wx,
+                                wy,
+                                self.fill_options.tolerance as u32,
+                                true,
+                                sample_all,
+                                self.selection_mode,
+                                self.canvas_width as i32,
+                                self.canvas_height as i32,
+                            );
+                            self.show_selection_overlay = self.selection_mask.is_active;
+                        }
+                    }
+                }
+
+                // Handle color picker (eyedropper) tool click
+                if pointer_clicked && matches!(self.active_tool, ToolId::ColorPicker) {
+                    if let Some(ptr_pos) = response.hover_pos() {
+                        let world_pos = self.screen_to_world(ptr_pos, rect);
+                        let px = world_pos.x as i32;
+                        let py = world_pos.y as i32;
+                        if px >= 0 && px < self.canvas_width as i32 && py >= 0 && py < self.canvas_height as i32 {
+                            if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                                let all_layers: Vec<Layer> = self.layers.values().cloned().collect();
+                                let sampled = fill::sample_reference(Some(&all_layers), active_layer, fill::FillReference::AllVisibleLayers, px, py);
+                                let a = sampled[3] as f32 / 32768.0;
+                                if a > 0.0 {
+                                    self.brush_color[0] = (sampled[0] as f32 / 32768.0) / a;
+                                    self.brush_color[1] = (sampled[1] as f32 / 32768.0) / a;
+                                    self.brush_color[2] = (sampled[2] as f32 / 32768.0) / a;
+                                } else {
+                                    self.brush_color[0] = sampled[0] as f32 / 32768.0;
+                                    self.brush_color[1] = sampled[1] as f32 / 32768.0;
+                                    self.brush_color[2] = sampled[2] as f32 / 32768.0;
+                                }
+                                self.brush_color[0] = self.brush_color[0].clamp(0.0, 1.0);
+                                self.brush_color[1] = self.brush_color[1].clamp(0.0, 1.0);
+                                self.brush_color[2] = self.brush_color[2].clamp(0.0, 1.0);
+                                self.record_color(self.brush_color);
+                                self.brush_settings_dirty = true;
+                            }
+                        }
+                    }
+                }
+
                 // Handle brush/eraser stroke drawing
                 if pointer_down && matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
                     if let Some(ptr_pos) = response.hover_pos() {
-                        let rect_center = rect.center();
-                        let half_w = rect.width() * 0.5;
-                        let half_h = rect.height() * 0.5;
-                        
-                        let dx = ptr_pos.x - rect_center.x;
-                        let dy = ptr_pos.y - rect_center.y;
-                        
-                        let nx = dx / half_w;
-                        let ny = -dy / half_h;
-                        
-                        let cos_rot = (-self.rotation_angle).cos();
-                        let sin_rot = (-self.rotation_angle).sin();
-                        let mut px = nx * cos_rot - ny * sin_rot;
-                        let py = nx * sin_rot + ny * cos_rot;
-                        
-                        if self.mirror_horizontal {
-                            px = -px;
-                        }
-                        
-                        let world_pos = egui::Vec2::new(
-                            ((px + 1.0) * half_w) / self.viewport_zoom + self.viewport_offset.x,
-                            ((1.0 - py) * half_h) / self.viewport_zoom + self.viewport_offset.y,
-                        );
-
-                        // Clamp drawing coordinates within the defined canvas bounds
-                        let cx = world_pos.x.clamp(0.0, self.canvas_width as f32);
-                        let cy = world_pos.y.clamp(0.0, self.canvas_height as f32);
+                        let world_pos = self.screen_to_world(ptr_pos, rect);
+                        let cx = world_pos.x;
+                        let cy = world_pos.y;
 
                         // Initialize the drawing state if this is a fresh stroke
                         if !self.stabilizer.is_drawing {
+                            self.stabilizer.reset();
                             self.stabilizer.is_drawing = true;
                             self.stroke_id = self.stroke_id.wrapping_add(1);
                             self.last_event_time = ctx.input(|i| i.time) - 0.016; // Seed last event time
@@ -3541,19 +4179,37 @@ impl eframe::App for PaintApp {
                     if self.is_selecting {
                         self.is_selecting = false;
                         if let Some(rect) = self.selection_rect.take() {
-                            if self.active_tool == ToolId::RectSelect || self.active_tool == ToolId::EllipseSelect {
-                                selection::apply_rect_selection(
-                                    &mut self.selection_mask, rect,
-                                    selection::SelectionMode::Replace,
-                                    self.selection_feather, true,
-                                );
+                            let w = (rect.x1 - rect.x0).abs();
+                            let h = (rect.y1 - rect.y0).abs();
+                            if w <= 1.0 && h <= 1.0 {
+                                if self.selection_mode == selection::SelectionMode::Replace {
+                                    selection::clear_selection(&mut self.selection_mask);
+                                }
+                            } else {
+                                if self.active_tool == ToolId::RectSelect {
+                                    selection::apply_rect_selection(
+                                        &mut self.selection_mask, rect,
+                                        self.selection_mode,
+                                        self.selection_feather, true,
+                                    );
+                                } else if self.active_tool == ToolId::EllipseSelect {
+                                    selection::apply_ellipse_selection(
+                                        &mut self.selection_mask, rect,
+                                        self.selection_mode,
+                                        self.selection_feather, true,
+                                    );
+                                }
                             }
                         }
                         if let Some(lasso) = self.lasso_points.take() {
-                            if lasso.points.len() >= 3 {
+                            if lasso.points.len() <= 2 {
+                                if self.selection_mode == selection::SelectionMode::Replace {
+                                    selection::clear_selection(&mut self.selection_mask);
+                                }
+                            } else if lasso.points.len() >= 3 {
                                 selection::apply_lasso_selection(
                                     &mut self.selection_mask, &lasso,
-                                    selection::SelectionMode::Replace,
+                                    self.selection_mode,
                                     self.selection_feather, true,
                                 );
                             }
@@ -3707,19 +4363,33 @@ impl eframe::App for PaintApp {
                     );
                 }
 
-                // GRID OVERLAY
+                // GRID OVERLAY (clipped to canvas bounds)
                 if self.show_grid {
                     let grid_size = 64.0;
-                    let start_x = (self.viewport_offset.x / grid_size).floor() * grid_size;
-                    let start_y = (self.viewport_offset.y / grid_size).floor() * grid_size;
-                    let end_x = self.viewport_offset.x + rect.width() / self.viewport_zoom;
-                    let end_y = self.viewport_offset.y + rect.height() / self.viewport_zoom;
+                    let canvas_left = 0.0;
+                    let canvas_right = self.canvas_width as f32;
+                    let canvas_top = 0.0;
+                    let canvas_bottom = self.canvas_height as f32;
+
+                    let view_start_x = (self.viewport_offset.x / grid_size).floor() * grid_size;
+                    let view_start_y = (self.viewport_offset.y / grid_size).floor() * grid_size;
+                    let view_end_x = self.viewport_offset.x + rect.width() / self.viewport_zoom;
+                    let view_end_y = self.viewport_offset.y + rect.height() / self.viewport_zoom;
+
+                    // Clamp to canvas bounds
+                    let start_x = view_start_x.max(canvas_left);
+                    let start_y = view_start_y.max(canvas_top);
+                    let end_x = view_end_x.min(canvas_right);
+                    let end_y = view_end_y.min(canvas_bottom);
 
                     let mut gx = start_x;
                     while gx <= end_x {
                         let sx = ((gx - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
+                        // Only draw vertical lines within canvas Y range
+                        let top_sy = ((canvas_top - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                        let bot_sy = ((canvas_bottom - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
                         ui.painter().line_segment(
-                            [egui::Pos2::new(sx, rect.min.y), egui::Pos2::new(sx, rect.max.y)],
+                            [egui::Pos2::new(sx, top_sy), egui::Pos2::new(sx, bot_sy)],
                             egui::Stroke::new(0.5, Color32::from_black_alpha(40)),
                         );
                         gx += grid_size;
@@ -3727,8 +4397,10 @@ impl eframe::App for PaintApp {
                     let mut gy = start_y;
                     while gy <= end_y {
                         let sy = ((gy - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                        let left_sx = ((canvas_left - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
+                        let right_sx = ((canvas_right - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
                         ui.painter().line_segment(
-                            [egui::Pos2::new(rect.min.x, sy), egui::Pos2::new(rect.max.x, sy)],
+                            [egui::Pos2::new(left_sx, sy), egui::Pos2::new(right_sx, sy)],
                             egui::Stroke::new(0.5, Color32::from_black_alpha(40)),
                         );
                         gy += grid_size;
@@ -3856,7 +4528,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     (r1 + m, g1 + m, b1 + m)
 }
 
-fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3]) -> egui::Response {
+fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3], drag_zone: &mut Option<u8>) -> egui::Response {
     let desired_size = egui::Vec2::new(160.0, 160.0);
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
@@ -3866,20 +4538,42 @@ fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3]) -> egui::Respon
 
     let (mut h, mut s, mut v) = rgb_to_hsv(color[0], color[1], color[2]);
 
-    // Handle interaction
-    if response.dragged() || response.clicked() {
+    let half_side = inner_radius / 2.0f32.sqrt();
+    let box_rect = egui::Rect::from_center_size(center, egui::Vec2::new(half_side * 2.0, half_side * 2.0));
+
+    let zone_for_point = |p: egui::Pos2| -> u8 {
+        if box_rect.contains(p) {
+            2 // square
+        } else {
+            1 // ring
+        }
+    };
+
+    if response.drag_started() || response.clicked() || (response.is_pointer_button_down_on() && drag_zone.is_none()) {
+        if let Some(p) = response.interact_pointer_pos() {
+            *drag_zone = Some(zone_for_point(p));
+        }
+    }
+
+    if response.is_pointer_button_down_on() || response.dragged() || response.clicked() {
         if let Some(mouse_pos) = response.interact_pointer_pos() {
             let to_mouse = mouse_pos - center;
-            let dist = to_mouse.length();
+            let zone = drag_zone.unwrap_or_else(|| {
+                let z = zone_for_point(mouse_pos);
+                *drag_zone = Some(z);
+                z
+            });
 
-            if dist >= inner_radius - 6.0 && dist <= outer_radius + 6.0 {
-                // Hue ring drag
-                let angle = to_mouse.y.atan2(to_mouse.x); // [-PI, PI]
+            if zone == 1 {
+                // Hue ring
+                let angle = to_mouse.y.atan2(to_mouse.x);
                 let angle = if angle < 0.0 { angle + 2.0 * std::f32::consts::PI } else { angle };
                 h = angle / (2.0 * std::f32::consts::PI);
-            } else if dist < inner_radius {
-                // Sat/Val square drag
-                let half_side = inner_radius / 2.0f32.sqrt();
+                // If pure monochrome or too dark, automatically set Saturation/Value to 0.8 to unlock
+                if s < 0.15 { s = 0.8; }
+                if v < 0.20 { v = 0.8; }
+            } else {
+                // Sat/Val square
                 let local_x = (to_mouse.x / half_side).clamp(-1.0, 1.0);
                 let local_y = (to_mouse.y / half_side).clamp(-1.0, 1.0);
 
@@ -3893,6 +4587,8 @@ fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3]) -> egui::Respon
             color[2] = b;
             response.mark_changed();
         }
+    } else {
+        *drag_zone = None;
     }
 
     if ui.is_rect_visible(rect) {

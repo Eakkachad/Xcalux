@@ -523,7 +523,7 @@ impl WgpuRenderer {
         } else {
             // Evict least recently used tile
             let evicted_key = self.lru_usage.remove(0);
-            let evicted_slot = self.lru_cache.remove(&evicted_key).unwrap();
+            let evicted_slot = self.lru_cache.remove(&evicted_key).unwrap_or(0);
 
             self.lru_cache.insert(key, evicted_slot);
             self.lru_usage.push(key);
