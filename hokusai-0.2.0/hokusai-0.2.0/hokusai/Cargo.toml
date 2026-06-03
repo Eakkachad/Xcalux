@@ -1,0 +1,35 @@
+[package]
+name = "hokusai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Pure Rust brush engine inspired by libmypaint (umbrella crate)"
+readme = "../README.md"
+
+[features]
+default = ["myb-json", "tile-mem"]
+myb-json = ["dep:hokusai-brush"]
+tile-mem = ["dep:hokusai-tile-mem"]
+tiny-skia = ["dep:hokusai-tiny-skia"]
+
+[dependencies]
+hokusai-core = { workspace = true }
+hokusai-brush = { workspace = true, optional = true }
+hokusai-tile-mem = { workspace = true, optional = true }
+hokusai-tiny-skia = { workspace = true, optional = true }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "stroke_to_png"
+required-features = ["tile-mem"]
+
+[[example]]
+name = "myb_to_png"
+required-features = ["tile-mem", "myb-json"]

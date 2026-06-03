@@ -1,0 +1,177 @@
+use ahash::AHashMap;
+use hokusai::tile::{empty_tile, TilePixels, TILE_SIZE};
+use hokusai::TiledSurface;
+use std::collections::HashSet;
+
+#[allow(dead_code)]
+pub const TILE_PIXEL_COUNT: usize = TILE_SIZE * TILE_SIZE;
+
+#[derive(Clone)]
+pub struct Tile {
+    pub pixels: Box<TilePixels>,
+    pub is_dirty: bool,
+    pub last_stroke_id: u32,
+}
+
+impl Default for Tile {
+    fn default() -> Self {
+        Self {
+            pixels: empty_tile(),
+            is_dirty: true,
+            last_stroke_id: 0,
+        }
+    }
+}
+
+impl Tile {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+pub type TileMap = AHashMap<(i32, i32), Tile>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Luminosity,
+    Shade,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayerType {
+    Raster,
+    Folder { child_ids: Vec<u32> },
+    Vector,
+}
+
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct VectorControlPoint {
+    pub x: f32,
+    pub y: f32,
+    pub pressure: f32,
+    pub tilt_x: f32,
+    pub tilt_y: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorStroke {
+    pub control_points: Vec<VectorControlPoint>,
+    pub brush_preset_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorLayer {
+    pub strokes: Vec<VectorStroke>,
+}
+
+#[derive(Clone)]
+pub struct Layer {
+    pub id: u32,
+    pub name: String,
+    pub opacity: f32, // 0.0 to 1.0
+    pub visible: bool,
+    pub lock_alpha: bool,
+    pub is_clipping: bool,
+    #[allow(dead_code)]
+    pub selection_source: bool,
+    pub blend_mode: BlendMode,
+    pub tiles: TileMap,
+    pub kind: LayerType,
+    pub vector_data: Option<VectorLayer>,
+
+    // History & dirty tracking fields
+    pub in_atomic: bool,
+    pub dirty_tiles: HashSet<(i32, i32)>,
+}
+
+impl Layer {
+    pub fn new(id: u32, name: String) -> Self {
+        Self {
+            id,
+            name,
+            opacity: 1.0,
+            visible: true,
+            lock_alpha: false,
+            is_clipping: false,
+            selection_source: false,
+            blend_mode: BlendMode::Normal,
+            tiles: TileMap::default(),
+            kind: LayerType::Raster,
+            vector_data: None,
+            in_atomic: false,
+            dirty_tiles: HashSet::default(),
+        }
+    }
+}
+
+impl TiledSurface for Layer {
+    fn tile_request_start(&mut self, tx: i32, ty: i32) -> &mut TilePixels {
+        if self.in_atomic {
+            self.dirty_tiles.insert((tx, ty));
+        }
+
+        let tile = self.tiles.entry((tx, ty)).or_insert_with(Tile::new);
+        tile.is_dirty = true;
+
+        // If lock_alpha is enabled and we are starting a dab, we will pass the lock_alpha
+        // parameter down to the brush state, which is handled natively by Hokusai's blend mode.
+        &mut *tile.pixels
+    }
+
+    fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+
+    fn tile_lookup(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
+        self.tiles.get(&(tx, ty)).map(|t| &*t.pixels)
+    }
+
+    fn begin_atomic(&mut self) {
+        self.in_atomic = true;
+        self.dirty_tiles.clear();
+    }
+
+    fn end_atomic(&mut self) -> Vec<(i32, i32)> {
+        self.in_atomic = false;
+        self.dirty_tiles.drain().collect()
+    }
+}
+
+pub type SelectionTile = [u8; 4096];
+
+pub struct SelectionMask {
+    pub tiles: ahash::AHashMap<(i32, i32), Box<SelectionTile>>,
+    pub is_active: bool,
+}
+
+impl SelectionMask {
+    pub fn new() -> Self {
+        Self {
+            tiles: ahash::AHashMap::default(),
+            is_active: false,
+        }
+    }
+
+    pub fn get_value(&self, x: i32, y: i32) -> u8 {
+        if !self.is_active {
+            return 255;
+        }
+        let tx = x.div_euclid(64);
+        let ty = y.div_euclid(64);
+        let lx = x.rem_euclid(64) as usize;
+        let ly = y.rem_euclid(64) as usize;
+        if let Some(tile) = self.tiles.get(&(tx, ty)) {
+            tile[ly * 64 + lx]
+        } else {
+            0
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
+    }
+}

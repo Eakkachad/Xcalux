@@ -1,0 +1,13 @@
+# Build artifacts
+/target/
+
+# Agent specific configuration
+/.agent/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Autosaves and temporary drawing files
+*.arty
+*.autosave

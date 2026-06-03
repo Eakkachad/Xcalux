@@ -1,0 +1,13 @@
+/target
+Cargo.lock
+**/*.rs.bk
+.DS_Store
+/out.png
+/out-*.png
+/crates/hokusai-wasm/demo/pkg/
+/crates/hokusai-wasm/demo/brushes/
+/crates/hokusai-compat/fixtures/*.actual.png
+/tools/libmypaint-render/libmypaint-render
+/tmp/
+tmp/
+.claude/
