@@ -243,6 +243,82 @@ The active stroke loop performs **zero heap allocations**:
 - **Staging Buffer**: `WgpuRenderer.upload_staging_buffer` is a pre-allocated `Vec<u8>` of 16384 bytes reused for every tile upload, avoiding per-tile `vec![]` allocations.
 - **Verified by stress test**: The `--stress-test` mode uses a tracking allocator to confirm exactly 0 heap allocations occur during the active drawing hot-path.
 
+### G. Selection & Masking Subsystem
+
+ARTY features a tiled, high-performance selection mask implementation:
+- **Tiled Selection Mask**: The selection mask (`SelectionMask` struct) is structured identically to drawing layers, using sparse $64 \times 64$ byte tiles (`[u8; 4096]`) to represent selection opacity.
+- **Selection Modes**: Supports `Replace`, `Add`, `Subtract`, and `Intersect` modes.
+- **Deselection & Finalization**: The drag selection process is decoupled from the brush engine drawing cycles. Selection finalization occurs only when `!pointer_down` and `self.is_selecting` are true. If the selection dimensions are below $1.0 \times 1.0$ pixels (indicating a simple click), it is treated as a click-to-deselect event.
+- **Selection Rendering**: Active selection pixels are rendered on the GPU utilizing a blue transparent fill. The visibility condition `val > 0` ensures that fully selected pixels ($val = 255$) as well as feathered edges are properly displayed.
+
+### H. Color Selector & Eyedropper Subsystem
+
+The color selection and eyedropper subsystems are calibrated for high-precision, low-friction painting operations:
+- **HSV Color Wheel Dead Zone**: To avoid accidental color drift or jumps when selecting values near the square or ring borders, `zone_for_point` implements a 3px shrunken bounding area (`box_rect.shrink(3.0)`). If a coordinate falls inside the gap between the hue ring and the sat/val square, it resolves to a dead zone (Zone 0) and is ignored.
+- **Continuous Eyedropper Sampling**: The color picker (eyedropper) supports real-time sampling during drag operations. Changing the activation check to `pointer_clicked || pointer_down` enables the user to drag the stylus over the canvas to preview colors continuously before committing.
+
+### I. Custom Document Serializer & Deserializer (`.arty` Format)
+
+To achieve maximum read/write performance, ARTY implements a custom binary file format (`.arty`) featuring DEFLATE compression and atomic renames:
+
+1. **File Binary Layout Structure**:
+   - **Magic Identifier** (4 bytes): `b"ARTY"`.
+   - **Version** (4 bytes): `1u32` (little-endian).
+   - **JSON Metadata Block Offset** (8 bytes): Pointer to document structure block.
+   - **Tile Offset Directory Offset** (8 bytes): Pointer to directory index table.
+   - **Compressed Tile Data Stream**: Array of DEFLATE-compressed `[u16; 4]` pixel tiles written sequentially.
+   - **JSON Metadata Block**: UTF-8 JSON string containing canvas dimensions, layer order, blend modes, visibilities, opacity, lock alpha, folder hierarchies, and vector strokes.
+   - **Tile Offset Directory Table**: An array of 24-byte entries defining the physical layout of all tiles:
+     ```rust
+     struct DirEntry {
+         layer_id: u32,
+         tx: i32,
+         ty: i32,
+         offset: u64,
+         compressed_size: u32,
+     }
+     ```
+
+2. **Atomic Safe Save Pipeline**:
+   - Saves are executed asynchronously on a dedicated background worker loop (`save_worker_loop`) fed by a channel.
+   - Writes first to a temporary file (`.tmp`). Upon successful write, the destination file is deleted and replaced using `std::fs::rename` to prevent corruption during system interruptions.
+
+3. **Loader Validation Checks**:
+   - Checks magic headers and validates offset coordinates against actual file size to prevent index out of bounds.
+   - Restricts metadata size to 50MB and individual tile sizes to 1MB to guard against out-of-memory crashes on corrupted files.
+
+### J. Keyboard Shortcuts & Rebinding Subsystem
+
+Keyboard input events are mapped to commands decoupled from state representation:
+- **Shortcut Entries mapping**: `ShortcutEntry` maps an abstract `CommandId` (e.g. `CommandId::Undo`) to a primary and secondary `KeyBinding` struct representing the physical key and modifier flags (`ctrl`, `shift`, `alt`).
+- **Dynamic Rebinding context**: The rebinding dialog (`ShortcutEditor`) captures key press events by using egui's input queues on-the-fly. Key presses (ignoring Esc) are converted directly via `KeyBinding::from_event` and committed back to the `ShortcutManager` map.
+
+### K. Transform & Interpolation Tool (`src/tools/transform.rs`)
+
+The transformation tool performs arbitrary 2D spatial changes on layer tiles:
+- **Affine Transformations Matrix**: Described by `[a, b, c, d, e, f]` representing the transformation equations:
+  $$x' = a \cdot x + c \cdot y + e$$
+  $$y' = b \cdot x + d \cdot y + f$$
+- **Bounding Box Estimation**: Computes the coordinates of the 4 corners of the source content, projects them through the affine matrix, and determines the minimum and maximum tile coordinate bounds (`ttx0..=ttx1`, `tty0..=tty1`) to allocate destination tiles dynamically.
+- **Inverse Coordinate Mapping**: To avoid holes/aliasing in the target canvas, it iterates target pixels and projects them back using the inverse determinant:
+  $$\text{det} = a \cdot d - b \cdot c$$
+  $$\text{inv\_det} = \frac{1}{\text{det}}$$
+  $$s_x = \frac{d \cdot (d_x - e) - c \cdot (d_y - f)}{\text{det}}$$
+  $$s_y = \frac{a \cdot (d_y - f) - b \cdot (d_x - e)}{\text{det}}$$
+- **Interpolation Modes**:
+  - **Nearest Neighbor**: Samples the coordinate directly using `div_euclid`/`rem_euclid` with bounds checking.
+  - **Bilinear**: Samples the four neighboring pixels ($c_{00}, c_{10}, c_{01}, c_{11}$) and applies linear weights based on fractional offsets $f_x$ and $f_y$ to blend premultiplied RGBA channels.
+
+### L. Scanline BFS Flood Fill Engine (`src/tools/fill.rs`)
+
+The bucket fill tool uses a custom scanline-based Breadth-First Search (BFS) algorithm optimized for infinite sparse layers:
+- **No-Allocation Visited Grid**: Instead of allocating a full canvas-sized boolean grid, visited status is stored in a sparse `HashMap<(i32, i32), [u64; 64]>`. Each entry represents a $64 \times 64$ tile with a 64-word bitmask. This allows lookup and marking in $O(1)$ time with zero heap allocation during search.
+- **Scanline Limits Search**: For each coordinate popped from the search queue, the engine checks the left and right horizontal limits until it hits a boundary color difference, a locked selection boundary, or an already-visited pixel.
+- **Fuzzy Tolerance Matching**: Color difference is evaluated across all channels using Manhattan distance:
+  $$\text{dist} = |r_1 - r_2| + |g_1 - g_2| + |b_1 - b_2| + |a_1 - a_2|$$
+  This distance is matched against the remapped tolerance: $\text{max\_diff} = \frac{\text{tolerance} \cdot 32768}{255}$.
+- **Leak-Proof Deferred Committing**: Pixels are accumulated in a temporary vector during search and written to the canvas *only* after search is fully complete. This prevents the `expand_px` expansion pass from writing to tiles mid-scan and leaking through bounds.
+
 ---
 
 ## 4. Keyboard Shortcuts Reference
@@ -280,8 +356,8 @@ The three-panel layout is built entirely from egui panels:
 |   Texture / Bristle   |                    |                       |
 |   Debug (collapsed)   |                    |                       |
 +------------------------+--------------------+------------------------+
-|  [Bottom Status Bar: Canvas size | Zoom slider | Offset | Mirror | Rotation controls]  |
-+-------------------------------------------------------------------------------------+
+|  [Bottom Status Bar: Tool name | Brush Size/Opacity | Pressure | Canvas dims | Zoom % | Rot ° | Mirror | Layer name | Autosave]  |
++--------------------------------------------------------------------------------------------------------------------------+
 ```
 
 ### Brush Configuration Panel Details

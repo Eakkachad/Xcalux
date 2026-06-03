@@ -27,6 +27,10 @@ fn icon_to_str(icon: PresetIcon) -> &'static str {
         PresetIcon::PaintBrush => "PaintBrush",
         PresetIcon::Smudge => "Smudge",
         PresetIcon::Eraser => "Eraser",
+        PresetIcon::AirBrush => "AirBrush",
+        PresetIcon::Water => "Water",
+        PresetIcon::Marker => "Marker",
+        PresetIcon::BinaryPen => "BinaryPen",
     }
 }
 
@@ -36,6 +40,10 @@ fn str_to_icon(s: &str) -> PresetIcon {
         "InkPen" => PresetIcon::InkPen,
         "PaintBrush" => PresetIcon::PaintBrush,
         "Smudge" => PresetIcon::Smudge,
+        "AirBrush" => PresetIcon::AirBrush,
+        "Water" => PresetIcon::Water,
+        "Marker" => PresetIcon::Marker,
+        "BinaryPen" => PresetIcon::BinaryPen,
         _ => PresetIcon::Eraser,
     }
 }
@@ -149,6 +157,8 @@ pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<Vec<u8>>) -> std:
         bristle_id,
         stabilizer_level: crate::input::StabilizerLevel::default(),
         stabilizer_mode: crate::input::StabilizerMode::SpringMassDamper,
+        spacing: 2.0,
+        density: 1.0,
     })
 }
 

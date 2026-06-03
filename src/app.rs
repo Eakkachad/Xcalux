@@ -18,6 +18,27 @@ pub enum PresetIcon {
     PaintBrush,
     Smudge,
     Eraser,
+    AirBrush,
+    Water,
+    Marker,
+    BinaryPen,
+}
+
+#[allow(dead_code)]
+#[derive(Clone)]
+pub struct ClipboardData {
+    pub width: u32,
+    pub height: u32,
+    pub x_offset: i32,
+    pub y_offset: i32,
+    pub pixels: Vec<[u16; 4]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SelectionDisplayMode {
+    MarchingAnts,
+    BlueOverlay,
+    Hidden,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +58,8 @@ pub struct BrushPreset {
     pub bristle_id: u8,
     pub stabilizer_level: StabilizerLevel,
     pub stabilizer_mode: StabilizerMode,
+    pub spacing: f32,
+    pub density: f32,
 }
 
 pub struct PaintApp {
@@ -63,6 +86,8 @@ pub struct PaintApp {
     brush_min_size_fraction: f32,
     brush_color_blending: f32,
     brush_dilution: f32,
+    brush_spacing: f32,
+    brush_density: f32,
     pressure_curve: f32,
     pressure_min: f32,
 
@@ -185,6 +210,50 @@ pub struct PaintApp {
     pub thumbnail_textures: ahash::AHashMap<u32, egui::TextureHandle>,
     #[allow(dead_code)]
     pub thumbnail_regenerate_counter: u32,
+
+    pub last_viewport_rect: Option<egui::Rect>,
+    pub last_viewport_size: egui::Vec2,
+
+    // Clipboard and Selection display mode
+    pub clipboard: Option<ClipboardData>,
+    pub selection_display_mode: SelectionDisplayMode,
+
+    // Selection operation dialogs
+    pub show_grow_dialog: bool,
+    pub grow_pixels: i32,
+    pub show_shrink_dialog: bool,
+    pub shrink_pixels: i32,
+    pub show_feather_dialog: bool,
+    pub feather_pixels: i32,
+
+    // Interactive transform fields
+    pub transform_active: bool,
+    pub transform_orig_bounds: egui::Rect,
+    pub transform_translation: egui::Vec2,
+    pub transform_scale: egui::Vec2,
+    pub transform_rotation: f32,
+    pub transform_pivot: egui::Pos2,
+    pub transform_dragging: Option<usize>,
+    pub transform_drag_start_ptr: Option<egui::Pos2>,
+    pub transform_drag_start_translation: egui::Vec2,
+    pub transform_drag_start_scale: egui::Vec2,
+    pub transform_drag_start_rotation: f32,
+
+    // Brush test pad
+    pub test_pad_image: egui::ColorImage,
+    pub test_pad_texture: Option<egui::TextureHandle>,
+
+    // Preferences
+    pub show_preferences_dialog: bool,
+    pub pref_theme: String,
+    pub pref_ui_scale: f32,
+    pub pref_canvas_bg: String,
+    pub pref_autosave_enabled: bool,
+    pub pref_autosave_interval_mins: u32,
+
+    // Diagnostics & HUD
+    pub show_tablet_diagnostics: bool,
+    pub show_performance_hud: bool,
 }
 
 // Tool ID enum used in app
@@ -396,6 +465,45 @@ impl PaintApp {
         brushes.push(eraser);
         brush_states.push(BrushState::default());
 
+        // 6. AirBrush Preset
+        let mut airbrush = Brush::new();
+        Self::set_constant(&mut airbrush, BrushSetting::Radius, 3.0);
+        Self::set_constant(&mut airbrush, BrushSetting::Opaque, 0.35);
+        Self::set_constant(&mut airbrush, BrushSetting::Hardness, 0.1);
+        Self::set_constant(&mut airbrush, BrushSetting::DabsPerActualRadius, 1.5);
+        Self::set_pressure_mapping(&mut airbrush, BrushSetting::Opaque, 0.35, vec![(0.0, -0.25), (0.50, -0.10), (1.0, 0.0)]);
+        brushes.push(airbrush);
+        brush_states.push(BrushState::default());
+
+        // 7. Water Preset
+        let mut water = Brush::new();
+        Self::set_constant(&mut water, BrushSetting::Radius, 2.0);
+        Self::set_constant(&mut water, BrushSetting::Opaque, 0.3);
+        Self::set_constant(&mut water, BrushSetting::Hardness, 0.5);
+        Self::set_constant(&mut water, BrushSetting::Smudge, 0.9);
+        Self::set_constant(&mut water, BrushSetting::SmudgeLength, 0.9);
+        Self::set_constant(&mut water, BrushSetting::DabsPerActualRadius, 2.0);
+        brushes.push(water);
+        brush_states.push(BrushState::default());
+
+        // 8. Marker Preset
+        let mut marker = Brush::new();
+        Self::set_constant(&mut marker, BrushSetting::Radius, 2.2);
+        Self::set_constant(&mut marker, BrushSetting::Opaque, 0.7);
+        Self::set_constant(&mut marker, BrushSetting::Hardness, 0.9);
+        Self::set_constant(&mut marker, BrushSetting::DabsPerActualRadius, 3.0);
+        brushes.push(marker);
+        brush_states.push(BrushState::default());
+
+        // 9. Binary Pen Preset
+        let mut binary_pen = Brush::new();
+        Self::set_constant(&mut binary_pen, BrushSetting::Radius, 1.2);
+        Self::set_constant(&mut binary_pen, BrushSetting::Opaque, 1.0);
+        Self::set_constant(&mut binary_pen, BrushSetting::Hardness, 1.0); // Completely hard
+        Self::set_constant(&mut binary_pen, BrushSetting::DabsPerActualRadius, 2.0);
+        brushes.push(binary_pen);
+        brush_states.push(BrushState::default());
+
         // Create initial default Layer
         let mut layers = AHashMap::default();
         let default_layer = Layer::new(1, "Layer 1".to_string());
@@ -459,6 +567,8 @@ impl PaintApp {
                 bristle_id: 0,
                 stabilizer_level: StabilizerLevel::default(),
                 stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 2.0,
+                density: 1.0,
             },
             BrushPreset {
                 id: 2,
@@ -476,6 +586,8 @@ impl PaintApp {
                 bristle_id: 0,
                 stabilizer_level: StabilizerLevel::default(),
                 stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 2.5,
+                density: 1.0,
             },
             BrushPreset {
                 id: 3,
@@ -493,6 +605,8 @@ impl PaintApp {
                 bristle_id: 0,
                 stabilizer_level: StabilizerLevel::default(),
                 stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 3.0,
+                density: 0.8,
             },
             BrushPreset {
                 id: 4,
@@ -510,6 +624,8 @@ impl PaintApp {
                 bristle_id: 0,
                 stabilizer_level: StabilizerLevel::default(),
                 stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 2.0,
+                density: 0.4,
             },
             BrushPreset {
                 id: 5,
@@ -527,6 +643,84 @@ impl PaintApp {
                 bristle_id: 0,
                 stabilizer_level: StabilizerLevel::default(),
                 stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 2.0,
+                density: 1.0,
+            },
+            BrushPreset {
+                id: 6,
+                name: "AirBrush".to_string(),
+                icon: PresetIcon::AirBrush,
+                radius_log: 3.0,
+                opacity: 0.35,
+                hardness: 0.1,
+                min_size_fraction: 0.9,
+                color_blending: 0.0,
+                dilution: 0.0,
+                is_eraser: false,
+                texture_id: 0,
+                texture_scale: 1.0,
+                bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 1.5,
+                density: 0.5,
+            },
+            BrushPreset {
+                id: 7,
+                name: "Water".to_string(),
+                icon: PresetIcon::Water,
+                radius_log: 2.0,
+                opacity: 0.3,
+                hardness: 0.5,
+                min_size_fraction: 0.5,
+                color_blending: 0.9,
+                dilution: 0.9,
+                is_eraser: false,
+                texture_id: 0,
+                texture_scale: 1.0,
+                bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 2.0,
+                density: 0.3,
+            },
+            BrushPreset {
+                id: 8,
+                name: "Marker".to_string(),
+                icon: PresetIcon::Marker,
+                radius_log: 2.2,
+                opacity: 0.7,
+                hardness: 0.9,
+                min_size_fraction: 1.0,
+                color_blending: 0.2,
+                dilution: 0.15,
+                is_eraser: false,
+                texture_id: 0,
+                texture_scale: 1.0,
+                bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 3.0,
+                density: 0.8,
+            },
+            BrushPreset {
+                id: 9,
+                name: "Binary Pen".to_string(),
+                icon: PresetIcon::BinaryPen,
+                radius_log: 1.2,
+                opacity: 1.0,
+                hardness: 1.0,
+                min_size_fraction: 0.3,
+                color_blending: 0.0,
+                dilution: 0.0,
+                is_eraser: false,
+                texture_id: 0,
+                texture_scale: 1.0,
+                bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 2.0,
+                density: 1.0,
             },
         ];
 
@@ -554,6 +748,8 @@ impl PaintApp {
             brush_min_size_fraction: 0.8,
             brush_color_blending: 0.0,
             brush_dilution: 0.0,
+            brush_spacing: 2.0,
+            brush_density: 1.0,
             renaming_preset_index: None,
             rename_input: String::new(),
             pressure_curve: 0.55,
@@ -631,6 +827,43 @@ impl PaintApp {
             layer_thumbnails: ahash::AHashMap::default(),
             thumbnail_textures: ahash::AHashMap::default(),
             thumbnail_regenerate_counter: 0,
+            last_viewport_rect: None,
+            last_viewport_size: egui::vec2(800.0, 600.0),
+
+            clipboard: None,
+            selection_display_mode: SelectionDisplayMode::MarchingAnts,
+
+            show_grow_dialog: false,
+            grow_pixels: 5,
+            show_shrink_dialog: false,
+            shrink_pixels: 5,
+            show_feather_dialog: false,
+            feather_pixels: 5,
+
+            transform_active: false,
+            transform_orig_bounds: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::ZERO),
+            transform_translation: egui::Vec2::ZERO,
+            transform_scale: egui::Vec2::new(1.0, 1.0),
+            transform_rotation: 0.0,
+            transform_pivot: egui::Pos2::ZERO,
+            transform_dragging: None,
+            transform_drag_start_ptr: None,
+            transform_drag_start_translation: egui::Vec2::ZERO,
+            transform_drag_start_scale: egui::Vec2::new(1.0, 1.0),
+            transform_drag_start_rotation: 0.0,
+
+            test_pad_image: egui::ColorImage::new([120, 60], egui::Color32::WHITE),
+            test_pad_texture: None,
+
+            show_preferences_dialog: false,
+            pref_theme: "Gray".to_string(),
+            pref_ui_scale: 1.0,
+            pref_canvas_bg: "Medium Gray".to_string(),
+            pref_autosave_enabled: true,
+            pref_autosave_interval_mins: 3,
+
+            show_tablet_diagnostics: false,
+            show_performance_hud: false,
         };
 
         // Check for autosave recovery files on startup
@@ -721,6 +954,8 @@ impl PaintApp {
         preset.bristle_id = self.brush_bristle_id;
         preset.stabilizer_level = self.stabilizer.level;
         preset.stabilizer_mode = self.stabilizer.mode;
+        preset.spacing = self.brush_spacing;
+        preset.density = self.brush_density;
 
         let active_brush = &mut self.brushes[self.active_preset_index];
 
@@ -764,13 +999,21 @@ impl PaintApp {
         ];
         Self::set_pressure_mapping(active_brush, BrushSetting::Opaque, preset.opacity, opacity_points);
 
-        // 5. OpaqueMultiply: pure linear pressure scale so very soft strokes don't block colour.
+        // 5. OpaqueMultiply: scale pressure points by preset.density.
         Self::set_pressure_mapping(
             active_brush,
             BrushSetting::OpaqueMultiply,
             0.0,
-            vec![(0.0, 0.0), (0.3, 0.55), (0.6, 0.85), (1.0, 1.0)],
+            vec![
+                (0.0, 0.0),
+                (0.3, 0.55 * preset.density),
+                (0.6, 0.85 * preset.density),
+                (1.0, 1.0 * preset.density),
+            ],
         );
+
+        // Spacing: Set constant for Hokusai's brush engine spacing (DabsPerActualRadius)
+        Self::set_constant(active_brush, BrushSetting::DabsPerActualRadius, preset.spacing);
 
         // 6. Set Eraser Mode
         if preset.is_eraser {
@@ -818,6 +1061,8 @@ impl PaintApp {
         self.brush_texture_id = preset.texture_id;
         self.brush_texture_scale = preset.texture_scale;
         self.brush_bristle_id = preset.bristle_id;
+        self.brush_spacing = preset.spacing;
+        self.brush_density = preset.density;
 
         // Restore per-preset stabilizer settings
         self.stabilizer.set_level(preset.stabilizer_level);
@@ -832,12 +1077,16 @@ impl PaintApp {
         self.preset_id_counter += 1;
         let id = self.preset_id_counter;
 
-        let (name, radius, opacity, hardness, min_size, blending, dilution, is_eraser) = match icon_type {
-            PresetIcon::Pencil => ("Pencil".to_string(), 1.0, 0.95, 0.95, 0.8, 0.0, 0.0, false),
-            PresetIcon::InkPen => ("Ink Pen".to_string(), 1.6, 1.0, 0.88, 0.2, 0.0, 0.0, false),
-            PresetIcon::PaintBrush => ("Paint Brush".to_string(), 2.2, 0.8, 0.5, 0.3, 0.5, 0.4, false),
-            PresetIcon::Smudge => ("Smudge".to_string(), 2.0, 0.4, 0.4, 0.4, 0.85, 0.8, false),
-            PresetIcon::Eraser => ("Eraser".to_string(), 2.5, 1.0, 0.8, 0.5, 0.0, 0.0, true),
+        let (name, radius, opacity, hardness, min_size, blending, dilution, is_eraser, spacing, density) = match icon_type {
+            PresetIcon::Pencil => ("Pencil".to_string(), 1.0, 0.95, 0.95, 0.8, 0.0, 0.0, false, 2.0, 1.0),
+            PresetIcon::InkPen => ("Ink Pen".to_string(), 1.6, 1.0, 0.88, 0.2, 0.0, 0.0, false, 2.5, 1.0),
+            PresetIcon::PaintBrush => ("Paint Brush".to_string(), 2.2, 0.8, 0.5, 0.3, 0.5, 0.4, false, 3.0, 0.8),
+            PresetIcon::Smudge => ("Smudge".to_string(), 2.0, 0.4, 0.4, 0.4, 0.85, 0.8, false, 2.0, 0.4),
+            PresetIcon::Eraser => ("Eraser".to_string(), 2.5, 1.0, 0.8, 0.5, 0.0, 0.0, true, 2.0, 1.0),
+            PresetIcon::AirBrush => ("AirBrush".to_string(), 3.0, 0.35, 0.1, 0.9, 0.0, 0.0, false, 1.5, 0.5),
+            PresetIcon::Water => ("Water".to_string(), 2.0, 0.3, 0.5, 0.5, 0.9, 0.9, false, 2.0, 0.3),
+            PresetIcon::Marker => ("Marker".to_string(), 2.2, 0.7, 0.9, 1.0, 0.2, 0.15, false, 3.0, 0.8),
+            PresetIcon::BinaryPen => ("Binary Pen".to_string(), 1.2, 1.0, 1.0, 0.3, 0.0, 0.0, false, 2.0, 1.0),
         };
 
         let preset = BrushPreset {
@@ -856,6 +1105,8 @@ impl PaintApp {
             bristle_id: 0,
             stabilizer_level: StabilizerLevel::default(),
             stabilizer_mode: StabilizerMode::SpringMassDamper,
+            spacing,
+            density,
         };
 
         // Create matching Brush setting up the correct pressure curves natively
@@ -866,28 +1117,43 @@ impl PaintApp {
 
         match icon_type {
             PresetIcon::Pencil => {
-                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, 2.0);
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::Opaque, opacity, vec![(0.0, -0.90), (0.15, -0.60), (0.35, -0.30), (0.55, -0.10), (0.80, -0.03), (1.0, 0.0)]);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::OpaqueMultiply, 0.0, vec![(0.0, 0.0), (1.0, 1.0)]);
             }
             PresetIcon::InkPen => {
-                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, 2.5);
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::Opaque, opacity, vec![(0.0, -0.15), (0.20, -0.05), (0.50, 0.0), (1.0, 0.0)]);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::OpaqueMultiply, 0.0, vec![(0.0, 0.0), (1.0, 1.0)]);
             }
             PresetIcon::PaintBrush => {
-                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, 3.0);
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::Opaque, opacity, vec![(0.0, -0.70), (0.15, -0.45), (0.35, -0.25), (0.55, -0.12), (0.80, -0.03), (1.0, 0.0)]);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::OpaqueMultiply, 0.0, vec![(0.0, 0.0), (1.0, 1.0)]);
             }
             PresetIcon::Smudge => {
-                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, 2.0);
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::Opaque, opacity, vec![(0.0, -0.30), (0.40, -0.12), (0.70, -0.04), (1.0, 0.0)]);
             }
             PresetIcon::Eraser => {
                 Self::set_constant(&mut brush, BrushSetting::Eraser, 1.0);
-                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, 2.0);
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
                 Self::set_pressure_mapping(&mut brush, BrushSetting::Opaque, opacity, vec![(0.0, -0.60), (0.20, -0.35), (0.45, -0.15), (0.75, -0.04), (1.0, 0.0)]);
+            }
+            PresetIcon::AirBrush => {
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
+                Self::set_pressure_mapping(&mut brush, BrushSetting::Opaque, opacity, vec![(0.0, -0.25), (0.50, -0.10), (1.0, 0.0)]);
+            }
+            PresetIcon::Water => {
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
+                Self::set_constant(&mut brush, BrushSetting::Smudge, blending);
+                Self::set_constant(&mut brush, BrushSetting::SmudgeLength, dilution);
+            }
+            PresetIcon::Marker => {
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
+            }
+            PresetIcon::BinaryPen => {
+                Self::set_constant(&mut brush, BrushSetting::DabsPerActualRadius, spacing);
             }
         }
 
@@ -1392,7 +1658,27 @@ impl PaintApp {
             CommandId::ToolLasso => self.active_tool = ToolId::Lasso,
             CommandId::ToolMagicWand => self.active_tool = ToolId::MagicWand,
             CommandId::ToolMove => self.active_tool = ToolId::Move,
-            CommandId::ToolTransform => self.active_tool = ToolId::Transform,
+            CommandId::Cut => self.cut_selection(),
+            CommandId::Copy => self.copy_selection(false),
+            CommandId::CopyMerged => self.copy_selection(true),
+            CommandId::Paste => self.paste_selection(false),
+            CommandId::PasteAsNewLayer => self.paste_selection(true),
+
+            CommandId::SelectionGrow => self.show_grow_dialog = true,
+            CommandId::SelectionShrink => self.show_shrink_dialog = true,
+            CommandId::SelectionFeather => self.show_feather_dialog = true,
+            CommandId::ToggleSelectionOverlay => {
+                self.selection_display_mode = match self.selection_display_mode {
+                    SelectionDisplayMode::MarchingAnts => SelectionDisplayMode::BlueOverlay,
+                    SelectionDisplayMode::BlueOverlay => SelectionDisplayMode::Hidden,
+                    SelectionDisplayMode::Hidden => SelectionDisplayMode::MarchingAnts,
+                };
+            }
+
+            CommandId::ToolTransform | CommandId::TransformSelection => {
+                self.active_tool = ToolId::Transform;
+                self.start_transform();
+            }
             CommandId::ToolColorPicker => self.active_tool = ToolId::ColorPicker,
             CommandId::ToolHand => self.active_tool = ToolId::Hand,
             CommandId::ToolZoom => self.active_tool = ToolId::Zoom,
@@ -1404,10 +1690,10 @@ impl PaintApp {
             CommandId::ShowSymmetry => self.show_symmetry = !self.show_symmetry,
 
             // Misc
-            CommandId::Preferences => {}
-            CommandId::KeyboardShortcuts => {}
-            CommandId::TabletDiagnostics => {}
-            CommandId::PerformanceHud => {}
+            CommandId::Preferences => self.show_preferences_dialog = true,
+            CommandId::KeyboardShortcuts => self.show_shortcut_editor = true,
+            CommandId::TabletDiagnostics => self.show_tablet_diagnostics = true,
+            CommandId::PerformanceHud => self.show_performance_hud = true,
 
             _ => {}
         }
@@ -1777,6 +2063,369 @@ impl PaintApp {
             self.document_modified = true;
         }
     }
+
+    fn get_pixel(&self, layer: &Layer, x: i32, y: i32) -> [u16; 4] {
+        let tx = x.div_euclid(64);
+        let ty = y.div_euclid(64);
+        let lx = x.rem_euclid(64) as usize;
+        let ly = y.rem_euclid(64) as usize;
+        if let Some(tile) = layer.tiles.get(&(tx, ty)) {
+            tile.pixels[ly][lx]
+        } else {
+            [0, 0, 0, 0]
+        }
+    }
+
+    fn get_merged_pixel(&self, x: i32, y: i32) -> [u16; 4] {
+        let mut composite = [0u16; 4];
+        for &id in self.layer_order.iter().rev() {
+            if let Some(l) = self.layers.get(&id) {
+                if l.visible {
+                    let pix = self.get_pixel(l, x, y);
+                    let mut scaled_pix = pix;
+                    scaled_pix[3] = (scaled_pix[3] as f32 * l.opacity) as u16;
+                    composite = fill::blend_colors(scaled_pix, composite);
+                }
+            }
+        }
+        composite
+    }
+
+    fn copy_selection(&mut self, merged: bool) {
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+
+        if self.selection_mask.is_active && !self.selection_mask.is_empty() {
+            for (&(tx, ty), tile) in &self.selection_mask.tiles {
+                for ly in 0..64 {
+                    for lx in 0..64 {
+                        if tile[ly * 64 + lx] > 0 {
+                            let wx = tx * 64 + lx as i32;
+                            let wy = ty * 64 + ly as i32;
+                            min_x = min_x.min(wx);
+                            min_y = min_y.min(wy);
+                            max_x = max_x.max(wx);
+                            max_y = max_y.max(wy);
+                        }
+                    }
+                }
+            }
+        } else {
+            if let Some(layer) = self.layers.get(&self.active_layer_id) {
+                for &(tx, ty) in layer.tiles.keys() {
+                    min_x = min_x.min(tx * 64);
+                    min_y = min_y.min(ty * 64);
+                    max_x = max_x.max((tx + 1) * 64 - 1);
+                    max_y = max_y.max((ty + 1) * 64 - 1);
+                }
+            }
+        }
+
+        if min_x == i32::MAX || min_y == i32::MAX || max_x == i32::MIN || max_y == i32::MIN {
+            return;
+        }
+
+        min_x = min_x.clamp(0, self.canvas_width as i32 - 1);
+        min_y = min_y.clamp(0, self.canvas_height as i32 - 1);
+        max_x = max_x.clamp(0, self.canvas_width as i32 - 1);
+        max_y = max_y.clamp(0, self.canvas_height as i32 - 1);
+
+        if min_x > max_x || min_y > max_y {
+            return;
+        }
+
+        let width = (max_x - min_x + 1) as u32;
+        let height = (max_y - min_y + 1) as u32;
+        let mut pixels = vec![[0u16; 4]; (width * height) as usize];
+
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let composite = if merged {
+                    self.get_merged_pixel(x, y)
+                } else if let Some(layer) = self.layers.get(&self.active_layer_id) {
+                    self.get_pixel(layer, x, y)
+                } else {
+                    [0, 0, 0, 0]
+                };
+
+                let mut pix = composite;
+                if self.selection_mask.is_active {
+                    let sel_val = self.selection_mask.get_value(x, y);
+                    let factor = sel_val as f32 / 255.0;
+                    pix[3] = (pix[3] as f32 * factor) as u16;
+                }
+
+                let idx = ((y - min_y) as u32 * width + (x - min_x) as u32) as usize;
+                pixels[idx] = pix;
+            }
+        }
+
+        self.clipboard = Some(ClipboardData {
+            width,
+            height,
+            x_offset: min_x,
+            y_offset: min_y,
+            pixels,
+        });
+    }
+
+    fn cut_selection(&mut self) {
+        self.copy_selection(false);
+        self.command(CommandId::Clear);
+    }
+
+    fn paste_selection(&mut self, new_layer: bool) {
+        let clipboard = match &self.clipboard {
+            Some(c) => c.clone(),
+            None => return,
+        };
+
+        if new_layer {
+            self.create_raster_layer();
+            if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                layer.name = format!("Pasted Layer {}", layer.id);
+            }
+        }
+
+        let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
+
+        let mut snapshots = Vec::new();
+        let mut affected_tiles = ahash::AHashSet::default();
+        for y in 0..clipboard.height as i32 {
+            for x in 0..clipboard.width as i32 {
+                let wx = x + clipboard.x_offset;
+                let wy = y + clipboard.y_offset;
+                let tx = wx.div_euclid(64);
+                let ty = wy.div_euclid(64);
+                affected_tiles.insert((tx, ty));
+            }
+        }
+
+        for &(tx, ty) in &affected_tiles {
+            if let Some(tile) = layer.tiles.get(&(tx, ty)) {
+                let mut pixels = self.history.alloc_tile();
+                *pixels = *tile.pixels;
+                snapshots.push(crate::history::TileSnapshot {
+                    layer_id: layer.id,
+                    coords: (tx, ty),
+                    pixels: Some(pixels),
+                });
+            } else {
+                snapshots.push(crate::history::TileSnapshot {
+                    layer_id: layer.id,
+                    coords: (tx, ty),
+                    pixels: None,
+                });
+            }
+        }
+
+        for y in 0..clipboard.height as i32 {
+            for x in 0..clipboard.width as i32 {
+                let wx = x + clipboard.x_offset;
+                let wy = y + clipboard.y_offset;
+                if wx < 0 || wx >= self.canvas_width as i32 || wy < 0 || wy >= self.canvas_height as i32 {
+                    continue;
+                }
+                let idx = (y as u32 * clipboard.width + x as u32) as usize;
+                let src_pixel = clipboard.pixels[idx];
+                if src_pixel[3] == 0 { continue; }
+
+                let tx = wx.div_euclid(64);
+                let ty = wy.div_euclid(64);
+                let lx = wx.rem_euclid(64) as usize;
+                let ly = wy.rem_euclid(64) as usize;
+
+                let tile = layer.tiles.entry((tx, ty)).or_insert_with(crate::canvas::Tile::new);
+                tile.pixels[ly][lx] = fill::blend_colors(src_pixel, tile.pixels[ly][lx]);
+                tile.is_dirty = true;
+            }
+        }
+
+        layer.thumbnail_dirty = true;
+        if !snapshots.is_empty() {
+            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.document_modified = true;
+        }
+
+        if let Some(r) = &mut self.renderer {
+            r.clear_cache();
+        }
+    }
+
+    fn start_transform(&mut self) {
+        if self.transform_active { return; }
+        
+        let mut min_tx = i32::MAX;
+        let mut min_ty = i32::MAX;
+        let mut max_tx = i32::MIN;
+        let mut max_ty = i32::MIN;
+        
+        if let Some(layer) = self.layers.get(&self.active_layer_id) {
+            for (&(tx, ty), _) in &layer.tiles {
+                min_tx = min_tx.min(tx);
+                min_ty = min_ty.min(ty);
+                max_tx = max_tx.max(tx);
+                max_ty = max_ty.max(ty);
+            }
+        }
+        
+        let orig_bounds = if min_tx != i32::MAX {
+            egui::Rect::from_min_max(
+                egui::Pos2::new(min_tx as f32 * 64.0, min_ty as f32 * 64.0),
+                egui::Pos2::new((max_tx + 1) as f32 * 64.0, (max_ty + 1) as f32 * 64.0),
+            )
+        } else {
+            egui::Rect::from_min_max(
+                egui::Pos2::new(0.0, 0.0),
+                egui::Pos2::new(self.canvas_width as f32, self.canvas_height as f32),
+            )
+        };
+        
+        self.transform_active = true;
+        self.transform_orig_bounds = orig_bounds;
+        self.transform_translation = egui::Vec2::ZERO;
+        self.transform_scale = egui::Vec2::new(1.0, 1.0);
+        self.transform_rotation = 0.0;
+        self.transform_pivot = orig_bounds.center();
+        self.transform_dragging = None;
+        if let Some(layer) = self.layers.get(&self.active_layer_id) {
+            self.transform_state.snap_layer(layer);
+        }
+    }
+
+    fn commit_transform(&mut self) {
+        if !self.transform_active { return; }
+        self.transform_active = false;
+        
+        let a = self.transform_scale.x * self.transform_rotation.cos();
+        let b = self.transform_scale.x * self.transform_rotation.sin();
+        let c = -self.transform_scale.y * self.transform_rotation.sin();
+        let d = self.transform_scale.y * self.transform_rotation.cos();
+        let px = self.transform_pivot.x;
+        let py = self.transform_pivot.y;
+        let tx = self.transform_translation.x;
+        let ty = self.transform_translation.y;
+        let e = px + tx - px * a - py * c;
+        let f = py + ty - px * b - py * d;
+        
+        self.transform_state.matrix = [a, b, c, d, e, f];
+        
+        let mut snapshots = Vec::new();
+        if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+            for (&coords, tile) in &layer.tiles {
+                let mut pixels = self.history.alloc_tile();
+                *pixels = *tile.pixels;
+                snapshots.push(crate::history::TileSnapshot {
+                    layer_id: layer.id,
+                    coords,
+                    pixels: Some(pixels),
+                });
+            }
+            
+            let _dirty_tiles = self.transform_state.apply_transform(layer);
+            layer.thumbnail_dirty = true;
+            
+            if !snapshots.is_empty() {
+                self.history.push_command(crate::history::UndoCommand { snapshots });
+                self.document_modified = true;
+            }
+        }
+        
+        self.transform_state.source_snapshot = None;
+        if let Some(r) = &mut self.renderer {
+            r.clear_cache();
+        }
+    }
+
+    fn cancel_transform(&mut self) {
+        if !self.transform_active { return; }
+        self.transform_active = false;
+        
+        if let Some(snapshot) = self.transform_state.source_snapshot.take() {
+            if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                layer.tiles = snapshot.tiles;
+                layer.thumbnail_dirty = true;
+            }
+        }
+        
+        if let Some(r) = &mut self.renderer {
+            r.clear_cache();
+        }
+    }
+
+    fn transform_point(&self, p: egui::Pos2) -> egui::Pos2 {
+        let px = self.transform_pivot.x;
+        let py = self.transform_pivot.y;
+        let rx = p.x - px;
+        let ry = p.y - py;
+        
+        let sx = rx * self.transform_scale.x;
+        let sy = ry * self.transform_scale.y;
+        
+        let cos = self.transform_rotation.cos();
+        let sin = self.transform_rotation.sin();
+        let rot_x = sx * cos - sy * sin;
+        let rot_y = sx * sin + sy * cos;
+        
+        egui::Pos2::new(rot_x + px + self.transform_translation.x, rot_y + py + self.transform_translation.y)
+    }
+
+    fn world_to_screen(&self, p: egui::Pos2, view_rect: egui::Rect) -> egui::Pos2 {
+        let center = view_rect.center();
+        let half_w = view_rect.width() * 0.5;
+        let half_h = view_rect.height() * 0.5;
+
+        let mut px = ((p.x - self.viewport_offset.x) * self.viewport_zoom) / half_w - 1.0;
+        let py = 1.0 - ((p.y - self.viewport_offset.y) * self.viewport_zoom) / half_h;
+
+        if self.mirror_horizontal {
+            px = -px;
+        }
+
+        let cos_rot = (-self.rotation_angle).cos();
+        let sin_rot = (-self.rotation_angle).sin();
+
+        let nx = px * cos_rot + py * sin_rot;
+        let ny = -px * sin_rot + py * cos_rot;
+
+        let dx = nx * half_w;
+        let dy = -ny * half_h;
+
+        egui::Pos2::new(center.x + dx, center.y + dy)
+    }
+
+    fn draw_dashed_line(painter: &egui::Painter, p0: egui::Pos2, p1: egui::Pos2, time: f64) {
+        let dx = p1.x - p0.x;
+        let dy = p1.y - p0.y;
+        let len = (dx*dx + dy*dy).sqrt();
+        if len < 0.1 { return; }
+        
+        let dash_len = 4.0;
+        let gap_len = 4.0;
+        let pattern_len = dash_len + gap_len;
+        let speed = 15.0;
+        let offset = (time * speed).rem_euclid(pattern_len as f64) as f32;
+        
+        let mut t = 0.0;
+        while t < len {
+            let dash_start = (t - offset).max(0.0);
+            let dash_end = (t - offset + dash_len).min(len);
+            if dash_end > dash_start {
+                let start_pt = egui::Pos2::new(
+                    p0.x + (dx * dash_start / len),
+                    p0.y + (dy * dash_start / len),
+                );
+                let end_pt = egui::Pos2::new(
+                    p0.x + (dx * dash_end / len),
+                    p0.y + (dy * dash_end / len),
+                );
+                painter.line_segment([start_pt, end_pt], egui::Stroke::new(1.0, egui::Color32::WHITE));
+            }
+            t += pattern_len;
+        }
+    }
 }
 
 impl eframe::App for PaintApp {
@@ -2028,28 +2677,9 @@ impl eframe::App for PaintApp {
                         if ui.button("Export PNG...").clicked() {
                             self.show_export_png_dialog = true;
                             ui.close_menu();
-                    }
-                 });
-
-                ui.menu_button("View", |ui| {
-                    if ui.button("Show Grid").clicked() {
-                        self.show_grid = !self.show_grid;
-                        ui.close_menu();
-                    }
-                    if ui.button("Minimal UI (Tab)").clicked() {
-                        self.show_minimal_ui = !self.show_minimal_ui;
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("Help", |ui| {
-                    if ui.button("Keyboard Shortcuts").clicked() {
-                        self.show_shortcut_editor = true;
-                        ui.close_menu();
-                    }
-                });
-
-                ui.separator();
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Exit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
@@ -2230,6 +2860,39 @@ impl eframe::App for PaintApp {
                         });
                 });
 
+                ui.menu_button("Selection", |ui| {
+                    if ui.button("Select All (Ctrl+A)").clicked() {
+                        self.command(CommandId::SelectAll);
+                        ui.close_menu();
+                    }
+                    if ui.button("Deselect (Ctrl+D)").clicked() {
+                        self.command(CommandId::Deselect);
+                        ui.close_menu();
+                    }
+                    if ui.button("Invert Selection (Ctrl+I)").clicked() {
+                        self.command(CommandId::InvertSelection);
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("View", |ui| {
+                    if ui.button("Show Grid").clicked() {
+                        self.show_grid = !self.show_grid;
+                        ui.close_menu();
+                    }
+                    if ui.button("Minimal UI (Tab)").clicked() {
+                        self.show_minimal_ui = !self.show_minimal_ui;
+                        ui.close_menu();
+                    }
+                });
+
+                ui.menu_button("Help", |ui| {
+                    if ui.button("Keyboard Shortcuts").clicked() {
+                        self.show_shortcut_editor = true;
+                        ui.close_menu();
+                    }
+                });
+
                 ui.separator();
                 ui.label("Stabilizer:");
                 let current_level = self.stabilizer.level;
@@ -2306,45 +2969,65 @@ impl eframe::App for PaintApp {
         if self.quick_bar_visible && !self.show_minimal_ui {
             egui::TopBottomPanel::top("quick_bar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    // Group 1: File & History
                     if ui.button("Undo").clicked() { self.command(CommandId::Undo); }
                     if ui.button("Redo").clicked() { self.command(CommandId::Redo); }
-                    ui.separator();
                     if ui.button("Save").clicked() { self.command(CommandId::Save); }
                     ui.separator();
+
+                    // Group 2: Selection
                     if ui.button("Select All").clicked() { self.command(CommandId::SelectAll); }
                     if ui.button("Deselect").clicked() { self.command(CommandId::Deselect); }
                     if ui.button("Invert").clicked() { self.command(CommandId::InvertSelection); }
                     ui.separator();
+
+                    // Group 3: Edit Operations
                     if ui.button("Cut").clicked() { self.command(CommandId::Clear); }
+                    if ui.button("Copy").clicked() { self.command(CommandId::Copy); }
+                    if ui.button("Paste").clicked() { self.command(CommandId::Paste); }
                     if ui.button("Fill").clicked() { self.command(CommandId::Fill); }
                     ui.separator();
+
+                    // Group 4: View Reset
                     if ui.button("Fit").clicked() { self.command(CommandId::FitToScreen); }
                     if ui.button("100%").clicked() { self.command(CommandId::ActualSize); }
                     if ui.button("Reset").clicked() { self.command(CommandId::ResetView); }
                     ui.separator();
+
+                    // Group 5: Zoom Controls
                     ui.label("Zoom:");
                     if ui.button("-").clicked() {
                         self.viewport_zoom = (self.viewport_zoom - 0.25).max(0.1);
                     }
-                    ui.label(format!("{:.0}%", self.viewport_zoom * 100.0));
+                    let zoom_text = format!("{:.0}%", self.viewport_zoom * 100.0);
+                    if ui.button(zoom_text).on_hover_text("Click to reset to 100%").clicked() {
+                        self.viewport_zoom = 1.0;
+                    }
                     if ui.button("+").clicked() {
                         self.viewport_zoom = (self.viewport_zoom + 0.25).min(10.0);
                     }
                     ui.separator();
+
+                    // Group 6: Rotation Controls
                     if ui.button("-15°").clicked() {
                         self.rotation_angle = (self.rotation_angle - 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
                     }
-                    ui.label(format!("{:.0}°", self.rotation_angle.to_degrees()));
+                    let rot_text = format!("{:.0}°", self.rotation_angle.to_degrees());
+                    if ui.button(rot_text).on_hover_text("Click to reset rotation to 0°").clicked() {
+                        self.rotation_angle = 0.0;
+                    }
                     if ui.button("+15°").clicked() {
                         self.rotation_angle = (self.rotation_angle + 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
                     }
                     ui.separator();
+
+                    // Group 7: Mirror & Stabilizer
                     let mirror_label = if self.mirror_horizontal { "Mirror: On" } else { "Mirror: Off" };
                     if ui.button(mirror_label).clicked() {
                         self.mirror_horizontal = !self.mirror_horizontal;
                     }
                     ui.separator();
-                    ui.label("Stabilizer:");
+                    ui.label("Stab:");
                     let current_level = self.stabilizer.level;
                     let text = match current_level {
                         StabilizerLevel::Off => "Off".to_string(),
@@ -2568,14 +3251,299 @@ impl eframe::App for PaintApp {
                 });
         }
 
+        // ==================== SELECTION DIALOGS ====================
+        if self.show_grow_dialog {
+            let mut close = false;
+            egui::Window::new("Grow Selection")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Grow selection by:");
+                        ui.add(egui::DragValue::new(&mut self.grow_pixels).clamp_range(1..=100));
+                        ui.label("pixels");
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Grow").clicked() {
+                            let grow_px = self.grow_pixels;
+                            selection::grow_selection(&mut self.selection_mask, grow_px, self.canvas_width as i32, self.canvas_height as i32);
+                            self.show_selection_overlay = self.selection_mask.is_active;
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.show_grow_dialog = false;
+            }
+        }
+
+        if self.show_shrink_dialog {
+            let mut close = false;
+            egui::Window::new("Shrink Selection")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Shrink selection by:");
+                        ui.add(egui::DragValue::new(&mut self.shrink_pixels).clamp_range(1..=100));
+                        ui.label("pixels");
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Shrink").clicked() {
+                            let shrink_px = self.shrink_pixels;
+                            selection::shrink_selection(&mut self.selection_mask, shrink_px, self.canvas_width as i32, self.canvas_height as i32);
+                            self.show_selection_overlay = self.selection_mask.is_active;
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.show_shrink_dialog = false;
+            }
+        }
+
+        if self.show_feather_dialog {
+            let mut close = false;
+            egui::Window::new("Feather Selection")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Feather radius:");
+                        ui.add(egui::DragValue::new(&mut self.feather_pixels).clamp_range(1..=100));
+                        ui.label("pixels");
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Feather").clicked() {
+                            let feather_px = self.feather_pixels;
+                            selection::feather_selection(&mut self.selection_mask, feather_px, self.canvas_width as i32, self.canvas_height as i32);
+                            self.show_selection_overlay = self.selection_mask.is_active;
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.show_feather_dialog = false;
+            }
+        }
+
+        // ==================== PREFERENCES DIALOG ====================
+        if self.show_preferences_dialog {
+            let mut close = false;
+            egui::Window::new("Preferences")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([300.0, 250.0])
+                .show(ctx, |ui| {
+                    egui::Grid::new("pref_grid").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                        ui.label("Theme:");
+                        let old_theme = self.pref_theme.clone();
+                        egui::ComboBox::from_id_source("pref_theme")
+                            .selected_text(&self.pref_theme)
+                            .show_ui(ui, |ui| {
+                                for theme in &["Light", "Gray", "Dark"] {
+                                    ui.selectable_value(&mut self.pref_theme, theme.to_string(), *theme);
+                                }
+                            });
+                        if self.pref_theme != old_theme {
+                            if self.pref_theme == "Light" {
+                                ctx.set_visuals(egui::Visuals::light());
+                            } else if self.pref_theme == "Dark" {
+                                ctx.set_visuals(egui::Visuals::dark());
+                            } else {
+                                let mut visuals = egui::Visuals::light();
+                                visuals.panel_fill = egui::Color32::from_rgb(240, 240, 240);
+                                visuals.window_fill = egui::Color32::from_rgb(245, 245, 245);
+                                visuals.widgets.active.bg_fill = egui::Color32::from_rgb(180, 200, 240);
+                                visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(215, 225, 250);
+                                visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(230, 230, 230);
+                                ctx.set_visuals(visuals);
+                            }
+                        }
+                        ui.end_row();
+
+                        ui.label("UI Scale:");
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Slider::new(&mut self.pref_ui_scale, 0.5..=2.0).step_by(0.1));
+                            if ui.button("Apply").clicked() {
+                                ctx.set_pixels_per_point(self.pref_ui_scale);
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Canvas Background:");
+                        egui::ComboBox::from_id_source("pref_canvas_bg")
+                            .selected_text(&self.pref_canvas_bg)
+                            .show_ui(ui, |ui| {
+                                for bg in &["Checkerboard", "White", "Gray", "Black"] {
+                                    ui.selectable_value(&mut self.pref_canvas_bg, bg.to_string(), *bg);
+                                }
+                            });
+                        ui.end_row();
+
+                        ui.label("Autosave:");
+                        ui.checkbox(&mut self.pref_autosave_enabled, "Enabled");
+                        ui.end_row();
+
+                        ui.label("Autosave Interval:");
+                        let old_interval = self.pref_autosave_interval_mins;
+                        ui.horizontal(|ui| {
+                            ui.add(egui::DragValue::new(&mut self.pref_autosave_interval_mins).clamp_range(1..=60));
+                            ui.label("minutes");
+                        });
+                        if self.pref_autosave_interval_mins != old_interval || self.pref_autosave_enabled != self.autosave_enabled {
+                            self.autosave_enabled = self.pref_autosave_enabled;
+                            self.autosave_interval_secs = (self.pref_autosave_interval_mins * 60) as f64;
+                        }
+                        ui.end_row();
+                    });
+                    
+                    ui.add_space(12.0);
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            if close {
+                self.show_preferences_dialog = false;
+            }
+        }
+
+        // ==================== TABLET DIAGNOSTICS DIALOG ====================
+        if self.show_tablet_diagnostics {
+            let mut close = false;
+            egui::Window::new("Tablet Diagnostics")
+                .collapsible(false)
+                .resizable(true)
+                .default_size([400.0, 450.0])
+                .show(ctx, |ui| {
+                    ui.label("RAW INPUT STATES:");
+                    ui.group(|ui| {
+                        let pressure = self.tablet_axis.pressure;
+                        let tx = self.tablet_axis.tilt_x.unwrap_or(0.0);
+                        let ty = self.tablet_axis.tilt_y.unwrap_or(0.0);
+                        ui.label(format!("Pressure: {:.3}", pressure));
+                        ui.label(format!("Tilt X: {:.3}", tx));
+                        ui.label(format!("Tilt Y: {:.3}", ty));
+                        ui.label(format!("Touch Active: {}", self.egui_touch_active));
+                        if let Some(force) = self.egui_touch_pressure {
+                            ui.label(format!("Touch Force: {:.3}", force));
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    ui.label("STABILIZATION SETTINGS:");
+                    ui.horizontal(|ui| {
+                        ui.label("Stabilizer Level:");
+                        let preset = &mut self.presets[self.active_preset_index];
+                        egui::ComboBox::from_id_source("stabilizer_level_combo")
+                            .selected_text(format!("{:?}", preset.stabilizer_level))
+                            .show_ui(ui, |ui| {
+                                for level in &[
+                                    crate::input::StabilizerLevel::Off,
+                                    crate::input::StabilizerLevel::Level(3),
+                                    crate::input::StabilizerLevel::Level(5),
+                                    crate::input::StabilizerLevel::Level(10),
+                                    crate::input::StabilizerLevel::Level(15),
+                                    crate::input::StabilizerLevel::Level(20),
+                                    crate::input::StabilizerLevel::Level(30),
+                                ] {
+                                    ui.selectable_value(&mut preset.stabilizer_level, *level, format!("{:?}", level));
+                                }
+                            });
+                    });
+                    
+                    ui.add_space(8.0);
+                    ui.label("PRESSURE CURVE DIAGRAM:");
+                    let size = egui::Vec2::splat(120.0);
+                    let (rect_curve, _response_curve) = ui.allocate_exact_size(size, egui::Sense::hover());
+                    ui.painter().rect_filled(rect_curve, 4.0, egui::Color32::from_gray(240));
+                    ui.painter().rect_stroke(rect_curve, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                    ui.painter().line_segment([rect_curve.left_bottom(), rect_curve.right_top()], egui::Stroke::new(1.0, egui::Color32::GRAY));
+                    
+                    let mut pts = Vec::new();
+                    let curve_steps = 20;
+                    for i in 0..=curve_steps {
+                        let x_val = i as f32 / curve_steps as f32;
+                        let y_val = self.remap_pressure(x_val);
+                        let sx = rect_curve.left() + x_val * rect_curve.width();
+                        let sy = rect_curve.bottom() - y_val * rect_curve.height();
+                        pts.push(egui::Pos2::new(sx, sy));
+                    }
+                    for i in 0..pts.len() - 1 {
+                        ui.painter().line_segment([pts[i], pts[i + 1]], egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215)));
+                    }
+                    for pt in &pts {
+                        ui.painter().circle_filled(*pt, 3.0, egui::Color32::from_rgb(0, 120, 215));
+                    }
+
+                    ui.add_space(8.0);
+                    ui.label("Stabilizer Test Pad (Draw here):");
+                    let pad_size = egui::Vec2::new(380.0, 100.0);
+                    let (pad_rect, pad_resp) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
+                    ui.painter().rect_filled(pad_rect, 4.0, egui::Color32::from_gray(255));
+                    ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                    
+                    thread_local! {
+                        static DIAG_POINTS: std::cell::RefCell<Vec<egui::Pos2>> = std::cell::RefCell::new(Vec::new());
+                    }
+                    
+                    if pad_resp.dragged_by(egui::PointerButton::Primary) {
+                        if let Some(hover_pos) = pad_resp.hover_pos() {
+                            DIAG_POINTS.with(|pts| {
+                                pts.borrow_mut().push(hover_pos);
+                            });
+                        }
+                    }
+                    
+                    DIAG_POINTS.with(|pts| {
+                        let points = pts.borrow();
+                        if points.len() >= 2 {
+                            for i in 0..points.len() - 1 {
+                                ui.painter().line_segment([points[i], points[i + 1]], egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 40, 40)));
+                            }
+                        }
+                    });
+                    
+                    if ui.button("Clear Test Pad").clicked() {
+                        DIAG_POINTS.with(|pts| {
+                            pts.borrow_mut().clear();
+                        });
+                    }
+
+                    ui.add_space(12.0);
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            if close {
+                self.show_tablet_diagnostics = false;
+            }
+        }
+
         // Autosave check
         if self.autosave_enabled {
             let current_time = ctx.input(|i| i.time);
+            if self.last_autosave_time == 0.0 {
+                self.last_autosave_time = current_time;
+            }
             let time_elapsed = current_time - self.last_autosave_time;
             if time_elapsed > self.autosave_interval_secs && self.document_modified {
                 self.save_canvas(std::path::Path::new(&self.autosave_path));
                 self.document_modified = false;
                 self.last_autosave_time = current_time;
+                self.autosave_status = "Autosaved (Clean)".to_string();
                 log::info!("Autosaved to {}", self.autosave_path);
             }
 
@@ -2585,8 +3553,8 @@ impl eframe::App for PaintApp {
             if self.document_modified {
                 let remaining = (self.autosave_interval_secs - time_elapsed).max(0.0);
                 self.autosave_status = format!("Autosave in {:.0}s", remaining);
-            } else {
-                self.autosave_status = "Autosaved (Clean)".to_string();
+            } else if self.autosave_status.is_empty() {
+                self.autosave_status = "Autosave: Standby".to_string();
             }
         }
 
@@ -2607,6 +3575,15 @@ impl eframe::App for PaintApp {
                 }
             });
 
+            if self.transform_active {
+                if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.commit_transform();
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.cancel_transform();
+                }
+            }
+
             // Brush size shortcuts (always active)
             if ctx.input(|i| i.key_pressed(egui::Key::OpenBracket)) {
                 self.brush_radius_log = (self.brush_radius_log - 0.15).max(-1.0);
@@ -2619,11 +3596,12 @@ impl eframe::App for PaintApp {
         }
 
         // 2. LEFT SIDEBAR TOOLPANEL (Creation inputs)
-        egui::SidePanel::left("left_sidebar")
-            .resizable(false)
-            .default_width(160.0)
-            .min_width(120.0)
-            .show(ctx, |ui| {
+        if !self.show_minimal_ui {
+            egui::SidePanel::left("left_sidebar")
+                .resizable(false)
+                .default_width(160.0)
+                .min_width(120.0)
+                .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .id_source("left_sidebar_scroll")
                     .show(ui, |ui| {
@@ -2636,31 +3614,31 @@ impl eframe::App for PaintApp {
                                     .num_columns(4)
                                     .spacing([4.0, 4.0])
                                     .show(ui, |ui| {
-                                        let tools: [(ToolId, &str); 16] = [
-                                            (ToolId::RectSelect, "Rect"),
-                                            (ToolId::EllipseSelect, "Oval"),
-                                            (ToolId::Lasso, "Lasso"),
-                                            (ToolId::MagicWand, "Wand"),
-                                            (ToolId::Move, "Move"),
-                                            (ToolId::Transform, "Xfrm"),
-                                            (ToolId::ColorPicker, "Picker"),
-                                            (ToolId::Hand, "Hand"),
-                                            (ToolId::Zoom, "Zoom"),
-                                            (ToolId::RotateView, "Rot."),
-                                            (ToolId::Brush, "Brush"),
-                                            (ToolId::Eraser, "Eraser"),
-                                            (ToolId::Fill, "Bucket"),
-                                            (ToolId::Line, "Line"),
-                                            (ToolId::Shape, "Shape"),
-                                            (ToolId::Reference, "Ref"),
+                                        let tools: [(ToolId, &str, &str); 16] = [
+                                            (ToolId::RectSelect, "▢", "Rect Selection [Ctrl+A/D/I]"),
+                                            (ToolId::EllipseSelect, "⭘", "Oval Selection"),
+                                            (ToolId::Lasso, "➰", "Lasso Selection"),
+                                            (ToolId::MagicWand, "🪄", "Magic Wand Selection"),
+                                            (ToolId::Move, "✥", "Move Tool"),
+                                            (ToolId::Transform, "⛶", "Transform Tool [Ctrl+T]"),
+                                            (ToolId::ColorPicker, "🧪", "Color Picker (Eyedropper) [Alt/I]"),
+                                            (ToolId::Hand, "✋", "Hand Panning Tool [Space]"),
+                                            (ToolId::Zoom, "🔍", "Zoom Canvas"),
+                                            (ToolId::RotateView, "⟳", "Rotate View [R]"),
+                                            (ToolId::Brush, "🖌", "Paint Brush [B]"),
+                                            (ToolId::Eraser, "🧼", "Eraser [E]"),
+                                            (ToolId::Fill, "🪣", "Fill Bucket [Alt+Backspace]"),
+                                            (ToolId::Line, "╱", "Straight Line Tool [Shift]"),
+                                            (ToolId::Shape, "⬡", "Shape Tool"),
+                                            (ToolId::Reference, "◎", "Reference Layer Toggle"),
                                         ];
-                                        for (i, (tool_id, label)) in tools.iter().enumerate() {
+                                        for (i, (tool_id, label, tooltip)) in tools.iter().enumerate() {
                                             let is_active = self.active_tool == *tool_id;
                                             let btn = egui::Button::new(
-                                                egui::RichText::new(*label).size(10.0)
+                                                egui::RichText::new(*label).size(12.0)
                                             )
                                             .selected(is_active);
-                                            let r = ui.add_sized([32.0, 24.0], btn).on_hover_text(tool_id.name());
+                                            let r = ui.add_sized([32.0, 28.0], btn).on_hover_text(*tooltip);
                                             if r.clicked() {
                                                 self.active_tool = *tool_id;
                                                 if *tool_id == ToolId::Brush {
@@ -2702,6 +3680,10 @@ impl eframe::App for PaintApp {
                                                     PresetIcon::PaintBrush => "[B]",
                                                     PresetIcon::Smudge => "[S]",
                                                     PresetIcon::Eraser => "[E]",
+                                                    PresetIcon::AirBrush => "[A]",
+                                                    PresetIcon::Water => "[W]",
+                                                    PresetIcon::Marker => "[M]",
+                                                    PresetIcon::BinaryPen => "[1]",
                                                 };
                                                 
                                                 let label = format!("{}\n{}", type_tag, preset_name);
@@ -2849,6 +3831,8 @@ impl eframe::App for PaintApp {
                                                                     bristle_id: 0,
                                                                     stabilizer_level: StabilizerLevel::default(),
                                                                     stabilizer_mode: StabilizerMode::SpringMassDamper,
+                                                                    spacing: 2.0,
+                                                                    density: 1.0,
                                                                 };
 
                                                                 let mut brush = Brush::new();
@@ -3021,19 +4005,26 @@ impl eframe::App for PaintApp {
                                     egui::ComboBox::from_id_source("fill_reference")
                                         .selected_text(match self.fill_options.reference {
                                             fill::FillReference::CurrentLayer => "Current Layer",
-                                            fill::FillReference::SelectionSourceLayers => "Selection Source",
+                                            fill::FillReference::SelectionSourceLayers => "Reference Layers",
                                             fill::FillReference::AllVisibleLayers => "All Visible",
                                         })
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::CurrentLayer, "Current Layer");
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Selection Source");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Reference Layers");
                                             ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::AllVisibleLayers, "All Visible");
                                         });
                                 });
+
+                                let has_ref = self.layers.values().any(|l| l.selection_source);
+                                if self.fill_options.reference == fill::FillReference::SelectionSourceLayers && !has_ref {
+                                    ui.colored_label(egui::Color32::RED, "⚠ No reference layer selected!\nEnable Ref (◎) on a lineart layer.");
+                                }
+
                                 ui.horizontal(|ui| {
                                     ui.label("Expand:");
                                     ui.add(egui::Slider::new(&mut self.fill_options.expand_px, 0..=10));
                                 });
+                                ui.checkbox(&mut self.fill_options.contiguous, "Contiguous");
                                 ui.checkbox(&mut self.fill_options.antialias, "Anti-alias");
                                 ui.checkbox(&mut self.fill_options.respect_selection, "Respect selection");
                                 ui.checkbox(&mut self.fill_options.fill_transparent_only, "Fill transparent only");
@@ -3062,23 +4053,76 @@ impl eframe::App for PaintApp {
                             }
                             ToolId::MagicWand => {
                                 ui.horizontal(|ui| {
-                                    ui.label("Tolerance:");
-                                    ui.add(egui::Slider::new(&mut self.fill_options.tolerance, 0..=255));
+                                    ui.label("Mode:");
+                                    egui::ComboBox::from_id_source("wand_sel_mode")
+                                        .selected_text(match self.selection_mode {
+                                            selection::SelectionMode::Replace => "Replace",
+                                            selection::SelectionMode::Add => "Add",
+                                            selection::SelectionMode::Subtract => "Subtract",
+                                            selection::SelectionMode::Intersect => "Intersect",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Replace, "Replace");
+                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Add, "Add");
+                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Subtract, "Subtract");
+                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Intersect, "Intersect");
+                                        });
                                 });
+                                ui.horizontal(|ui| {
+                                    ui.label("Detection:");
+                                    egui::ComboBox::from_id_source("wand_detection")
+                                        .selected_text(match self.fill_options.detection_mode {
+                                            fill::FillDetectionMode::TransparencyStrict => "Transp Strict",
+                                            fill::FillDetectionMode::TransparencyFuzzy => "Transp Fuzzy",
+                                            fill::FillDetectionMode::ColorDifference => "Color Diff",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyStrict, "Transp Strict");
+                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyFuzzy, "Transp Fuzzy");
+                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::ColorDifference, "Color Diff");
+                                        });
+                                });
+                                match self.fill_options.detection_mode {
+                                    fill::FillDetectionMode::ColorDifference => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Color Diff:");
+                                            ui.add(egui::Slider::new(&mut self.fill_options.tolerance, 0..=255));
+                                        });
+                                    }
+                                    fill::FillDetectionMode::TransparencyFuzzy => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Transp Diff:");
+                                            ui.add(egui::Slider::new(&mut self.fill_options.transp_diff, 0..=255));
+                                        });
+                                    }
+                                    fill::FillDetectionMode::TransparencyStrict => {}
+                                }
                                 ui.horizontal(|ui| {
                                     ui.label("Reference:");
                                     egui::ComboBox::from_id_source("wand_reference")
                                         .selected_text(match self.fill_options.reference {
-                                            fill::FillReference::CurrentLayer => "Current",
-                                            fill::FillReference::SelectionSourceLayers => "Source",
-                                            fill::FillReference::AllVisibleLayers => "Visible",
+                                            fill::FillReference::CurrentLayer => "Current Layer",
+                                            fill::FillReference::SelectionSourceLayers => "Reference Layers",
+                                            fill::FillReference::AllVisibleLayers => "All Visible",
                                         })
                                         .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::CurrentLayer, "Current");
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Source");
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::AllVisibleLayers, "Visible");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::CurrentLayer, "Current Layer");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Reference Layers");
+                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::AllVisibleLayers, "All Visible");
                                         });
                                 });
+
+                                let has_ref = self.layers.values().any(|l| l.selection_source);
+                                if self.fill_options.reference == fill::FillReference::SelectionSourceLayers && !has_ref {
+                                    ui.colored_label(egui::Color32::RED, "⚠ No reference layer selected!\nEnable Ref (◎) on a lineart layer.");
+                                }
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Expand:");
+                                    ui.add(egui::Slider::new(&mut self.fill_options.expand_px, 0..=10));
+                                });
+                                ui.checkbox(&mut self.fill_options.contiguous, "Contiguous");
+                                ui.checkbox(&mut self.fill_options.antialias, "Anti-alias");
                             }
                             ToolId::Transform => {
                                 ui.horizontal(|ui| {
@@ -3100,204 +4144,315 @@ impl eframe::App for PaintApp {
                                 ui.label("Picks color from canvas");
                             }
                             _ => {
-                                ui.label("No options for this tool");
+                                if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
+                                    // Brush preview box + size slider
+                                    let pixel_radius = self.brush_radius_log.exp();
+                                    ui.horizontal(|ui| {
+                                        let (resp, painter) = ui.allocate_painter(egui::Vec2::splat(56.0), egui::Sense::hover());
+                                        let r = resp.rect;
+                                        // Draw base background
+                                        painter.rect_filled(r, 2.0, egui::Color32::WHITE);
+                                        // Draw checkerboard
+                                        let cell_size = 7.0;
+                                        for yi in 0..8 {
+                                            for xi in 0..8 {
+                                                if (xi + yi) % 2 == 1 {
+                                                    let cell_rect = egui::Rect::from_min_size(
+                                                        egui::Pos2::new(r.min.x + xi as f32 * cell_size, r.min.y + yi as f32 * cell_size),
+                                                        egui::Vec2::splat(cell_size),
+                                                    );
+                                                    painter.rect_filled(cell_rect, 0.0, egui::Color32::from_gray(220));
+                                                }
+                                            }
+                                        }
+                                        painter.rect_stroke(r, 2.0, egui::Stroke::new(1.0, egui::Color32::from_gray(180)));
+
+                                        // Draw custom brush preview with hardness falloff
+                                        let center = r.center();
+                                        let h = self.brush_hardness;
+                                        let o = self.brush_opacity;
+                                        let num_steps = 15;
+                                        for i in 0..=num_steps {
+                                            let t = i as f32 / num_steps as f32; // t goes from 0.0 to 1.0
+                                            let r_i = 22.0 * (1.0 - t * (1.0 - h)); // radius from 22.0 down to 22.0 * h
+                                            let alpha_i = o * t; // alpha from 0.0 to o
+                                            let col = egui::Color32::from_rgba_unmultiplied(
+                                                (self.brush_color[0] * 255.0) as u8,
+                                                (self.brush_color[1] * 255.0) as u8,
+                                                (self.brush_color[2] * 255.0) as u8,
+                                                (alpha_i * 255.0) as u8,
+                                            );
+                                            painter.circle_filled(center, r_i, col);
+                                        }
+
+                                        ui.vertical(|ui| {
+                                            ui.label(format!("Size: {:.1} px", pixel_radius));
+                                            if ui.add(
+                                                egui::Slider::new(&mut self.brush_radius_log, -1.0..=5.0)
+                                                    .show_value(false),
+                                            ).changed() {
+                                                self.brush_settings_dirty = true;
+                                            }
+                                        });
+                                    });
+
+                                    // Opacity
+                                    ui.horizontal(|ui| {
+                                        ui.label("Opacity:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_opacity, 0.0..=1.0)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Hardness
+                                    ui.horizontal(|ui| {
+                                        ui.label("Hardness:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_hardness, 0.0..=1.0)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Min Size %
+                                    ui.horizontal(|ui| {
+                                        ui.label("Min Size %:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_min_size_fraction, 0.0..=1.0)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Blending
+                                    ui.horizontal(|ui| {
+                                        ui.label("Blending:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_color_blending, 0.0..=1.0)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Dilution
+                                    ui.horizontal(|ui| {
+                                        ui.label("Dilution:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_dilution, 0.0..=1.0)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Spacing
+                                    ui.horizontal(|ui| {
+                                        ui.label("Spacing:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_spacing, 0.5..=10.0)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Density
+                                    ui.horizontal(|ui| {
+                                        ui.label("Density:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_density, 0.0..=1.0)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Eraser Checkbox
+                                    if !self.presets.is_empty() {
+                                        let is_eraser = &mut self.presets[self.active_preset_index].is_eraser;
+                                        if ui.checkbox(is_eraser, "Eraser Mode [E]").changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    }
+
+                                    // Texture Dropdown
+                                    ui.horizontal(|ui| {
+                                        ui.label("Texture:");
+                                        let mut selected_tex = self.brush_texture_id;
+                                        let res = egui::ComboBox::from_id_source("brush_texture_combo")
+                                            .selected_text(match selected_tex {
+                                                0 => "None",
+                                                1 => "Noise",
+                                                2 => "Bristle",
+                                                _ => "Unknown",
+                                            })
+                                            .show_ui(ui, |ui| {
+                                                let mut changed = false;
+                                                if ui.selectable_value(&mut selected_tex, 0, "None").clicked() { changed = true; }
+                                                if ui.selectable_value(&mut selected_tex, 1, "Noise").clicked() { changed = true; }
+                                                if ui.selectable_value(&mut selected_tex, 2, "Bristle").clicked() { changed = true; }
+                                                changed
+                                            });
+                                        if res.inner.unwrap_or(false) {
+                                            self.brush_texture_id = selected_tex;
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Texture Scale Slider
+                                    if self.brush_texture_id > 0 {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Tex Scale:");
+                                            if ui.add(egui::Slider::new(&mut self.brush_texture_scale, 0.1..=10.0)).changed() {
+                                                self.brush_settings_dirty = true;
+                                            }
+                                        });
+                                    }
+
+                                    // Bristle ID Slider
+                                    ui.horizontal(|ui| {
+                                        ui.label("Bristle ID:");
+                                        if ui.add(egui::Slider::new(&mut self.brush_bristle_id, 0..=5)).changed() {
+                                            self.brush_settings_dirty = true;
+                                        }
+                                    });
+
+                                    // Lock Canvas Bounds
+                                    ui.checkbox(&mut self.lock_canvas_bounds, "Lock Canvas Bounds");
+
+                                    ui.add_space(5.0);
+
+                                    // Advanced / debug Info
+                                    ui.collapsing("Debug / Advanced Info", |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Pressure response:");
+                                            ui.add(
+                                                egui::Slider::new(&mut self.pressure_curve, 0.25..=2.50)
+                                                    .text("curve"),
+                                            );
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Min pressure:");
+                                            ui.add(
+                                                egui::Slider::new(&mut self.pressure_min, 0.00..=0.30)
+                                                    .text("floor"),
+                                            );
+                                        });
+
+                                        let raw_display = self.egui_touch_pressure.unwrap_or(self.tablet_axis.pressure).clamp(0.0, 1.0);
+                                        let raw_level = (raw_display * 8191.0).round() as u32;
+
+                                        let smoothed_display = self.stabilizer.last_smoothed_pressure.unwrap_or(raw_display).clamp(0.0, 1.0);
+                                        let smoothed_level = (smoothed_display * 8191.0).round() as u32;
+
+                                        let remapped_display = self.remap_pressure(smoothed_display);
+
+                                        ui.label(format!("Raw Pen:  {:.4} / 8192 ({})", raw_display, raw_level));
+                                        ui.label(format!("Smoothed: {:.4} / 8192 ({})", smoothed_display, smoothed_level));
+                                        ui.label(format!("Remapped: {:.4}", remapped_display));
+
+                                        // Visual pressure bar
+                                        let pressure_frac = remapped_display;
+                                        let bar_rect = ui.available_rect_before_wrap();
+                                        let bar_width = bar_rect.width().min(190.0);
+                                        let bar_height = 10.0;
+                                        let (bar_response, painter) = ui.allocate_painter(
+                                            egui::Vec2::new(bar_width, bar_height), egui::Sense::hover()
+                                        );
+                                        let r = bar_response.rect;
+                                        painter.rect_filled(r, 2.0, egui::Color32::from_gray(60));
+                                        let filled = egui::Rect::from_min_max(
+                                            r.min,
+                                            egui::Pos2::new(r.min.x + r.width() * pressure_frac, r.max.y),
+                                        );
+                                        painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(100, 180, 255));
+                                    });
+
+                                    // Brush Test Pad
+                                    ui.add_space(8.0);
+                                    ui.label("BRUSH TEST PAD:");
+                                    let pad_size = egui::Vec2::new(120.0, 60.0);
+                                    let (pad_rect, pad_response) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
+                                    
+                                    let test_pad_img = self.test_pad_image.clone();
+                                    let tex = self.test_pad_texture.get_or_insert_with(|| {
+                                        ui.ctx().load_texture(
+                                            "brush_test_pad",
+                                            test_pad_img,
+                                            egui::TextureOptions::default()
+                                        )
+                                    });
+                                    
+                                    ui.painter().rect_filled(pad_rect, 4.0, egui::Color32::WHITE);
+                                    ui.painter().image(
+                                        tex.id(),
+                                        pad_rect,
+                                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                                        egui::Color32::WHITE,
+                                    );
+                                    ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                                    
+                                    if pad_response.dragged_by(egui::PointerButton::Primary) {
+                                        if let Some(hover_pos) = pad_response.hover_pos() {
+                                            let local_pos = hover_pos - pad_rect.min;
+                                            let lx = local_pos.x as i32;
+                                            let ly = local_pos.y as i32;
+                                            let r = (self.brush_radius_log.exp() as i32).clamp(1, 15);
+                                            let color = egui::Color32::from_rgba_unmultiplied(
+                                                (self.brush_color[0] * 255.0) as u8,
+                                                (self.brush_color[1] * 255.0) as u8,
+                                                (self.brush_color[2] * 255.0) as u8,
+                                                (self.brush_opacity * 255.0) as u8,
+                                            );
+                                            
+                                            let w = self.test_pad_image.width() as i32;
+                                            let h = self.test_pad_image.height() as i32;
+                                            
+                                             for dy in -r..=r {
+                                                 for dx in -r..=r {
+                                                     if dx * dx + dy * dy <= r * r {
+                                                         let px = lx + dx;
+                                                         let py = ly + dy;
+                                                         if px >= 0 && px < w && py >= 0 && py < h {
+                                                             let idx = (py * w + px) as usize;
+                                                             let d = (dx * dx + dy * dy) as f32 / (r * r) as f32;
+                                                             let factor = (1.0 - d).max(0.0) * self.brush_density;
+                                                             
+                                                             let current_color = self.test_pad_image.pixels[idx];
+                                                             let src_a = (color.a() as f32 * factor) / 255.0;
+                                                             let dst_a = current_color.a() as f32 / 255.0;
+                                                             
+                                                             let out_a = src_a + dst_a * (1.0 - src_a);
+                                                             if out_a > 0.0 {
+                                                                 let r_out = ((color.r() as f32 * src_a + current_color.r() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
+                                                                 let g_out = ((color.g() as f32 * src_a + current_color.g() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
+                                                                 let b_out = ((color.b() as f32 * src_a + current_color.b() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
+                                                                 self.test_pad_image.pixels[idx] = egui::Color32::from_rgba_unmultiplied(r_out, g_out, b_out, (out_a * 255.0) as u8);
+                                                             }
+                                                         }
+                                                     }
+                                                 }
+                                             }
+                                             if let Some(tex) = &mut self.test_pad_texture {
+                                                 tex.set(self.test_pad_image.clone(), egui::TextureOptions::default());
+                                             }
+                                         }
+                                     }
+                                     
+                                     ui.add_space(2.0);
+                                     ui.horizontal(|ui| {
+                                         if ui.button("Clear Pad").clicked() {
+                                             self.test_pad_image = egui::ColorImage::new([120, 60], egui::Color32::WHITE);
+                                             if let Some(tex) = &mut self.test_pad_texture {
+                                                 tex.set(self.test_pad_image.clone(), egui::TextureOptions::default());
+                                             }
+                                         }
+                                     });
+                                } else {
+                                    ui.label("No options for this tool");
+                                }
                             }
                         }
                     });
-
-                    ui.add_space(5.0);
-
-                    // Brush Settings Sliders (only show for brush-like tools)
-                    if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
-                        ui.group(|ui| {
-                        ui.label("BRUSH CONFIGURATION");
-
-                        // Brush preview circle + size slider
-                        let pixel_radius = self.brush_radius_log.exp();
-                        ui.horizontal(|ui| {
-                            // Draw a circle showing the real brush size (clamped to 60px UI max)
-                            let preview_r = (pixel_radius * self.viewport_zoom).clamp(3.0, 60.0);
-                            let (resp, painter) = ui.allocate_painter(
-                                egui::Vec2::splat(preview_r * 2.0 + 4.0),
-                                egui::Sense::hover(),
-                            );
-                            let center = resp.rect.center();
-                            let brush_color32 = egui::Color32::from_rgb(
-                                (self.brush_color[0] * 255.0) as u8,
-                                (self.brush_color[1] * 255.0) as u8,
-                                (self.brush_color[2] * 255.0) as u8,
-                            );
-                            painter.circle_filled(center, preview_r, brush_color32);
-                            painter.circle_stroke(
-                                center,
-                                preview_r,
-                                egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
-                            );
-                            ui.vertical(|ui| {
-                                ui.label(format!("Size: {:.1} px", pixel_radius));
-                                if ui.add(
-                                    egui::Slider::new(&mut self.brush_radius_log, -1.0..=5.0)
-                                        .show_value(false),
-                                ).changed() {
-                                    self.brush_settings_dirty = true;
-                                }
-                            });
-                        });
-
-                        // Opacity
-                        ui.horizontal(|ui| {
-                            ui.label("Opacity:");
-                            if ui.add(egui::Slider::new(&mut self.brush_opacity, 0.0..=1.0)).changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                        });
-
-                        // Hardness
-                        ui.horizontal(|ui| {
-                            ui.label("Hardness:");
-                            if ui.add(egui::Slider::new(&mut self.brush_hardness, 0.0..=1.0)).changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                        });
-
-                        // Min Size % — controls thin-to-thick pressure range
-                        ui.horizontal(|ui| {
-                            ui.label("Min Size %:");
-                            if ui.add(egui::Slider::new(&mut self.brush_min_size_fraction, 0.0..=1.0)).changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                        });
-
-                        // Color Blending (Smudge)
-                        ui.horizontal(|ui| {
-                            ui.label("Blending:");
-                            if ui.add(egui::Slider::new(&mut self.brush_color_blending, 0.0..=1.0)).changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                        });
-
-                        // Dilution (Water Amount)
-                        ui.horizontal(|ui| {
-                            ui.label("Dilution:");
-                            if ui.add(egui::Slider::new(&mut self.brush_dilution, 0.0..=1.0)).changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                        });
-
-                        // Eraser Checkbox
-                        if !self.presets.is_empty() {
-                            let is_eraser = &mut self.presets[self.active_preset_index].is_eraser;
-                            if ui.checkbox(is_eraser, "Eraser Mode [E]").changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                        }
-
-                        // Texture Dropdown
-                        ui.horizontal(|ui| {
-                            ui.label("Texture:");
-                            let mut selected_tex = self.brush_texture_id;
-                            let res = egui::ComboBox::from_id_source("brush_texture_combo")
-                                .selected_text(match selected_tex {
-                                    0 => "None",
-                                    1 => "Noise",
-                                    2 => "Bristle",
-                                    _ => "Unknown",
-                                })
-                                .show_ui(ui, |ui| {
-                                    let mut changed = false;
-                                    if ui.selectable_value(&mut selected_tex, 0, "None").clicked() { changed = true; }
-                                    if ui.selectable_value(&mut selected_tex, 1, "Noise").clicked() { changed = true; }
-                                    if ui.selectable_value(&mut selected_tex, 2, "Bristle").clicked() { changed = true; }
-                                    changed
-                                });
-                            if res.inner.unwrap_or(false) {
-                                self.brush_texture_id = selected_tex;
-                                self.brush_settings_dirty = true;
-                            }
-                        });
-
-                        // Texture Scale Slider
-                        if self.brush_texture_id > 0 {
-                            ui.horizontal(|ui| {
-                                ui.label("Tex Scale:");
-                                if ui.add(egui::Slider::new(&mut self.brush_texture_scale, 0.1..=10.0)).changed() {
-                                    self.brush_settings_dirty = true;
-                                }
-                            });
-                        }
-
-                        // Bristle ID Slider
-                        ui.horizontal(|ui| {
-                            ui.label("Bristle ID:");
-                            if ui.add(egui::Slider::new(&mut self.brush_bristle_id, 0..=5)).changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                        });
-
-                        // Lock Canvas Bounds
-                        ui.checkbox(&mut self.lock_canvas_bounds, "Lock Canvas Bounds");
-
-                        ui.add_space(5.0);
-
-                        // Advanced / debug information collapsed by default to prevent visual noise
-                        ui.collapsing("Debug / Advanced Info", |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Pressure response:");
-                                ui.add(
-                                    egui::Slider::new(&mut self.pressure_curve, 0.25..=2.50)
-                                        .text("curve"),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Min pressure:");
-                                ui.add(
-                                    egui::Slider::new(&mut self.pressure_min, 0.00..=0.30)
-                                        .text("floor"),
-                                );
-                            });
-
-                            let raw_display = self.egui_touch_pressure.unwrap_or(self.tablet_axis.pressure).clamp(0.0, 1.0);
-                            let raw_level = (raw_display * 8191.0).round() as u32;
-
-                            let smoothed_display = self.stabilizer.last_smoothed_pressure.unwrap_or(raw_display).clamp(0.0, 1.0);
-                            let smoothed_level = (smoothed_display * 8191.0).round() as u32;
-
-                            let remapped_display = self.remap_pressure(smoothed_display);
-
-                            ui.label(format!("Raw Pen:  {:.4} / 8192 ({})", raw_display, raw_level));
-                            ui.label(format!("Smoothed: {:.4} / 8192 ({})", smoothed_display, smoothed_level));
-                            ui.label(format!("Remapped: {:.4}", remapped_display));
-
-                            // Visual pressure bar
-                            let pressure_frac = remapped_display;
-                            let bar_rect = ui.available_rect_before_wrap();
-                            let bar_width = bar_rect.width().min(190.0);
-                            let bar_height = 10.0;
-                            let (bar_response, painter) = ui.allocate_painter(
-                                egui::Vec2::new(bar_width, bar_height), egui::Sense::hover()
-                            );
-                            let r = bar_response.rect;
-                            painter.rect_filled(r, 2.0, egui::Color32::from_gray(60));
-                            let filled = egui::Rect::from_min_max(
-                                r.min,
-                                egui::Pos2::new(r.min.x + r.width() * pressure_frac, r.max.y),
-                            );
-                            painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(100, 180, 255));
-                        });
-                    });
-                }
+                });
             });
-            });
-            });
+        });
+    }
 
         // 2b. Update layer thumbnails
         self.regenerate_dirty_thumbnails();
 
         // 3. RIGHT SIDEBAR UTILITY PANEL (Asset Management & Color Picking)
-        egui::SidePanel::right("right_sidebar")
-            .resizable(false)
-            .default_width(260.0)
-            .show(ctx, |ui| {
+        if !self.show_minimal_ui {
+            egui::SidePanel::right("right_sidebar")
+                .resizable(false)
+                .default_width(260.0)
+                .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .id_source("right_sidebar_scroll")
                     .show(ui, |ui| {
@@ -3306,10 +4461,14 @@ impl eframe::App for PaintApp {
                     ui.group(|ui| {
                         ui.label("NAVIGATOR");
                         ui.vertical_centered(|ui| {
-                            let (rect, _response) = ui.allocate_exact_size(egui::vec2(240.0, 240.0), egui::Sense::hover());
+                            // Change sense to click_and_drag to allow panning interaction
+                            let (rect, response) = ui.allocate_exact_size(egui::vec2(240.0, 240.0), egui::Sense::click_and_drag());
+                            
+                            // 1. Draw Navigator Texture
+                            let painter = ui.painter().with_clip_rect(rect);
                             if let Some(r) = &self.renderer {
                                 if let Some(texture_id) = r.navigator_egui_id {
-                                    ui.painter().image(
+                                    painter.image(
                                         texture_id,
                                         rect,
                                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
@@ -3317,7 +4476,77 @@ impl eframe::App for PaintApp {
                                     );
                                 }
                             }
+
+                            // 2. Calculate the paper sheet bounding box inside the 240x240 navigator box
+                            let canvas_aspect = self.canvas_width as f32 / self.canvas_height as f32;
+                            let paper_rect = if canvas_aspect >= 1.0 {
+                                let paper_h = 240.0 / canvas_aspect;
+                                egui::Rect::from_center_size(rect.center(), egui::vec2(240.0, paper_h))
+                            } else {
+                                let paper_w = 240.0 * canvas_aspect;
+                                egui::Rect::from_center_size(rect.center(), egui::vec2(paper_w, 240.0))
+                            };
+
+                            // 3. Project Viewport outline onto navigator
+                            if let Some(view_rect) = self.last_viewport_rect {
+                                let corners = [
+                                    view_rect.min, // top-left
+                                    egui::pos2(view_rect.max.x, view_rect.min.y), // top-right
+                                    view_rect.max, // bottom-right
+                                    egui::pos2(view_rect.min.x, view_rect.max.y), // bottom-left
+                                ];
+
+                                let mut nav_corners = Vec::with_capacity(4);
+                                for pt in corners {
+                                    let w = self.screen_to_world(pt, view_rect);
+                                    let pct_x = w.x / self.canvas_width as f32;
+                                    let pct_y = w.y / self.canvas_height as f32;
+                                    let nav_x = paper_rect.min.x + pct_x * paper_rect.width();
+                                    let nav_y = paper_rect.min.y + pct_y * paper_rect.height();
+                                    nav_corners.push(egui::pos2(nav_x, nav_y));
+                                }
+
+                                let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 50, 50));
+                                for i in 0..4 {
+                                    painter.line_segment([nav_corners[i], nav_corners[(i + 1) % 4]], stroke);
+                                }
+                            }
+
+                            // 4. Click/Drag Panning Interaction
+                            if response.clicked() || response.dragged() {
+                                if let Some(click_pos) = response.interact_pointer_pos() {
+                                    let pct_x = ((click_pos.x - paper_rect.min.x) / paper_rect.width()).clamp(0.0, 1.0);
+                                    let pct_y = ((click_pos.y - paper_rect.min.y) / paper_rect.height()).clamp(0.0, 1.0);
+                                    let w_target = egui::Vec2::new(pct_x * self.canvas_width as f32, pct_y * self.canvas_height as f32);
+                                    
+                                    let half_w = self.last_viewport_size.x * 0.5;
+                                    let half_h = self.last_viewport_size.y * 0.5;
+                                    self.viewport_offset = w_target - egui::vec2(half_w, half_h) / self.viewport_zoom;
+                                    ctx.request_repaint();
+                                }
+                            }
                         });
+
+                        // 5. Utility buttons [Fit] [100%] [Reset]
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Fit").clicked() {
+                                self.command(CommandId::FitToScreen);
+                            }
+                            if ui.button("100%").clicked() {
+                                self.command(CommandId::ActualSize);
+                            }
+                            if ui.button("Reset").clicked() {
+                                self.command(CommandId::ResetView);
+                            }
+                        });
+
+                        // 6. Status labels under Navigator
+                        ui.add_space(4.0);
+                        ui.label(format!("Zoom: {:.1}%", self.viewport_zoom * 100.0));
+                        let angle_deg = self.rotation_angle.to_degrees().round();
+                        let mirror_state = if self.mirror_horizontal { "Mirror On" } else { "Mirror Off" };
+                        ui.label(format!("Rot: {:.0}° | {}", angle_deg, mirror_state));
                     });
                     ui.add_space(5.0);
 
@@ -3608,14 +4837,25 @@ impl eframe::App for PaintApp {
                                 }
                                 if let Some(layer) = self.layers.get_mut(&id) {
                                     // Visibility check
-                                    let visible_response = ui.checkbox(&mut layer.visible, "");
-                                    row_hovered |= visible_response.hovered();
+                                    let vis_text = if layer.visible { "👁" } else { "⦂" };
+                                    let btn_vis = egui::Button::new(vis_text).frame(false);
+                                    let vis_resp = ui.add(btn_vis).on_hover_text("Toggle Visibility");
+                                    row_hovered |= vis_resp.hovered();
+                                    if vis_resp.clicked() {
+                                        layer.visible = !layer.visible;
+                                    }
 
                                     // Selection Source toggle (for Bucket/Magic Wand reference)
-                                    ui.checkbox(&mut layer.selection_source, "Ref");
+                                    let ref_text = if layer.selection_source { "◎" } else { "⚬" };
+                                    let btn_ref = egui::Button::new(ref_text).frame(false).selected(layer.selection_source);
+                                    let ref_resp = ui.add(btn_ref).on_hover_text("Use layer as reference source for Bucket/Wand");
+                                    row_hovered |= ref_resp.hovered();
+                                    if ref_resp.clicked() {
+                                        layer.selection_source = !layer.selection_source;
+                                    }
 
                                     // Layer thumbnail (with white background and thin border for empty layers visibility)
-                                    let thumb_size = egui::Vec2::splat(24.0);
+                                    let thumb_size = egui::Vec2::splat(28.0);
                                     let (thumb_rect, _thumb_resp) = ui.allocate_exact_size(thumb_size, egui::Sense::hover());
                                     ui.painter().rect_filled(thumb_rect, 1.0, egui::Color32::WHITE);
                                     ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(180)));
@@ -3675,6 +4915,7 @@ impl eframe::App for PaintApp {
                 });
             });
             });
+        }
 
         // 4. BOTTOM STATUS BAR
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
@@ -3690,6 +4931,27 @@ impl eframe::App for PaintApp {
 
                     let pct = (self.brush_opacity * 100.0).round();
                     ui.label(format!("Opacity: {:.0}%", pct));
+                    ui.separator();
+                }
+
+                if matches!(self.active_tool, ToolId::Fill | ToolId::MagicWand) {
+                    let ref_text = match self.fill_options.reference {
+                        fill::FillReference::CurrentLayer => "Current Layer",
+                        fill::FillReference::SelectionSourceLayers => "Reference Layers",
+                        fill::FillReference::AllVisibleLayers => "All Visible",
+                    };
+                    ui.label(format!("Ref: {}", ref_text));
+                    ui.separator();
+
+                    let mode_text = match self.fill_options.detection_mode {
+                        fill::FillDetectionMode::TransparencyStrict => "Transparency Strict".to_string(),
+                        fill::FillDetectionMode::TransparencyFuzzy => format!("Transp Fuzzy ({})", self.fill_options.transp_diff),
+                        fill::FillDetectionMode::ColorDifference => format!("Color Diff ({})", self.fill_options.tolerance),
+                    };
+                    ui.label(format!("Mode: {}", mode_text));
+                    ui.separator();
+
+                    ui.label(format!("Expand: {}px", self.fill_options.expand_px));
                     ui.separator();
                 }
 
@@ -3726,6 +4988,8 @@ impl eframe::App for PaintApp {
             .frame(egui::Frame::none())
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
+                self.last_viewport_rect = Some(rect);
+                self.last_viewport_size = rect.size();
                 let response = ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
 
                 // Check for viewport resizing to adapt offscreen WGPU textures
@@ -3801,10 +5065,183 @@ impl eframe::App for PaintApp {
                 }
 
                 // STROKE DRAWING INTERACTION
-                let pointer_down = (response.dragged_by(egui::PointerButton::Primary)
+                let mut pointer_down = (response.dragged_by(egui::PointerButton::Primary)
                     || (response.is_pointer_button_down_on() && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
                     && !space_down && !r_down;
-                let pointer_clicked = response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+                let mut pointer_clicked = response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+
+                if self.transform_active {
+                    if let Some(ptr_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                        let view_rect = rect;
+                        let ob = self.transform_orig_bounds;
+                        let handle_radius = 8.0;
+                        
+                        let mut hovered_handle = None;
+                        
+                        // Check rotation handle
+                        let rot_h_orig = egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
+                        let rot_h_screen = self.world_to_screen(self.transform_point(rot_h_orig), view_rect);
+                        if ptr_pos.distance(rot_h_screen) <= handle_radius {
+                            hovered_handle = Some(8);
+                        }
+                        
+                        // Check pivot handle
+                        if hovered_handle.is_none() {
+                            let pivot_screen = self.world_to_screen(self.transform_pivot + self.transform_translation, view_rect);
+                            if ptr_pos.distance(pivot_screen) <= handle_radius {
+                                hovered_handle = Some(9);
+                            }
+                        }
+                        
+                        // Check 8 scaling handles
+                        if hovered_handle.is_none() {
+                            let orig_corners = [
+                                egui::Pos2::new(ob.min.x, ob.min.y), // TL (0)
+                                egui::Pos2::new(ob.center().x, ob.min.y), // TC (1)
+                                egui::Pos2::new(ob.max.x, ob.min.y), // TR (2)
+                                egui::Pos2::new(ob.max.x, ob.center().y), // MR (3)
+                                egui::Pos2::new(ob.max.x, ob.max.y), // BR (4)
+                                egui::Pos2::new(ob.center().x, ob.max.y), // BC (5)
+                                egui::Pos2::new(ob.min.x, ob.max.y), // BL (6)
+                                egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
+                            ];
+                            for i in 0..8 {
+                                let h_screen = self.world_to_screen(self.transform_point(orig_corners[i]), view_rect);
+                                if ptr_pos.distance(h_screen) <= handle_radius {
+                                    hovered_handle = Some(i);
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Check inside bounds (Translate)
+                        if hovered_handle.is_none() {
+                            let ptr_world = self.screen_to_world(ptr_pos, view_rect);
+                            let rx = ptr_world.x - (self.transform_pivot.x + self.transform_translation.x);
+                            let ry = ptr_world.y - (self.transform_pivot.y + self.transform_translation.y);
+                            let cos = (-self.transform_rotation).cos();
+                            let sin = (-self.transform_rotation).sin();
+                            let ux = rx * cos - ry * sin;
+                            let uy = rx * sin + ry * cos;
+                            let x_orig = ux / self.transform_scale.x + self.transform_pivot.x;
+                            let y_orig = uy / self.transform_scale.y + self.transform_pivot.y;
+                            
+                            if x_orig >= ob.min.x && x_orig <= ob.max.x && y_orig >= ob.min.y && y_orig <= ob.max.y {
+                                hovered_handle = Some(10);
+                            }
+                        }
+                        
+                        if let Some(h) = hovered_handle {
+                            let cursor = match h {
+                                8 => egui::CursorIcon::PointingHand,
+                                9 => egui::CursorIcon::Crosshair,
+                                0 | 4 => egui::CursorIcon::ResizeNwSe,
+                                2 | 6 => egui::CursorIcon::ResizeNeSw,
+                                1 | 5 => egui::CursorIcon::ResizeVertical,
+                                3 | 7 => egui::CursorIcon::ResizeHorizontal,
+                                10 => egui::CursorIcon::Move,
+                                _ => egui::CursorIcon::Default,
+                            };
+                            ui.ctx().set_cursor_icon(cursor);
+                        }
+                        
+                        if ui.input(|i| i.pointer.any_pressed()) {
+                            if let Some(h) = hovered_handle {
+                                self.transform_dragging = Some(h);
+                                self.transform_drag_start_ptr = Some(ptr_pos);
+                                self.transform_drag_start_translation = self.transform_translation;
+                                self.transform_drag_start_scale = self.transform_scale;
+                                self.transform_drag_start_rotation = self.transform_rotation;
+                            }
+                        }
+                    }
+                    
+                    if let Some(h) = self.transform_dragging {
+                        if ui.input(|i| i.pointer.any_down()) {
+                            if let (Some(start_ptr), Some(curr_ptr)) = (self.transform_drag_start_ptr, ui.input(|i| i.pointer.hover_pos())) {
+                                let start_w = self.screen_to_world(start_ptr, rect);
+                                let curr_w = self.screen_to_world(curr_ptr, rect);
+                                let delta_w = curr_w - start_w;
+                                
+                                match h {
+                                    10 => {
+                                        self.transform_translation = self.transform_drag_start_translation + delta_w;
+                                    }
+                                    9 => {
+                                        let orig_pivot = self.transform_pivot;
+                                        let new_pivot = orig_pivot + delta_w;
+                                        let ob = self.transform_orig_bounds;
+                                        self.transform_pivot = egui::Pos2::new(
+                                            new_pivot.x.clamp(ob.min.x, ob.max.x),
+                                            new_pivot.y.clamp(ob.min.y, ob.max.y),
+                                        );
+                                    }
+                                    8 => {
+                                        let pivot_w = self.transform_pivot + self.transform_translation;
+                                        let start_vec = start_w - pivot_w.to_vec2();
+                                        let curr_vec = curr_w - pivot_w.to_vec2();
+                                        let start_ang = start_vec.y.atan2(start_vec.x);
+                                        let curr_ang = curr_vec.y.atan2(curr_vec.x);
+                                        let diff_ang = curr_ang - start_ang;
+                                        self.transform_rotation = self.transform_drag_start_rotation + diff_ang;
+                                    }
+                                    0..=7 => {
+                                        let ob = self.transform_orig_bounds;
+                                        let orig_corners = [
+                                            egui::Pos2::new(ob.min.x, ob.min.y), // TL (0)
+                                            egui::Pos2::new(ob.center().x, ob.min.y), // TC (1)
+                                            egui::Pos2::new(ob.max.x, ob.min.y), // TR (2)
+                                            egui::Pos2::new(ob.max.x, ob.center().y), // MR (3)
+                                            egui::Pos2::new(ob.max.x, ob.max.y), // BR (4)
+                                            egui::Pos2::new(ob.center().x, ob.max.y), // BC (5)
+                                            egui::Pos2::new(ob.min.x, ob.max.y), // BL (6)
+                                            egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
+                                        ];
+                                        let orig_h = orig_corners[h];
+                                        let orig_offset = orig_h - self.transform_pivot;
+                                        
+                                        let cos = (-self.transform_drag_start_rotation).cos();
+                                        let sin = (-self.transform_drag_start_rotation).sin();
+                                        let local_delta_x = delta_w.x * cos - delta_w.y * sin;
+                                        let local_delta_y = delta_w.x * sin + delta_w.y * cos;
+                                        
+                                        let mut scale_x = self.transform_drag_start_scale.x;
+                                        let mut scale_y = self.transform_drag_start_scale.y;
+                                        
+                                        if orig_offset.x.abs() > 0.01 {
+                                            let new_local_x = orig_offset.x * self.transform_drag_start_scale.x + local_delta_x;
+                                            scale_x = new_local_x / orig_offset.x;
+                                        }
+                                        if orig_offset.y.abs() > 0.01 {
+                                            let new_local_y = orig_offset.y * self.transform_drag_start_scale.y + local_delta_y;
+                                            scale_y = new_local_y / orig_offset.y;
+                                        }
+                                        
+                                        scale_x = scale_x.max(0.05);
+                                        scale_y = scale_y.max(0.05);
+                                        
+                                        if ui.input(|i| i.modifiers.shift) {
+                                            if h == 0 || h == 2 || h == 4 || h == 6 {
+                                                let avg_scale = (scale_x + scale_y) * 0.5;
+                                                scale_x = avg_scale;
+                                                scale_y = avg_scale;
+                                            }
+                                        }
+                                        
+                                        self.transform_scale = egui::Vec2::new(scale_x, scale_y);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        } else {
+                            self.transform_dragging = None;
+                            self.transform_drag_start_ptr = None;
+                        }
+                    }
+                    
+                    pointer_down = false;
+                    pointer_clicked = false;
+                }
 
                 // Handle selection tool dragging
                 if pointer_down && matches!(self.active_tool, ToolId::RectSelect | ToolId::EllipseSelect) {
@@ -3859,8 +5296,8 @@ impl eframe::App for PaintApp {
                                 (self.brush_color[2] * 32768.0) as u16,
                                 32768,
                             ];
-                            let all_layers: Vec<Layer> = self.layers.values().cloned().collect();
-                            let all_layers_ref: Option<&[Layer]> = Some(&all_layers);
+                            let cloned_layers: Vec<Layer> = self.layers.values().cloned().collect();
+                            let all_layers: Vec<&Layer> = cloned_layers.iter().collect();
                             if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
                                 // Capture pre-fill snapshots of all existing tiles
                                 let mut snapshots: Vec<crate::history::TileSnapshot> = Vec::new();
@@ -3879,7 +5316,7 @@ impl eframe::App for PaintApp {
 
                                 let dirty = fill::flood_fill(
                                     layer,
-                                    all_layers_ref,
+                                    &all_layers,
                                     &self.selection_mask,
                                     fx, fy,
                                     fill_color,
@@ -3918,48 +5355,35 @@ impl eframe::App for PaintApp {
                         let wx = world_pos.x as i32;
                         let wy = world_pos.y as i32;
                         if wx >= 0 && wx < self.canvas_width as i32 && wy >= 0 && wy < self.canvas_height as i32 {
-                            let (layer_refs, layer_order) = match self.fill_options.reference {
-                                fill::FillReference::CurrentLayer => {
-                                    (self.layers.get(&self.active_layer_id).map(|l| vec![l]).unwrap_or_default(), vec![])
-                                }
-                                fill::FillReference::SelectionSourceLayers => {
-                                    let order: Vec<u32> = self.layer_order.iter().filter(|id| self.layers.get(id).map_or(false, |l| l.selection_source)).copied().collect();
-                                    let refs: Vec<&Layer> = order.iter().filter_map(|id| self.layers.get(id)).collect();
-                                    (refs, order)
-                                }
-                                fill::FillReference::AllVisibleLayers => {
-                                    (self.layers.values().collect(), self.layer_order.clone())
-                                }
-                            };
-                            let sample_all = self.fill_options.reference != fill::FillReference::CurrentLayer;
-                            selection::magic_wand_select(
-                                &mut self.selection_mask,
-                                &layer_refs,
-                                &layer_order,
-                                wx,
-                                wy,
-                                self.fill_options.tolerance as u32,
-                                true,
-                                sample_all,
-                                self.selection_mode,
-                                self.canvas_width as i32,
-                                self.canvas_height as i32,
-                            );
-                            self.show_selection_overlay = self.selection_mask.is_active;
+                            let all_layers: Vec<&Layer> = self.layer_order.iter().filter_map(|id| self.layers.get(id)).collect();
+                            if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                                selection::magic_wand_select(
+                                    &mut self.selection_mask,
+                                    &all_layers,
+                                    active_layer,
+                                    wx,
+                                    wy,
+                                    &self.fill_options,
+                                    self.selection_mode,
+                                    self.canvas_width as i32,
+                                    self.canvas_height as i32,
+                                );
+                                self.show_selection_overlay = self.selection_mask.is_active;
+                            }
                         }
                     }
                 }
 
-                // Handle color picker (eyedropper) tool click
-                if pointer_clicked && matches!(self.active_tool, ToolId::ColorPicker) {
+                // Handle color picker (eyedropper) tool click/drag
+                if (pointer_clicked || pointer_down) && matches!(self.active_tool, ToolId::ColorPicker) {
                     if let Some(ptr_pos) = response.hover_pos() {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         let px = world_pos.x as i32;
                         let py = world_pos.y as i32;
                         if px >= 0 && px < self.canvas_width as i32 && py >= 0 && py < self.canvas_height as i32 {
                             if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
-                                let all_layers: Vec<Layer> = self.layers.values().cloned().collect();
-                                let sampled = fill::sample_reference(Some(&all_layers), active_layer, fill::FillReference::AllVisibleLayers, px, py);
+                                let all_layers: Vec<&Layer> = self.layer_order.iter().filter_map(|id| self.layers.get(id)).collect();
+                                let sampled = fill::sample_reference(&all_layers, active_layer, fill::FillReference::AllVisibleLayers, px, py);
                                 let a = sampled[3] as f32 / 32768.0;
                                 if a > 0.0 {
                                     self.brush_color[0] = (sampled[0] as f32 / 32768.0) / a;
@@ -4174,7 +5598,9 @@ impl eframe::App for PaintApp {
                         self.last_ptr_pos = Some(Pos2::new(sx, sy));
                         ctx.request_repaint();
                     }
-                } else {
+                }
+
+                if !pointer_down {
                     // Finalize selection if dragging ended
                     if self.is_selecting {
                         self.is_selecting = false;
@@ -4409,33 +5835,180 @@ impl eframe::App for PaintApp {
 
                 // SELECTION OVERLAY (marching ants or mask)
                 if self.show_selection_overlay && self.selection_mask.is_active {
-                    for (&(tx, ty), tile) in &self.selection_mask.tiles {
-                        for ly in 0..64 {
-                            for lx in 0..64 {
-                                let val = tile[ly * 64 + lx];
-                                if val > 0 && val < 255 {
-                                    let wx = (tx * 64) as f32 + lx as f32;
-                                    let wy = (ty * 64) as f32 + ly as f32;
+                    let time = ui.input(|i| i.time);
+                    if self.selection_display_mode == SelectionDisplayMode::BlueOverlay {
+                        for (&(tx, ty), tile) in &self.selection_mask.tiles {
+                            for ly in 0..64 {
+                                for lx in 0..64 {
+                                    let val = tile[ly * 64 + lx];
+                                    if val > 0 {
+                                        let wx = (tx * 64) as f32 + lx as f32;
+                                        let wy = (ty * 64) as f32 + ly as f32;
 
-                                    let sx = ((wx - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
-                                    let sy = ((wy - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
-                                    let sw = 1.0 * self.viewport_zoom;
-                                    let sh = 1.0 * self.viewport_zoom;
+                                        let sx = ((wx - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
+                                        let sy = ((wy - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                                        let sw = 1.0 * self.viewport_zoom;
+                                        let sh = 1.0 * self.viewport_zoom;
 
-                                    if sx + sw >= rect.min.x && sx <= rect.max.x && sy + sh >= rect.min.y && sy <= rect.max.y {
-                                        ui.painter().rect_filled(
-                                            egui::Rect::from_min_size(
-                                                egui::Pos2::new(sx, sy),
-                                                egui::Vec2::new(sw.max(1.0), sh.max(1.0)),
-                                            ),
-                                            0.0,
-                                            egui::Color32::from_rgba_premultiplied(60, 120, 255, (val as u32 * 80 / 255) as u8),
-                                        );
+                                        if sx + sw >= rect.min.x && sx <= rect.max.x && sy + sh >= rect.min.y && sy <= rect.max.y {
+                                            ui.painter().rect_filled(
+                                                egui::Rect::from_min_size(
+                                                    egui::Pos2::new(sx, sy),
+                                                    egui::Vec2::new(sw.max(1.0), sh.max(1.0)),
+                                                ),
+                                                0.0,
+                                                egui::Color32::from_rgba_premultiplied(60, 120, 255, (val as u32 * 80 / 255) as u8),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if self.selection_display_mode == SelectionDisplayMode::MarchingAnts {
+                        let view_min_world = self.screen_to_world(rect.min, rect);
+                        let view_max_world = self.screen_to_world(rect.max, rect);
+                        let tx_min = (view_min_world.x.min(view_max_world.x) as i32).div_euclid(64) - 1;
+                        let tx_max = (view_min_world.x.max(view_max_world.x) as i32).div_euclid(64) + 1;
+                        let ty_min = (view_min_world.y.min(view_max_world.y) as i32).div_euclid(64) - 1;
+                        let ty_max = (view_min_world.y.max(view_max_world.y) as i32).div_euclid(64) + 1;
+
+                        for (&(tx, ty), tile) in &self.selection_mask.tiles {
+                            if tx < tx_min || tx > tx_max || ty < ty_min || ty > ty_max {
+                                continue;
+                            }
+                            for ly in 0..64 {
+                                for lx in 0..64 {
+                                    let val = tile[ly * 64 + lx];
+                                    if val > 127 {
+                                        let wx = tx * 64 + lx as i32;
+                                        let wy = ty * 64 + ly as i32;
+                                        
+                                        // Check right neighbor
+                                        let r_val = self.selection_mask.get_value(wx + 1, wy);
+                                        if r_val <= 127 {
+                                            let p0 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32), rect);
+                                            let p1 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32 + 1.0), rect);
+                                            ui.painter().line_segment([p0, p1], egui::Stroke::new(1.0, egui::Color32::BLACK));
+                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                        }
+                                        // Check bottom neighbor
+                                        let b_val = self.selection_mask.get_value(wx, wy + 1);
+                                        if b_val <= 127 {
+                                            let p0 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32 + 1.0), rect);
+                                            let p1 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32 + 1.0), rect);
+                                            ui.painter().line_segment([p0, p1], egui::Stroke::new(1.0, egui::Color32::BLACK));
+                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                        }
+                                        // Check left neighbor
+                                        let l_val = self.selection_mask.get_value(wx - 1, wy);
+                                        if l_val <= 127 {
+                                            let p0 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32), rect);
+                                            let p1 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32 + 1.0), rect);
+                                            ui.painter().line_segment([p0, p1], egui::Stroke::new(1.0, egui::Color32::BLACK));
+                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                        }
+                                        // Check top neighbor
+                                        let t_val = self.selection_mask.get_value(wx, wy - 1);
+                                        if t_val <= 127 {
+                                            let p0 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32), rect);
+                                            let p1 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32), rect);
+                                            ui.painter().line_segment([p0, p1], egui::Stroke::new(1.0, egui::Color32::BLACK));
+                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                }
+
+                // TRANSFORM OVERLAY
+                if self.transform_active {
+                    let ob = self.transform_orig_bounds;
+                    let stroke_blue = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
+                    
+                    let p0 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.min.x, ob.min.y)), rect);
+                    let p1 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.max.x, ob.min.y)), rect);
+                    let p2 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.max.x, ob.max.y)), rect);
+                    let p3 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.min.x, ob.max.y)), rect);
+                    
+                    ui.painter().line_segment([p0, p1], stroke_blue);
+                    ui.painter().line_segment([p1, p2], stroke_blue);
+                    ui.painter().line_segment([p2, p3], stroke_blue);
+                    ui.painter().line_segment([p3, p0], stroke_blue);
+                    
+                    let rot_h_orig = egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
+                    let rot_h_screen = self.world_to_screen(self.transform_point(rot_h_orig), rect);
+                    let top_center_screen = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.center().x, ob.min.y)), rect);
+                    ui.painter().line_segment([top_center_screen, rot_h_screen], stroke_blue);
+                    
+                    ui.painter().circle_filled(rot_h_screen, 6.0, egui::Color32::from_rgb(40, 200, 40));
+                    ui.painter().circle_stroke(rot_h_screen, 6.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                    
+                    let orig_corners = [
+                        egui::Pos2::new(ob.min.x, ob.min.y), // TL (0)
+                        egui::Pos2::new(ob.center().x, ob.min.y), // TC (1)
+                        egui::Pos2::new(ob.max.x, ob.min.y), // TR (2)
+                        egui::Pos2::new(ob.max.x, ob.center().y), // MR (3)
+                        egui::Pos2::new(ob.max.x, ob.max.y), // BR (4)
+                        egui::Pos2::new(ob.center().x, ob.max.y), // BC (5)
+                        egui::Pos2::new(ob.min.x, ob.max.y), // BL (6)
+                        egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
+                    ];
+                    
+                    for i in 0..8 {
+                        let h_screen = self.world_to_screen(self.transform_point(orig_corners[i]), rect);
+                        ui.painter().rect_filled(
+                            egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)),
+                            0.0,
+                            egui::Color32::WHITE,
+                        );
+                        ui.painter().rect_stroke(
+                            egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)),
+                            0.0,
+                            stroke_blue,
+                        );
+                    }
+                    
+                    let pivot_screen = self.world_to_screen(self.transform_pivot + self.transform_translation, rect);
+                    ui.painter().circle_stroke(pivot_screen, 8.0, stroke_blue);
+                    ui.painter().circle_filled(pivot_screen, 2.0, egui::Color32::from_rgb(0, 120, 215));
+                }
+
+                // PERFORMANCE HUD OVERLAY
+                if self.show_performance_hud {
+                    let hud_rect = egui::Rect::from_min_size(
+                        rect.right_top() - egui::vec2(210.0, -10.0),
+                        egui::Vec2::new(200.0, 160.0),
+                    );
+                    ui.painter().rect_filled(hud_rect, 6.0, egui::Color32::from_rgba_premultiplied(30, 30, 30, 200));
+                    ui.painter().rect_stroke(hud_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_white_alpha(50)));
+                    
+                    let mut hud_ui = ui.child_ui(hud_rect.shrink(8.0), egui::Layout::top_down(egui::Align::Min));
+                    
+                    let mut active_tiles = 0;
+                    let mut dirty_tiles = 0;
+                    for layer in self.layers.values() {
+                        active_tiles += layer.tiles.len();
+                        dirty_tiles += layer.tiles.values().filter(|t| t.is_dirty).count();
+                    }
+                    
+                    let clipboard_info = match &self.clipboard {
+                        Some(c) => format!("{}x{} ({} px)", c.width, c.height, c.pixels.len()),
+                        None => "Empty".to_string(),
+                    };
+
+                    let undo_size = self.history.undo_stack.len();
+                    let redo_size = self.history.redo_stack.len();
+
+                    hud_ui.colored_label(egui::Color32::GREEN, "PERFORMANCE HUD");
+                    hud_ui.separator();
+                    hud_ui.colored_label(egui::Color32::WHITE, format!("FPS: {:.1}", 1.0 / ctx.input(|i| i.predicted_dt)));
+                    hud_ui.colored_label(egui::Color32::WHITE, format!("Active Tiles: {}", active_tiles));
+                    hud_ui.colored_label(egui::Color32::WHITE, format!("Dirty Tiles: {}", dirty_tiles));
+                    hud_ui.colored_label(egui::Color32::WHITE, format!("Undo Queue: {}", undo_size));
+                    hud_ui.colored_label(egui::Color32::WHITE, format!("Redo Queue: {}", redo_size));
+                    hud_ui.colored_label(egui::Color32::WHITE, format!("Clipboard: {}", clipboard_info));
                 }
 
                 // BRUSH CURSOR + COLOR PICKER CURSOR
@@ -4542,10 +6115,13 @@ fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3], drag_zone: &mut
     let box_rect = egui::Rect::from_center_size(center, egui::Vec2::new(half_side * 2.0, half_side * 2.0));
 
     let zone_for_point = |p: egui::Pos2| -> u8 {
-        if box_rect.contains(p) {
+        let dist = p.distance(center);
+        if box_rect.shrink(3.0).contains(p) {
             2 // square
-        } else {
+        } else if dist >= inner_radius - 2.0 && dist <= outer_radius + 2.0 {
             1 // ring
+        } else {
+            0 // dead zone
         }
     };
 

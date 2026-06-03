@@ -76,6 +76,7 @@ pub enum CommandId {
     SelectionSmooth,
     SelectionBorder,
     TransformSelection,
+    ToggleSelectionOverlay,
 
     // View
     ShowNavigator,

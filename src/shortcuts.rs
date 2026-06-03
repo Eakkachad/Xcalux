@@ -76,6 +76,7 @@ pub fn default_shortcuts() -> Vec<ShortcutEntry> {
         ShortcutEntry { command: CommandId::Reselect, primary: Some(KeyBinding { key: Key::D, ctrl: true, shift: true, alt: false }), secondary: None, name: "Reselect", category: "Selection" },
         ShortcutEntry { command: CommandId::InvertSelection, primary: Some(KeyBinding { key: Key::I, ctrl: true, shift: false, alt: false }), secondary: None, name: "Invert Selection", category: "Selection" },
         ShortcutEntry { command: CommandId::TransformSelection, primary: Some(KeyBinding { key: Key::T, ctrl: true, shift: false, alt: false }), secondary: None, name: "Transform", category: "Selection" },
+        ShortcutEntry { command: CommandId::ToggleSelectionOverlay, primary: Some(KeyBinding { key: Key::H, ctrl: true, shift: false, alt: false }), secondary: None, name: "Toggle Selection Overlay", category: "Selection" },
 
         // Tools
         ShortcutEntry { command: CommandId::ToolBrush, primary: Some(KeyBinding { key: Key::B, ctrl: false, shift: false, alt: false }), secondary: None, name: "Brush Tool", category: "Tools" },

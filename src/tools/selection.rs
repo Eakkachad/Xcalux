@@ -1,5 +1,6 @@
 use crate::canvas::{Layer, SelectionMask};
 use std::collections::VecDeque;
+use crate::tools::fill::FillOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
@@ -299,69 +300,13 @@ fn point_in_polygon(px: f32, py: f32, polygon: &[(f32, f32)]) -> bool {
     inside
 }
 
-fn color_diff(c1: &[u16; 4], c2: &[u16; 4]) -> u32 {
-    let dr = (c1[0] as i32 - c2[0] as i32).abs();
-    let dg = (c1[1] as i32 - c2[1] as i32).abs();
-    let db = (c1[2] as i32 - c2[2] as i32).abs();
-    let da = (c1[3] as i32 - c2[3] as i32).abs();
-    let max_chan = 32768u32;
-    let r2 = (dr as u64 * dr as u64) / (max_chan as u64);
-    let g2 = (dg as u64 * dg as u64) / (max_chan as u64);
-    let b2 = (db as u64 * db as u64) / (max_chan as u64);
-    let a2 = (da as u64 * da as u64) / (max_chan as u64);
-    ((r2 + g2 + b2 + a2) as u32).min(65535)
-}
-
-fn get_pixel_at(layers: &[&Layer], layer_order: &[u32], x: i32, y: i32, sample_all: bool) -> [u16; 4] {
-    let tx = x.div_euclid(64);
-    let ty = y.div_euclid(64);
-    let lx = x.rem_euclid(64).unsigned_abs() as usize;
-    let ly = y.rem_euclid(64).unsigned_abs() as usize;
-
-    if sample_all {
-        let mut accumulated = [0u16; 4];
-        let mut count = 0u16;
-        for &id in layer_order {
-            if let Some(layer) = layers.iter().find(|l| l.id == id) {
-                if !layer.visible { continue; }
-                if let Some(tile) = layer.tiles.get(&(tx, ty)) {
-                    accumulated[0] = accumulated[0].saturating_add(tile.pixels[ly][lx][0]);
-                    accumulated[1] = accumulated[1].saturating_add(tile.pixels[ly][lx][1]);
-                    accumulated[2] = accumulated[2].saturating_add(tile.pixels[ly][lx][2]);
-                    accumulated[3] = accumulated[3].saturating_add(tile.pixels[ly][lx][3]);
-                    count += 1;
-                }
-            }
-        }
-        if count > 0 {
-            [accumulated[0] / count, accumulated[1] / count, accumulated[2] / count, accumulated[3] / count]
-        } else {
-            [0, 0, 0, 0]
-        }
-    } else {
-        let layer = layers.first();
-        match layer {
-            Some(l) => {
-                if let Some(tile) = l.tiles.get(&(tx, ty)) {
-                    tile.pixels[ly][lx]
-                } else {
-                    [0, 0, 0, 0]
-                }
-            }
-            None => [0, 0, 0, 0],
-        }
-    }
-}
-
 pub fn magic_wand_select(
     mask: &mut SelectionMask,
     layers: &[&Layer],
-    layer_order: &[u32],
+    active_layer: &Layer,
     start_x: i32,
     start_y: i32,
-    tolerance: u32,
-    contiguous: bool,
-    sample_all: bool,
+    options: &FillOptions,
     mode: SelectionMode,
     canvas_width: i32,
     canvas_height: i32,
@@ -370,7 +315,7 @@ pub fn magic_wand_select(
         return;
     }
 
-    let target_color = get_pixel_at(layers, layer_order, start_x, start_y, sample_all);
+    let target_color = crate::tools::fill::sample_reference(layers, active_layer, options.reference, start_x, start_y);
 
     match mode {
         SelectionMode::Replace => {
@@ -384,41 +329,28 @@ pub fn magic_wand_select(
         }
     }
 
-    if contiguous {
-        // Scanline flood fill for contiguous mode
+    let mut selected_pixels: ahash::AHashMap<(i32, i32), f32> = ahash::AHashMap::default();
+
+    if options.contiguous {
+        // Contiguous scanline search
         let mut queue = VecDeque::new();
         queue.push_back((start_x, start_y));
         let mut visited_local = ahash::AHashSet::new();
         visited_local.insert((start_x, start_y));
 
-        let tolerance_sq = tolerance * tolerance;
-
         while let Some((cx, cy)) = queue.pop_front() {
-            let pixel = get_pixel_at(layers, layer_order, cx, cy, sample_all);
-            if color_diff(&pixel, &target_color) > tolerance_sq {
-                continue;
-            }
+            let factor = match crate::tools::fill::is_fillable(layers, active_layer, cx, cy, target_color, options) {
+                Some(f) => f,
+                None => continue,
+            };
 
-            let tx = cx.div_euclid(64);
-            let ty = cy.div_euclid(64);
-            let lx = cx.rem_euclid(64).unsigned_abs() as usize;
-            let ly = cy.rem_euclid(64).unsigned_abs() as usize;
-            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
-            let idx = ly * 64 + lx;
-
-            match mode {
-                SelectionMode::Replace => tile[idx] = 255,
-                SelectionMode::Add => tile[idx] = tile[idx].saturating_add(255).min(255),
-                SelectionMode::Subtract => tile[idx] = tile[idx].saturating_sub(255),
-                SelectionMode::Intersect => { if tile[idx] > 0 { tile[idx] = 255; } }
-            }
+            selected_pixels.insert((cx, cy), factor);
 
             // Scan left
             let mut scan_x = cx - 1;
             while scan_x >= 0 && scan_x < canvas_width {
                 if visited_local.insert((scan_x, cy)) {
-                    let p = get_pixel_at(layers, layer_order, scan_x, cy, sample_all);
-                    if color_diff(&p, &target_color) <= tolerance_sq {
+                    if crate::tools::fill::is_fillable(layers, active_layer, scan_x, cy, target_color, options).is_some() {
                         queue.push_back((scan_x, cy));
                     } else {
                         break;
@@ -433,8 +365,7 @@ pub fn magic_wand_select(
             let mut scan_x = cx + 1;
             while scan_x < canvas_width {
                 if visited_local.insert((scan_x, cy)) {
-                    let p = get_pixel_at(layers, layer_order, scan_x, cy, sample_all);
-                    if color_diff(&p, &target_color) <= tolerance_sq {
+                    if crate::tools::fill::is_fillable(layers, active_layer, scan_x, cy, target_color, options).is_some() {
                         queue.push_back((scan_x, cy));
                     } else {
                         break;
@@ -449,8 +380,7 @@ pub fn magic_wand_select(
             for &ny in &[cy - 1, cy + 1] {
                 if ny < 0 || ny >= canvas_height { continue; }
                 if visited_local.contains(&(cx, ny)) { continue; }
-                let p = get_pixel_at(layers, layer_order, cx, ny, sample_all);
-                if color_diff(&p, &target_color) <= tolerance_sq {
+                if crate::tools::fill::is_fillable(layers, active_layer, cx, ny, target_color, options).is_some() {
                     if visited_local.insert((cx, ny)) {
                         queue.push_back((cx, ny));
                     }
@@ -458,7 +388,7 @@ pub fn magic_wand_select(
             }
         }
     } else {
-        // Non-contiguous: simply select all pixels within tolerance across the canvas
+        // Non-contiguous: check all pixels in canvas bounds
         let tx0 = 0i32.div_euclid(64);
         let ty0 = 0i32.div_euclid(64);
         let tx1 = (canvas_width - 1).div_euclid(64);
@@ -466,7 +396,6 @@ pub fn magic_wand_select(
 
         for ty in ty0..=ty1 {
             for tx in tx0..=tx1 {
-                let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
                 for ly in 0..64 {
                     for lx in 0..64 {
                         let wx = tx * 64 + lx as i32;
@@ -474,18 +403,73 @@ pub fn magic_wand_select(
                         if wx < 0 || wx >= canvas_width || wy < 0 || wy >= canvas_height {
                             continue;
                         }
-                        let pixel = get_pixel_at(layers, layer_order, wx, wy, sample_all);
-                        if color_diff(&pixel, &target_color) <= tolerance * tolerance {
-                            let idx = ly * 64 + lx;
-                            match mode {
-                                SelectionMode::Replace => tile[idx] = 255,
-                                SelectionMode::Add => tile[idx] = tile[idx].saturating_add(255).min(255),
-                                SelectionMode::Subtract => tile[idx] = tile[idx].saturating_sub(255),
-                                SelectionMode::Intersect => { if tile[idx] > 0 { tile[idx] = 255; } }
-                            }
+                        if let Some(f) = crate::tools::fill::is_fillable(layers, active_layer, wx, wy, target_color, options) {
+                            selected_pixels.insert((wx, wy), f);
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Apply Area Expansion (options.expand_px)
+    if options.expand_px > 0 {
+        let mut expanded_pixels = ahash::AHashMap::default();
+        let expand = options.expand_px as i32;
+        for (&(x, y), &f) in &selected_pixels {
+            for dy in -expand..=expand {
+                for dx in -expand..=expand {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_width && ny >= 0 && ny < canvas_height {
+                        let entry = expanded_pixels.entry((nx, ny)).or_insert(0.0f32);
+                        if f > *entry {
+                            *entry = f;
+                        }
+                    }
+                }
+            }
+        }
+        selected_pixels = expanded_pixels;
+    }
+
+    // Write to SelectionMask tiles
+    if mode == SelectionMode::Intersect {
+        for ((tx, ty), tile) in &mut mask.tiles {
+            for ly in 0..64 {
+                for lx in 0..64 {
+                    let wx = tx * 64 + lx as i32;
+                    let wy = ty * 64 + ly as i32;
+                    let idx = ly * 64 + lx;
+                    if let Some(&f) = selected_pixels.get(&(wx, wy)) {
+                        let val = (255.0 * f) as u8;
+                        tile[idx] = tile[idx].min(val);
+                    } else {
+                        tile[idx] = 0;
+                    }
+                }
+            }
+        }
+    } else {
+        for ((x, y), f) in selected_pixels {
+            let tx = x.div_euclid(64);
+            let ty = y.div_euclid(64);
+            let lx = x.rem_euclid(64) as usize;
+            let ly = y.rem_euclid(64) as usize;
+            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+            let idx = ly * 64 + lx;
+            let val = (255.0 * f) as u8;
+            match mode {
+                SelectionMode::Replace => {
+                    tile[idx] = val;
+                }
+                SelectionMode::Add => {
+                    tile[idx] = tile[idx].saturating_add(val).min(255);
+                }
+                SelectionMode::Subtract => {
+                    tile[idx] = tile[idx].saturating_sub(val);
+                }
+                SelectionMode::Intersect => unreachable!(),
             }
         }
     }
@@ -520,5 +504,164 @@ pub fn invert_selection(mask: &mut SelectionMask, canvas_w: u32, canvas_h: u32) 
                 tile[i] = 255 - tile[i];
             }
         }
+    }
+}
+
+pub fn grow_selection(mask: &mut SelectionMask, grow_px: i32, canvas_w: i32, canvas_h: i32) {
+    if !mask.is_active || grow_px <= 0 { return; }
+    let mut original = ahash::AHashMap::default();
+    for (&(tx, ty), tile) in &mask.tiles {
+        for ly in 0..64 {
+            for lx in 0..64 {
+                let val = tile[ly * 64 + lx];
+                if val > 0 {
+                    original.insert((tx * 64 + lx as i32, ty * 64 + ly as i32), val);
+                }
+            }
+        }
+    }
+    
+    let mut new_pixels = original.clone();
+    for (&(x, y), &val) in &original {
+        for dy in -grow_px..=grow_px {
+            for dx in -grow_px..=grow_px {
+                if dx * dx + dy * dy <= grow_px * grow_px {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_w && ny >= 0 && ny < canvas_h {
+                        let entry = new_pixels.entry((nx, ny)).or_insert(0);
+                        if val > *entry {
+                            *entry = val;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    mask.tiles.clear();
+    for ((x, y), val) in new_pixels {
+        if val > 0 {
+            let tx = x.div_euclid(64);
+            let ty = y.div_euclid(64);
+            let lx = x.rem_euclid(64) as usize;
+            let ly = y.rem_euclid(64) as usize;
+            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+            tile[ly * 64 + lx] = val;
+        }
+    }
+}
+
+pub fn shrink_selection(mask: &mut SelectionMask, shrink_px: i32, canvas_w: i32, canvas_h: i32) {
+    if !mask.is_active || shrink_px <= 0 { return; }
+    let mut original = ahash::AHashMap::default();
+    for (&(tx, ty), tile) in &mask.tiles {
+        for ly in 0..64 {
+            for lx in 0..64 {
+                let val = tile[ly * 64 + lx];
+                if val > 0 {
+                    original.insert((tx * 64 + lx as i32, ty * 64 + ly as i32), val);
+                }
+            }
+        }
+    }
+    
+    let mut new_pixels = ahash::AHashMap::default();
+    for (&(x, y), &val) in &original {
+        let mut min_val = val;
+        for dy in -shrink_px..=shrink_px {
+            for dx in -shrink_px..=shrink_px {
+                if dx * dx + dy * dy <= shrink_px * shrink_px {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx < 0 || nx >= canvas_w || ny < 0 || ny >= canvas_h {
+                        min_val = 0;
+                        break;
+                    } else {
+                        let neighbor_val = *original.get(&(nx, ny)).unwrap_or(&0);
+                        if neighbor_val < min_val {
+                            min_val = neighbor_val;
+                        }
+                    }
+                }
+            }
+            if min_val == 0 { break; }
+        }
+        if min_val > 0 {
+            new_pixels.insert((x, y), min_val);
+        }
+    }
+    
+    mask.tiles.clear();
+    for ((x, y), val) in new_pixels {
+        let tx = x.div_euclid(64);
+        let ty = y.div_euclid(64);
+        let lx = x.rem_euclid(64) as usize;
+        let ly = y.rem_euclid(64) as usize;
+        let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+        tile[ly * 64 + lx] = val;
+    }
+}
+
+pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i32, canvas_h: i32) {
+    if !mask.is_active || feather_px <= 0 { return; }
+    let mut original = ahash::AHashMap::default();
+    for (&(tx, ty), tile) in &mask.tiles {
+        for ly in 0..64 {
+            for lx in 0..64 {
+                let val = tile[ly * 64 + lx];
+                if val > 0 {
+                    original.insert((tx * 64 + lx as i32, ty * 64 + ly as i32), val);
+                }
+            }
+        }
+    }
+    
+    let mut roi = ahash::AHashSet::default();
+    for &(x, y) in original.keys() {
+        for dy in -feather_px..=feather_px {
+            for dx in -feather_px..=feather_px {
+                if dx * dx + dy * dy <= feather_px * feather_px {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_w && ny >= 0 && ny < canvas_h {
+                        roi.insert((nx, ny));
+                    }
+                }
+            }
+        }
+    }
+    
+    let mut new_pixels = ahash::AHashMap::default();
+    for (x, y) in roi {
+        let mut sum = 0u32;
+        let mut count = 0u32;
+        for dy in -feather_px..=feather_px {
+            for dx in -feather_px..=feather_px {
+                if dx * dx + dy * dy <= feather_px * feather_px {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_w && ny >= 0 && ny < canvas_h {
+                        let val = *original.get(&(nx, ny)).unwrap_or(&0);
+                        sum += val as u32;
+                    }
+                    count += 1;
+                }
+            }
+        }
+        let avg = (sum as f32 / count as f32).round() as u8;
+        if avg > 0 {
+            new_pixels.insert((x, y), avg);
+        }
+    }
+    
+    mask.tiles.clear();
+    for ((x, y), val) in new_pixels {
+        let tx = x.div_euclid(64);
+        let ty = y.div_euclid(64);
+        let lx = x.rem_euclid(64) as usize;
+        let ly = y.rem_euclid(64) as usize;
+        let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+        tile[ly * 64 + lx] = val;
     }
 }
