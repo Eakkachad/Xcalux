@@ -2789,11 +2789,13 @@ dependencies = [
  "env_logger",
  "flate2",
  "hokusai",
+ "image",
  "log",
  "octotablet",
  "png",
  "serde",
  "serde_json",
+ "toml_edit 0.25.12+spec-1.1.0",
  "wgpu",
 ]
 

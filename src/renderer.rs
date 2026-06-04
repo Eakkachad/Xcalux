@@ -4,6 +4,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+#[derive(Debug, Clone, Copy)]
+pub struct TransformPreviewParams {
+    pub layer_id: u32,
+    pub translation: egui::Vec2,
+    pub scale: egui::Vec2,
+    pub rotation: f32,
+    pub pivot: egui::Pos2,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
@@ -591,6 +600,7 @@ impl WgpuRenderer {
         canvas_height: u32,
         mirror_horizontal: bool,
         rotation_angle: f32,
+        transform_preview: Option<TransformPreviewParams>,
     ) -> usize {
         let acc_idx = 2 * depth;
         let swap_idx = 2 * depth + 1;
@@ -727,46 +737,108 @@ impl WgpuRenderer {
                         let tile_world_y = (coords.1 * 64) as f32;
                         let tile_world_size = 64.0;
 
-                        let left = ((tile_world_x - viewport_offset.x) * viewport_zoom)
-                            / (self.target_width as f32 * 0.5)
-                            - 1.0;
-                        let right = (((tile_world_x + tile_world_size) - viewport_offset.x)
-                            * viewport_zoom)
-                            / (self.target_width as f32 * 0.5)
-                            - 1.0;
-                        let top = 1.0
-                            - ((tile_world_y - viewport_offset.y) * viewport_zoom)
-                                / (self.target_height as f32 * 0.5);
-                        let bottom = 1.0
-                            - (((tile_world_y + tile_world_size) - viewport_offset.y) * viewport_zoom)
-                                / (self.target_height as f32 * 0.5);
+                        let is_transforming = if let Some(params) = transform_preview {
+                            params.layer_id == layer.id
+                        } else {
+                            false
+                        };
 
-                        let mut tile_verts = [
-                            Vertex {
-                                position: [left, bottom],
-                                tex_coords: [0.0, 1.0],
-                            },
-                            Vertex {
-                                position: [right, bottom],
-                                tex_coords: [1.0, 1.0],
-                            },
-                            Vertex {
-                                position: [left, top],
-                                tex_coords: [0.0, 0.0],
-                            },
-                            Vertex {
-                                position: [left, top],
-                                tex_coords: [0.0, 0.0],
-                            },
-                            Vertex {
-                                position: [right, bottom],
-                                tex_coords: [1.0, 1.0],
-                            },
-                            Vertex {
-                                position: [right, top],
-                                tex_coords: [1.0, 0.0],
-                            },
-                        ];
+                        let mut tile_verts = if is_transforming {
+                            let params = transform_preview.unwrap();
+                            let transform_pt = |wx: f32, wy: f32| -> (f32, f32) {
+                                let rx = wx - params.pivot.x;
+                                let ry = wy - params.pivot.y;
+                                let sx = rx * params.scale.x;
+                                let sy = ry * params.scale.y;
+                                let cos = params.rotation.cos();
+                                let sin = params.rotation.sin();
+                                let rot_x = sx * cos - sy * sin;
+                                let rot_y = sx * sin + sy * cos;
+                                (
+                                    rot_x + params.pivot.x + params.translation.x,
+                                    rot_y + params.pivot.y + params.translation.y,
+                                )
+                            };
+
+                            let (x0, y0) = transform_pt(tile_world_x, tile_world_y);
+                            let (x1, y1) = transform_pt(tile_world_x + tile_world_size, tile_world_y);
+                            let (x2, y2) = transform_pt(tile_world_x, tile_world_y + tile_world_size);
+                            let (x3, y3) = transform_pt(tile_world_x + tile_world_size, tile_world_y + tile_world_size);
+
+                            let to_ndc = |wx: f32, wy: f32| -> [f32; 2] {
+                                let left = ((wx - viewport_offset.x) * viewport_zoom) / (self.target_width as f32 * 0.5) - 1.0;
+                                let top = 1.0 - ((wy - viewport_offset.y) * viewport_zoom) / (self.target_height as f32 * 0.5);
+                                [left, top]
+                            };
+
+                            [
+                                Vertex {
+                                    position: to_ndc(x2, y2),
+                                    tex_coords: [0.0, 1.0],
+                                },
+                                Vertex {
+                                    position: to_ndc(x3, y3),
+                                    tex_coords: [1.0, 1.0],
+                                },
+                                Vertex {
+                                    position: to_ndc(x0, y0),
+                                    tex_coords: [0.0, 0.0],
+                                },
+                                Vertex {
+                                    position: to_ndc(x0, y0),
+                                    tex_coords: [0.0, 0.0],
+                                },
+                                Vertex {
+                                    position: to_ndc(x3, y3),
+                                    tex_coords: [1.0, 1.0],
+                                },
+                                Vertex {
+                                    position: to_ndc(x1, y1),
+                                    tex_coords: [1.0, 0.0],
+                                },
+                            ]
+                        } else {
+                            let left = ((tile_world_x - viewport_offset.x) * viewport_zoom)
+                                / (self.target_width as f32 * 0.5)
+                                - 1.0;
+                            let right = (((tile_world_x + tile_world_size) - viewport_offset.x)
+                                * viewport_zoom)
+                                / (self.target_width as f32 * 0.5)
+                                - 1.0;
+                            let top = 1.0
+                                - ((tile_world_y - viewport_offset.y) * viewport_zoom)
+                                    / (self.target_height as f32 * 0.5);
+                            let bottom = 1.0
+                                - (((tile_world_y + tile_world_size) - viewport_offset.y) * viewport_zoom)
+                                    / (self.target_height as f32 * 0.5);
+
+                            [
+                                Vertex {
+                                    position: [left, bottom],
+                                    tex_coords: [0.0, 1.0],
+                                },
+                                Vertex {
+                                    position: [right, bottom],
+                                    tex_coords: [1.0, 1.0],
+                                },
+                                Vertex {
+                                    position: [left, top],
+                                    tex_coords: [0.0, 0.0],
+                                },
+                                Vertex {
+                                    position: [left, top],
+                                    tex_coords: [0.0, 0.0],
+                                },
+                                Vertex {
+                                    position: [right, bottom],
+                                    tex_coords: [1.0, 1.0],
+                                },
+                                Vertex {
+                                    position: [right, top],
+                                    tex_coords: [1.0, 0.0],
+                                },
+                            ]
+                        };
 
                         let cos_theta = rotation_angle.cos();
                         let sin_theta = rotation_angle.sin();
@@ -833,6 +905,7 @@ impl WgpuRenderer {
                             canvas_height,
                             mirror_horizontal,
                             rotation_angle,
+                            transform_preview,
                         )
                     } else {
                         // Exceeded depth limit, return transparent texture index at max depth
@@ -904,6 +977,7 @@ impl WgpuRenderer {
         canvas_height: u32,
         mirror_horizontal: bool,
         rotation_angle: f32,
+        transform_preview: Option<TransformPreviewParams>,
     ) {
         if self.target_egui_id.is_none() {
             return;
@@ -927,6 +1001,7 @@ impl WgpuRenderer {
             canvas_height,
             mirror_horizontal,
             rotation_angle,
+            transform_preview,
         );
 
         // 2. Clear canvas_views[0] to medium grey background

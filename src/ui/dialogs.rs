@@ -1,0 +1,635 @@
+use crate::app::PaintApp;
+use crate::canvas::Layer;
+use crate::tools::selection;
+
+pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
+    // 0. AUTOSAVE RECOVERY DIALOG
+    if app.show_recovery_dialog && !app.recovery_files.is_empty() {
+        let mut close = false;
+        let mut recover_file: Option<String> = None;
+        egui::Window::new("Autosave Recovery")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Recover unsaved work?").strong());
+                });
+                ui.add_space(4.0);
+                ui.label("The following autosave files were found from previous sessions:");
+                ui.add_space(4.0);
+                for file in &app.recovery_files.clone() {
+                    ui.horizontal(|ui| {
+                        if ui.button("Recover").clicked() {
+                            recover_file = Some(file.clone());
+                        }
+                        ui.label(file);
+                    });
+                }
+                ui.add_space(8.0);
+                ui.label("Tip: recover a file, then Save As to keep it.");
+                ui.add_space(4.0);
+                if ui.button("Discard All").clicked() {
+                    for file in &app.recovery_files {
+                        let _ = std::fs::remove_file(file);
+                    }
+                    app.recovery_files.clear();
+                    close = true;
+                }
+            });
+        if let Some(file) = recover_file {
+            let file_for_retain = file.clone();
+            let path = std::path::PathBuf::from(&file);
+            match crate::save::load_document(&path) {
+                Ok(doc) => {
+                    app.load_from_document(doc);
+                    log::info!("Recovered from autosave: {:?}", path);
+                    app.document_path = file;
+                    app.autosave_status = "Recovered from autosave".to_string();
+                }
+                Err(e) => {
+                    log::error!("Failed to recover autosave: {:?}", e);
+                    app.autosave_status = "Autosave recovery failed".to_string();
+                }
+            }
+            app.recovery_files.retain(|f| f != &file_for_retain);
+            if app.recovery_files.is_empty() {
+                close = true;
+            }
+        }
+        if close {
+            app.show_recovery_dialog = false;
+        }
+    }
+
+    // 1. NEW CANVAS DIALOG OVERLAY
+    if app.show_new_canvas_dialog {
+        let mut close_dialog = false;
+        let mut create_canvas = false;
+
+        egui::Window::new("New Canvas")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Choose the canvas size").strong());
+                    ui.add_space(8.0);
+                });
+
+                egui::Grid::new("new_canvas_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Width:");
+                        ui.add(
+                            egui::DragValue::new(&mut app.new_canvas_width)
+                                .clamp_range(256..=4096)
+                                .suffix(" px"),
+                        );
+                        ui.end_row();
+
+                        ui.label("Height:");
+                        ui.add(
+                            egui::DragValue::new(&mut app.new_canvas_height)
+                                .clamp_range(256..=4096)
+                                .suffix(" px"),
+                        );
+                        ui.end_row();
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.label("Presets:");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Square (1024x1024)").clicked() {
+                        app.new_canvas_width = 1024;
+                        app.new_canvas_height = 1024;
+                    }
+                    if ui.button("FullHD (1920x1080)").clicked() {
+                        app.new_canvas_width = 1920;
+                        app.new_canvas_height = 1080;
+                    }
+                    if ui.button("2K Square (2048x2048)").clicked() {
+                        app.new_canvas_width = 2048;
+                        app.new_canvas_height = 2048;
+                    }
+                    if ui.button("A4 Paper (2480x3508)").clicked() {
+                        app.new_canvas_width = 2480;
+                        app.new_canvas_height = 3508;
+                    }
+                });
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new("Create").min_size(egui::Vec2::new(100.0, 30.0)))
+                        .clicked()
+                    {
+                        create_canvas = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(egui::Vec2::new(100.0, 30.0)))
+                        .clicked()
+                    {
+                        close_dialog = true;
+                    }
+                });
+            });
+
+        if create_canvas {
+            app.cleanup_autosave();
+            app.canvas_width = app.new_canvas_width;
+            app.canvas_height = app.new_canvas_height;
+
+            app.layers.clear();
+            app.layers.insert(1, Layer::new(1, "Layer 1".to_string()));
+            app.layer_order = vec![1];
+            app.layer_id_counter = 1;
+            app.active_layer_id = 1;
+            app.history.undo_stack.clear();
+            app.history.redo_stack.clear();
+
+            // Centering view on create
+            app.viewport_offset = egui::Vec2::ZERO;
+            app.viewport_zoom = 1.0;
+
+            if let Some(r) = &mut app.renderer {
+                r.clear_cache();
+            }
+            app.show_new_canvas_dialog = false;
+        } else if close_dialog {
+            app.show_new_canvas_dialog = false;
+        }
+    }
+
+    // 2. EXPORT PNG DIALOG
+    if app.show_export_png_dialog {
+        let mut close = false;
+        let mut do_export = false;
+        egui::Window::new("Export PNG")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Export Canvas as PNG").strong());
+                });
+                ui.add_space(8.0);
+                egui::Grid::new("export_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label("File path:");
+                    ui.text_edit_singleline(&mut app.export_png_path);
+                    ui.end_row();
+                    ui.label("Background:");
+                    let mut bg_val = match app.export_png_options.background {
+                        crate::export::png::ExportBackground::Transparent => 0,
+                        crate::export::png::ExportBackground::White => 1,
+                    };
+                    egui::ComboBox::from_id_source("export_bg")
+                        .selected_text(if bg_val == 0 { "Transparent" } else { "White" })
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_value(&mut bg_val, 0, "Transparent").changed() { }
+                            if ui.selectable_value(&mut bg_val, 1, "White").changed() { }
+                        });
+                    app.export_png_options.background = if bg_val == 0 {
+                        crate::export::png::ExportBackground::Transparent
+                    } else {
+                        crate::export::png::ExportBackground::White
+                    };
+                    ui.end_row();
+                    ui.label("Scale:");
+                    ui.add(egui::Slider::new(&mut app.export_png_options.scale, 0.1..=4.0).text("x"));
+                    ui.end_row();
+                });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Export").clicked() { do_export = true; }
+                    if ui.button("Cancel").clicked() { close = true; }
+                });
+            });
+        if do_export {
+            let path = std::path::Path::new(&app.export_png_path).to_path_buf();
+            let layers = app.layers.clone();
+            let layer_order = app.layer_order.clone();
+            let w = app.canvas_width;
+            let h = app.canvas_height;
+            let options = app.export_png_options.clone();
+            std::thread::spawn(move || {
+                match crate::export::png::export_png(&path, &layers, &layer_order, w, h, &options) {
+                    Ok(()) => log::info!("Exported PNG to {:?}", path),
+                    Err(e) => log::error!("PNG export failed: {:?}", e),
+                }
+            });
+            app.show_export_png_dialog = false;
+        }
+        if close {
+            app.show_export_png_dialog = false;
+        }
+    }
+
+    // 3. KEYBOARD SHORTCUT EDITOR
+    if app.show_shortcut_editor {
+        egui::Window::new("Keyboard Shortcuts")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(true)
+            .default_width(550.0)
+            .default_height(400.0)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Search:");
+                    ui.text_edit_singleline(&mut app.shortcut_search);
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                let mut close = false;
+                let mut clicked_idx = None;
+
+                // Capture keyboard input when listening
+                if app.shortcut_listen_idx.is_some() {
+                    ui.add_enabled(false, egui::Button::new("Press a key... (Esc to cancel)"));
+                    let captured = ctx.input(|i| {
+                        for event in &i.events {
+                            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                                let captured_idx = app.shortcut_listen_idx;
+                                if let Some(idx) = captured_idx {
+                                    if *key != egui::Key::Escape {
+                                        return Some((idx, crate::shortcuts::KeyBinding::from_event(*key, modifiers.ctrl, modifiers.shift, modifiers.alt)));
+                                    }
+                                }
+                                return None; // Escape cancels
+                            }
+                        }
+                        None
+                    });
+                    if let Some((idx, binding)) = captured {
+                        if idx < app.shortcuts.entries.len() {
+                            app.shortcuts.entries[idx].primary = Some(binding);
+                        }
+                        app.shortcut_listen_idx = None;
+                    }
+                    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        app.shortcut_listen_idx = None;
+                    }
+                    // Don't render the list while listening
+                    return;
+                }
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let search_lower = app.shortcut_search.to_lowercase();
+                    for (entry_idx, entry) in app.shortcuts.entries.iter().enumerate() {
+                        let name_lower = entry.name.to_lowercase();
+                        let cat_lower = entry.category.to_lowercase();
+                        if !search_lower.is_empty() && !name_lower.contains(&search_lower) && !cat_lower.contains(&search_lower) {
+                            continue;
+                        }
+
+                        let is_editing = app.shortcut_edit_idx == Some(entry_idx);
+
+                        ui.horizontal(|ui| {
+                            ui.label(entry.name);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if is_editing {
+                                    if let Some(ref binding) = entry.primary {
+                                        if ui.button(binding.display()).clicked() {
+                                            app.shortcut_listen_idx = Some(entry_idx);
+                                        }
+                                    } else {
+                                        if ui.button("[none]").clicked() {
+                                            app.shortcut_listen_idx = Some(entry_idx);
+                                        }
+                                    }
+                                    if ui.button("Clear").clicked() {
+                                        app.shortcut_edit_idx = None;
+                                    }
+                                } else {
+                                    if let Some(ref binding) = entry.primary {
+                                        ui.label(binding.display());
+                                    } else {
+                                        ui.label("[none]");
+                                    }
+                                    if ui.button("Edit").clicked() {
+                                        clicked_idx = Some(entry_idx);
+                                    }
+                                }
+                            });
+                        });
+                        ui.separator();
+                    }
+                });
+
+                if let Some(idx) = clicked_idx {
+                    app.shortcut_edit_idx = Some(idx);
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Reset to Defaults").clicked() {
+                        app.shortcuts = crate::shortcuts::ShortcutManager::new();
+                        app.shortcut_edit_idx = None;
+                        app.shortcut_listen_idx = None;
+                    }
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+
+                if close {
+                    app.show_shortcut_editor = false;
+                    app.shortcut_edit_idx = None;
+                    app.shortcut_listen_idx = None;
+                }
+            });
+    }
+
+    // 4. GROW SELECTION DIALOG
+    if app.show_grow_dialog {
+        let mut close = false;
+        egui::Window::new("Grow Selection")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Grow selection by:");
+                    ui.add(egui::DragValue::new(&mut app.grow_pixels).clamp_range(1..=100));
+                    ui.label("pixels");
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Grow").clicked() {
+                        let grow_px = app.grow_pixels;
+                        selection::grow_selection(&mut app.selection_mask, grow_px, app.canvas_width as i32, app.canvas_height as i32);
+                        app.show_selection_overlay = app.selection_mask.is_active;
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            app.show_grow_dialog = false;
+        }
+    }
+
+    // 5. SHRINK SELECTION DIALOG
+    if app.show_shrink_dialog {
+        let mut close = false;
+        egui::Window::new("Shrink Selection")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Shrink selection by:");
+                    ui.add(egui::DragValue::new(&mut app.shrink_pixels).clamp_range(1..=100));
+                    ui.label("pixels");
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Shrink").clicked() {
+                        let shrink_px = app.shrink_pixels;
+                        selection::shrink_selection(&mut app.selection_mask, shrink_px, app.canvas_width as i32, app.canvas_height as i32);
+                        app.show_selection_overlay = app.selection_mask.is_active;
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            app.show_shrink_dialog = false;
+        }
+    }
+
+    // 6. FEATHER SELECTION DIALOG
+    if app.show_feather_dialog {
+        let mut close = false;
+        egui::Window::new("Feather Selection")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Feather radius:");
+                    ui.add(egui::DragValue::new(&mut app.feather_pixels).clamp_range(1..=100));
+                    ui.label("pixels");
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Feather").clicked() {
+                        let feather_px = app.feather_pixels;
+                        selection::feather_selection(&mut app.selection_mask, feather_px, app.canvas_width as i32, app.canvas_height as i32);
+                        app.show_selection_overlay = app.selection_mask.is_active;
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            app.show_feather_dialog = false;
+        }
+    }
+
+    // 7. PREFERENCES DIALOG
+    if app.show_preferences_dialog {
+        let mut close = false;
+        egui::Window::new("Preferences")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([300.0, 250.0])
+            .show(ctx, |ui| {
+                egui::Grid::new("pref_grid").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
+                    ui.label("Theme:");
+                    let old_theme = app.pref_theme.clone();
+                    egui::ComboBox::from_id_source("pref_theme")
+                        .selected_text(&app.pref_theme)
+                        .show_ui(ui, |ui| {
+                            for theme in &["Light", "Gray", "Dark"] {
+                                ui.selectable_value(&mut app.pref_theme, theme.to_string(), *theme);
+                            }
+                        });
+                    if app.pref_theme != old_theme {
+                        if app.pref_theme == "Light" {
+                            ctx.set_visuals(egui::Visuals::light());
+                        } else if app.pref_theme == "Dark" {
+                            ctx.set_visuals(egui::Visuals::dark());
+                        } else {
+                            let mut visuals = egui::Visuals::light();
+                            visuals.panel_fill = egui::Color32::from_rgb(240, 240, 240);
+                            visuals.window_fill = egui::Color32::from_rgb(245, 245, 245);
+                            visuals.widgets.active.bg_fill = egui::Color32::from_rgb(180, 200, 240);
+                            visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(215, 225, 250);
+                            visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(230, 230, 230);
+                            ctx.set_visuals(visuals);
+                        }
+                    }
+                    ui.end_row();
+
+                    ui.label("UI Scale:");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Slider::new(&mut app.pref_ui_scale, 0.5..=2.0).step_by(0.1));
+                        if ui.button("Apply").clicked() {
+                            ctx.set_pixels_per_point(app.pref_ui_scale);
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label("Canvas Background:");
+                    egui::ComboBox::from_id_source("pref_canvas_bg")
+                        .selected_text(&app.pref_canvas_bg)
+                        .show_ui(ui, |ui| {
+                            for bg in &["Checkerboard", "White", "Gray", "Black"] {
+                                ui.selectable_value(&mut app.pref_canvas_bg, bg.to_string(), *bg);
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Autosave:");
+                    ui.checkbox(&mut app.pref_autosave_enabled, "Enabled");
+                    ui.end_row();
+
+                    ui.label("Autosave Interval:");
+                    let old_interval = app.pref_autosave_interval_mins;
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut app.pref_autosave_interval_mins).clamp_range(1..=60));
+                        ui.label("minutes");
+                    });
+                    if app.pref_autosave_interval_mins != old_interval || app.pref_autosave_enabled != app.autosave_enabled {
+                        app.autosave_enabled = app.pref_autosave_enabled;
+                        app.autosave_interval_secs = (app.pref_autosave_interval_mins * 60) as f64;
+                    }
+                    ui.end_row();
+                });
+                
+                ui.add_space(12.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            app.show_preferences_dialog = false;
+            crate::preferences::save_preferences(app);
+        }
+    }
+
+    // 8. TABLET DIAGNOSTICS DIALOG
+    if app.show_tablet_diagnostics {
+        let mut close = false;
+        egui::Window::new("Tablet Diagnostics")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([400.0, 450.0])
+            .show(ctx, |ui| {
+                ui.label("RAW INPUT STATES:");
+                ui.group(|ui| {
+                    let pressure = app.tablet_axis.pressure;
+                    let tx = app.tablet_axis.tilt_x.unwrap_or(0.0);
+                    let ty = app.tablet_axis.tilt_y.unwrap_or(0.0);
+                    ui.label(format!("Pressure: {:.3}", pressure));
+                    ui.label(format!("Tilt X: {:.3}", tx));
+                    ui.label(format!("Tilt Y: {:.3}", ty));
+                    ui.label(format!("Touch Active: {}", app.egui_touch_active));
+                    if let Some(force) = app.egui_touch_pressure {
+                        ui.label(format!("Touch Force: {:.3}", force));
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.label("STABILIZATION SETTINGS:");
+                ui.horizontal(|ui| {
+                    ui.label("Stabilizer Level:");
+                    let preset = &mut app.presets[app.active_preset_index];
+                    egui::ComboBox::from_id_source("stabilizer_level_combo")
+                        .selected_text(format!("{:?}", preset.stabilizer_level))
+                        .show_ui(ui, |ui| {
+                            for level in &[
+                                crate::input::StabilizerLevel::Off,
+                                crate::input::StabilizerLevel::Level(3),
+                                crate::input::StabilizerLevel::Level(5),
+                                crate::input::StabilizerLevel::Level(10),
+                                crate::input::StabilizerLevel::Level(15),
+                                crate::input::StabilizerLevel::Level(20),
+                                crate::input::StabilizerLevel::Level(30),
+                            ] {
+                                ui.selectable_value(&mut preset.stabilizer_level, *level, format!("{:?}", level));
+                            }
+                        });
+                });
+                
+                ui.add_space(8.0);
+                ui.label("PRESSURE CURVE DIAGRAM:");
+                let size = egui::Vec2::splat(120.0);
+                let (rect_curve, _response_curve) = ui.allocate_exact_size(size, egui::Sense::hover());
+                ui.painter().rect_filled(rect_curve, 4.0, egui::Color32::from_gray(240));
+                ui.painter().rect_stroke(rect_curve, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                ui.painter().line_segment([rect_curve.left_bottom(), rect_curve.right_top()], egui::Stroke::new(1.0, egui::Color32::GRAY));
+                
+                let mut pts = Vec::new();
+                let curve_steps = 20;
+                for i in 0..=curve_steps {
+                    let x_val = i as f32 / curve_steps as f32;
+                    let y_val = app.remap_pressure(x_val);
+                    let sx = rect_curve.left() + x_val * rect_curve.width();
+                    let sy = rect_curve.bottom() - y_val * rect_curve.height();
+                    pts.push(egui::Pos2::new(sx, sy));
+                }
+                for i in 0..pts.len() - 1 {
+                    ui.painter().line_segment([pts[i], pts[i + 1]], egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215)));
+                }
+                for pt in &pts {
+                    ui.painter().circle_filled(*pt, 3.0, egui::Color32::from_rgb(0, 120, 215));
+                }
+
+                ui.add_space(8.0);
+                ui.label("Stabilizer Test Pad (Draw here):");
+                let pad_size = egui::Vec2::new(380.0, 100.0);
+                let (pad_rect, pad_resp) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
+                ui.painter().rect_filled(pad_rect, 4.0, egui::Color32::from_gray(255));
+                ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                
+                thread_local! {
+                    static DIAG_POINTS: std::cell::RefCell<Vec<egui::Pos2>> = std::cell::RefCell::new(Vec::new());
+                }
+                
+                if pad_resp.dragged_by(egui::PointerButton::Primary) {
+                    if let Some(hover_pos) = pad_resp.hover_pos() {
+                        DIAG_POINTS.with(|pts_cell| {
+                            pts_cell.borrow_mut().push(hover_pos);
+                        });
+                    }
+                }
+                
+                DIAG_POINTS.with(|pts_cell| {
+                    let points = pts_cell.borrow().clone();
+                    if points.len() >= 2 {
+                        for i in 0..points.len() - 1 {
+                            ui.painter().line_segment([points[i], points[i + 1]], egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 40, 40)));
+                        }
+                    }
+                });
+                
+                if ui.button("Clear Test Pad").clicked() {
+                    DIAG_POINTS.with(|pts_cell| {
+                        pts_cell.borrow_mut().clear();
+                    });
+                }
+
+                ui.add_space(12.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            app.show_tablet_diagnostics = false;
+        }
+    }
+}

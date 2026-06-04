@@ -1,4 +1,4 @@
-use crate::canvas::{BlendMode, Layer};
+use crate::canvas::Layer;
 use crate::history::{HistoryManager, TileSnapshot, UndoCommand, StrokeSurface};
 use crate::input::{InputManager, StrokeStabilizer, TabletAxisState, StabilizerLevel, StabilizerMode};
 use crate::renderer::WgpuRenderer;
@@ -41,6 +41,22 @@ pub enum SelectionDisplayMode {
     Hidden,
 }
 
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct ReferenceImage {
+    pub id: u64,
+    pub name: String,
+    pub path: std::path::PathBuf,
+    pub visible: bool,
+    pub opacity: f32,
+    pub pinned_to_view: bool,
+    pub world_pos: egui::Vec2,
+    pub scale: f32,
+    pub rotation: f32,
+    pub size: egui::Vec2,
+    pub texture: Option<egui::TextureHandle>,
+}
+
 #[derive(Debug, Clone)]
 pub struct BrushPreset {
     pub id: u64,
@@ -64,87 +80,88 @@ pub struct BrushPreset {
 
 pub struct PaintApp {
     // Canvas layers and active index
-    active_layer_id: u32,
-    layers: AHashMap<u32, Layer>,
-    layer_order: Vec<u32>,
-    layer_id_counter: u32,
+    // Canvas layers and active index
+    pub(crate) active_layer_id: u32,
+    pub(crate) layers: AHashMap<u32, Layer>,
+    pub(crate) layer_order: Vec<u32>,
+    pub(crate) layer_id_counter: u32,
 
     // Brush presets and active selection
-    active_preset_index: usize,
-    presets: Vec<BrushPreset>,
-    preset_id_counter: u64,
-    brushes: Vec<Brush>,
-    brush_states: Vec<BrushState>,
-    brush_color: [f32; 3], // RGB float [0.0, 1.0]
-    palette: Vec<[f32; 3]>,
-    selected_palette_index: Option<usize>,
+    pub(crate) active_preset_index: usize,
+    pub(crate) presets: Vec<BrushPreset>,
+    pub(crate) preset_id_counter: u64,
+    pub(crate) brushes: Vec<Brush>,
+    pub(crate) brush_states: Vec<BrushState>,
+    pub(crate) brush_color: [f32; 3], // RGB float [0.0, 1.0]
+    pub(crate) palette: Vec<[f32; 3]>,
+    pub(crate) selected_palette_index: Option<usize>,
 
     // Sliders bound to the active brush
-    brush_radius_log: f32, // Logarithmic radius
-    brush_opacity: f32,
-    brush_hardness: f32,
-    brush_min_size_fraction: f32,
-    brush_color_blending: f32,
-    brush_dilution: f32,
-    brush_spacing: f32,
-    brush_density: f32,
-    pressure_curve: f32,
-    pressure_min: f32,
+    pub(crate) brush_radius_log: f32, // Logarithmic radius
+    pub(crate) brush_opacity: f32,
+    pub(crate) brush_hardness: f32,
+    pub(crate) brush_min_size_fraction: f32,
+    pub(crate) brush_color_blending: f32,
+    pub(crate) brush_dilution: f32,
+    pub(crate) brush_spacing: f32,
+    pub(crate) brush_density: f32,
+    pub(crate) pressure_curve: f32,
+    pub(crate) pressure_min: f32,
 
     // Renaming brush preset state
-    renaming_preset_index: Option<usize>,
-    rename_input: String,
+    pub(crate) renaming_preset_index: Option<usize>,
+    pub(crate) rename_input: String,
 
     // Input and stabilization
-    input_manager: Option<InputManager>,
-    tablet_axis: TabletAxisState,
-    egui_touch_pressure: Option<f32>,
-    egui_touch_active: bool,
-    stabilizer: StrokeStabilizer,
-    last_ptr_pos: Option<Pos2>,
-    last_ptr_pressure: f32,
-    last_event_time: f64, // Used for stroke dtime tracking
+    pub(crate) input_manager: Option<InputManager>,
+    pub(crate) tablet_axis: TabletAxisState,
+    pub(crate) egui_touch_pressure: Option<f32>,
+    pub(crate) egui_touch_active: bool,
+    pub(crate) stabilizer: StrokeStabilizer,
+    pub(crate) last_ptr_pos: Option<Pos2>,
+    pub(crate) last_ptr_pressure: f32,
+    pub(crate) last_event_time: f64, // Used for stroke dtime tracking
 
     // Viewport transforms (infinite canvas navigation)
-    viewport_offset: Vec2,
-    viewport_zoom: f32,
-    mirror_horizontal: bool,
-    rotation_angle: f32, // in radians
+    pub(crate) viewport_offset: Vec2,
+    pub(crate) viewport_zoom: f32,
+    pub(crate) mirror_horizontal: bool,
+    pub(crate) rotation_angle: f32, // in radians
 
     // Canvas dimensions
     pub canvas_width: u32,
     pub canvas_height: u32,
 
     // New Canvas Dialog State
-    show_new_canvas_dialog: bool,
-    new_canvas_width: u32,
-    new_canvas_height: u32,
+    pub(crate) show_new_canvas_dialog: bool,
+    pub(crate) new_canvas_width: u32,
+    pub(crate) new_canvas_height: u32,
 
     // Undo/Redo history
-    history: HistoryManager,
-    current_stroke_snapshots: Vec<TileSnapshot>,
-    dragging_layer_id: Option<u32>,
-    stroke_id: u32,
+    pub(crate) history: HistoryManager,
+    pub(crate) current_stroke_snapshots: Vec<TileSnapshot>,
+    pub(crate) dragging_layer_id: Option<u32>,
+    pub(crate) stroke_id: u32,
 
     // Customization/masking fields
-    lock_canvas_bounds: bool,
-    selection_mask: crate::canvas::SelectionMask,
-    brush_textures: Vec<Vec<u8>>,
+    pub(crate) lock_canvas_bounds: bool,
+    pub(crate) selection_mask: crate::canvas::SelectionMask,
+    pub(crate) brush_textures: Vec<Vec<u8>>,
 
-    save_sender: std::sync::mpsc::Sender<crate::save::SaveTask>,
-    current_vector_points: Vec<crate::canvas::VectorControlPoint>,
-    document_path: String,
-    brush_import_path: String,
-    brush_texture_id: u8,
-    brush_texture_scale: f32,
-    brush_bristle_id: u8,
+    pub(crate) save_sender: std::sync::mpsc::Sender<crate::save::SaveTask>,
+    pub(crate) current_vector_points: Vec<crate::canvas::VectorControlPoint>,
+    pub(crate) document_path: String,
+    pub(crate) brush_import_path: String,
+    pub(crate) brush_texture_id: u8,
+    pub(crate) brush_texture_scale: f32,
+    pub(crate) brush_bristle_id: u8,
 
     /// Set to true whenever any brush slider/color/preset changes, so sync_brush_settings
     /// is only flushed into the Hokusai engine when genuinely needed (not every frame).
-    brush_settings_dirty: bool,
+    pub(crate) brush_settings_dirty: bool,
 
     // GPU rendering engine
-    renderer: Option<WgpuRenderer>,
+    pub(crate) renderer: Option<WgpuRenderer>,
 
     // Command dispatcher + shortcut system
     pub shortcuts: ShortcutManager,
@@ -254,6 +271,14 @@ pub struct PaintApp {
     // Diagnostics & HUD
     pub show_tablet_diagnostics: bool,
     pub show_performance_hud: bool,
+
+    // Reference Images
+    pub(crate) reference_images: Vec<ReferenceImage>,
+    pub(crate) selected_reference_idx: Option<usize>,
+    pub(crate) ref_image_path_input: String,
+    pub(crate) reference_id_counter: u64,
+    pub(crate) ref_image_dragging: Option<usize>,
+    pub(crate) ref_image_drag_offset: egui::Vec2,
 }
 
 // Tool ID enum used in app
@@ -858,12 +883,19 @@ impl PaintApp {
             show_preferences_dialog: false,
             pref_theme: "Gray".to_string(),
             pref_ui_scale: 1.0,
-            pref_canvas_bg: "Medium Gray".to_string(),
+            pref_canvas_bg: "Gray".to_string(),
             pref_autosave_enabled: true,
             pref_autosave_interval_mins: 3,
 
             show_tablet_diagnostics: false,
             show_performance_hud: false,
+
+            reference_images: Vec::new(),
+            selected_reference_idx: None,
+            ref_image_path_input: String::new(),
+            reference_id_counter: 0,
+            ref_image_dragging: None,
+            ref_image_drag_offset: egui::Vec2::ZERO,
         };
 
         // Check for autosave recovery files on startup
@@ -881,10 +913,13 @@ impl PaintApp {
             app.show_recovery_dialog = true;
         }
 
+        // Load saved user preferences
+        crate::preferences::load_preferences(&mut app, &cc.egui_ctx);
+
         app
     }
 
-    fn set_constant(brush: &mut Brush, s: BrushSetting, v: f32) {
+    pub(crate) fn set_constant(brush: &mut Brush, s: BrushSetting, v: f32) {
         brush.set(s, SettingValue::constant(v));
     }
 
@@ -906,12 +941,12 @@ impl PaintApp {
         );
     }
 
-    fn remap_pressure(&self, raw: f32) -> f32 {
+    pub(crate) fn remap_pressure(&self, raw: f32) -> f32 {
         let normalized = raw.clamp(0.0, 1.0).powf(self.pressure_curve);
         (self.pressure_min + normalized * (1.0 - self.pressure_min)).clamp(0.01, 1.0)
     }
 
-    fn record_color(&mut self, color: [f32; 3]) {
+    pub(crate) fn record_color(&mut self, color: [f32; 3]) {
         // Don't record if it's the same as the most recent entry
         if let Some(last) = self.color_history.last() {
             if (last[0] - color[0]).abs() < 0.001
@@ -1034,7 +1069,7 @@ impl PaintApp {
     }
 
     /// Triggers when the user selects a new brush preset slot
-    fn select_preset(&mut self, idx: usize) {
+    pub(crate) fn select_preset(&mut self, idx: usize) {
         if idx >= self.presets.len() {
             return;
         }
@@ -1073,7 +1108,7 @@ impl PaintApp {
     }
 
     /// Create a new brush preset slot dynamically
-    fn create_preset(&mut self, icon_type: PresetIcon) {
+    pub(crate) fn create_preset(&mut self, icon_type: PresetIcon) {
         self.preset_id_counter += 1;
         let id = self.preset_id_counter;
 
@@ -1167,7 +1202,7 @@ impl PaintApp {
     }
 
     /// Duplicate an existing preset
-    fn duplicate_preset(&mut self, idx: usize) {
+    pub(crate) fn duplicate_preset(&mut self, idx: usize) {
         if idx >= self.presets.len() {
             return;
         }
@@ -1189,7 +1224,7 @@ impl PaintApp {
     }
 
     /// Delete a preset
-    fn delete_preset(&mut self, idx: usize) {
+    pub(crate) fn delete_preset(&mut self, idx: usize) {
         if self.presets.len() <= 1 || idx >= self.presets.len() {
             return;
         }
@@ -1428,7 +1463,7 @@ impl PaintApp {
         }
     }
 
-    fn cleanup_autosave(&self) {
+    pub(crate) fn cleanup_autosave(&self) {
         let autosave = std::path::Path::new(&self.autosave_path);
         if autosave.exists() {
             let _ = std::fs::remove_file(autosave);
@@ -1466,7 +1501,7 @@ impl PaintApp {
     }
 
     /// Get or create a texture handle for a layer thumbnail
-    fn get_layer_thumbnail_texture(&mut self, ctx: &egui::Context, layer_id: u32) -> Option<egui::TextureHandle> {
+    pub(crate) fn get_layer_thumbnail_texture(&mut self, ctx: &egui::Context, layer_id: u32) -> Option<egui::TextureHandle> {
         if let Some(thumb) = self.layer_thumbnails.get(&layer_id) {
             if self.thumbnail_textures.contains_key(&layer_id) {
                 return self.thumbnail_textures.get(&layer_id).cloned();
@@ -2476,1061 +2511,14 @@ impl eframe::App for PaintApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(interval_ms));
         }
 
-        // 0a. AUTOSAVE RECOVERY DIALOG
-        if self.show_recovery_dialog && !self.recovery_files.is_empty() {
-            let mut close = false;
-            let mut recover_file: Option<String> = None;
-            egui::Window::new("Autosave Recovery")
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .resizable(false)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("Recover unsaved work?").strong());
-                    });
-                    ui.add_space(4.0);
-                    ui.label("The following autosave files were found from previous sessions:");
-                    ui.add_space(4.0);
-                    for file in &self.recovery_files.clone() {
-                        ui.horizontal(|ui| {
-                            if ui.button("Recover").clicked() {
-                                recover_file = Some(file.clone());
-                            }
-                            ui.label(file);
-                        });
-                    }
-                    ui.add_space(8.0);
-                    ui.label("Tip: recover a file, then Save As to keep it.");
-                    ui.add_space(4.0);
-                    if ui.button("Discard All").clicked() {
-                        for file in &self.recovery_files {
-                            let _ = std::fs::remove_file(file);
-                        }
-                        self.recovery_files.clear();
-                        close = true;
-                    }
-                });
-            if let Some(file) = recover_file {
-                let file_for_retain = file.clone();
-                let path = std::path::PathBuf::from(&file);
-                match crate::save::load_document(&path) {
-                    Ok(doc) => {
-                        self.load_from_document(doc);
-                        log::info!("Recovered from autosave: {:?}", path);
-                        self.document_path = file;
-                        self.autosave_status = "Recovered from autosave".to_string();
-                    }
-                    Err(e) => {
-                        log::error!("Failed to recover autosave: {:?}", e);
-                        self.autosave_status = "Autosave recovery failed".to_string();
-                    }
-                }
-                self.recovery_files.retain(|f| f != &file_for_retain);
-                if self.recovery_files.is_empty() {
-                    close = true;
-                }
-            }
-            if close {
-                self.show_recovery_dialog = false;
-            }
-        }
-
-        // 0. NEW CANVAS DIALOG OVERLAY
-        if self.show_new_canvas_dialog {
-            let mut close_dialog = false;
-            let mut create_canvas = false;
-
-            egui::Window::new("New Canvas")
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .resizable(false)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("Choose the canvas size").strong());
-                        ui.add_space(8.0);
-                    });
-
-                    egui::Grid::new("new_canvas_grid")
-                        .num_columns(2)
-                        .spacing([12.0, 8.0])
-                        .show(ui, |ui| {
-                            ui.label("Width:");
-                            ui.add(
-                                egui::DragValue::new(&mut self.new_canvas_width)
-                                    .clamp_range(256..=4096)
-                                    .suffix(" px"),
-                            );
-                            ui.end_row();
-
-                            ui.label("Height:");
-                            ui.add(
-                                egui::DragValue::new(&mut self.new_canvas_height)
-                                    .clamp_range(256..=4096)
-                                    .suffix(" px"),
-                            );
-                            ui.end_row();
-                        });
-
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    ui.label("Presets:");
-                    ui.horizontal_wrapped(|ui| {
-                        if ui.button("Square (1024x1024)").clicked() {
-                            self.new_canvas_width = 1024;
-                            self.new_canvas_height = 1024;
-                        }
-                        if ui.button("FullHD (1920x1080)").clicked() {
-                            self.new_canvas_width = 1920;
-                            self.new_canvas_height = 1080;
-                        }
-                        if ui.button("2K Square (2048x2048)").clicked() {
-                            self.new_canvas_width = 2048;
-                            self.new_canvas_height = 2048;
-                        }
-                        if ui.button("A4 Paper (2480x3508)").clicked() {
-                            self.new_canvas_width = 2480;
-                            self.new_canvas_height = 3508;
-                        }
-                    });
-
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(egui::Button::new("Create").min_size(egui::Vec2::new(100.0, 30.0)))
-                            .clicked()
-                        {
-                            create_canvas = true;
-                        }
-                        if ui
-                            .add(egui::Button::new("Cancel").min_size(egui::Vec2::new(100.0, 30.0)))
-                            .clicked()
-                        {
-                            close_dialog = true;
-                        }
-                    });
-                });
-
-            if create_canvas {
-                self.cleanup_autosave();
-                self.canvas_width = self.new_canvas_width;
-                self.canvas_height = self.new_canvas_height;
-
-                self.layers.clear();
-                self.layers.insert(1, Layer::new(1, "Layer 1".to_string()));
-                self.layer_order = vec![1];
-                self.layer_id_counter = 1;
-                self.active_layer_id = 1;
-                self.history.undo_stack.clear();
-                self.history.redo_stack.clear();
-
-                // Centering view on create
-                self.viewport_offset = egui::Vec2::ZERO;
-                self.viewport_zoom = 1.0;
-
-                if let Some(r) = &mut self.renderer {
-                    r.clear_cache();
-                }
-                self.show_new_canvas_dialog = false;
-            } else if close_dialog {
-                self.show_new_canvas_dialog = false;
-            }
-        }
+        // 0. DIALOGS
+        crate::ui::dialogs::draw_dialogs(self, ctx);
 
         // 1. TOP MENU PANEL
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("New Canvas").clicked() {
-                        self.show_new_canvas_dialog = true;
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("Path:");
-                        ui.text_edit_singleline(&mut self.document_path);
-                    });
-                    if ui.button("Open Canvas").clicked() {
-                        let path = std::path::PathBuf::from(&self.document_path);
-                        match crate::save::load_document(&path) {
-                            Ok(loaded_doc) => {
-                                self.load_from_document(loaded_doc);
-                                log::info!("Loaded document successfully from {:?}", path);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to load document: {:?}", e);
-                            }
-                        }
-                        ui.close_menu();
-                    }
-                    if ui.button("Save Canvas").clicked() {
-                        self.save_canvas(std::path::Path::new(&self.document_path));
-                        self.document_modified = false;
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.menu_button("Export", |ui| {
-                        if ui.button("Export PNG...").clicked() {
-                            self.show_export_png_dialog = true;
-                            ui.close_menu();
-                        }
-                    });
-                    ui.separator();
-                    if ui.button("Exit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
+        crate::ui::menu::draw_menu_bar(self, ctx);
 
-                ui.menu_button("Edit", |ui| {
-                    if ui
-                        .add_enabled(
-                            !self.history.undo_stack.is_empty(),
-                            egui::Button::new("Undo (Ctrl+Z)"),
-                        )
-                        .clicked()
-                    {
-                        self.history.undo(&mut self.layers);
-                        ui.close_menu();
-                    }
-                    if ui
-                        .add_enabled(
-                            !self.history.redo_stack.is_empty(),
-                            egui::Button::new("Redo (Ctrl+Y)"),
-                        )
-                        .clicked()
-                    {
-                        self.history.redo(&mut self.layers);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Select All (Ctrl+A)").clicked() {
-                        self.command(CommandId::SelectAll);
-                        ui.close_menu();
-                    }
-                    if ui.button("Deselect (Ctrl+D)").clicked() {
-                        self.command(CommandId::Deselect);
-                        ui.close_menu();
-                    }
-                    if ui.button("Invert Selection (Ctrl+I)").clicked() {
-                        self.command(CommandId::InvertSelection);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Clear (Delete)").clicked() {
-                        self.command(CommandId::Clear);
-                        ui.close_menu();
-                    }
-                    if ui.button("Fill (Alt+Backspace)").clicked() {
-                        self.command(CommandId::Fill);
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("Layer", |ui| {
-                    if ui.button("New Raster Layer").clicked() {
-                        self.command(CommandId::NewRasterLayer);
-                        ui.close_menu();
-                    }
-                    if ui.button("New Folder").clicked() {
-                        self.command(CommandId::NewFolder);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("Duplicate Layer").clicked() {
-                        self.command(CommandId::DuplicateLayer);
-                        ui.close_menu();
-                    }
-                    if ui
-                        .add_enabled(
-                            self.layer_order.len() > 1,
-                            egui::Button::new("Delete Layer"),
-                        )
-                        .clicked()
-                    {
-                        self.command(CommandId::DeleteLayer);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui
-                        .add_enabled(
-                            self.layer_order.len() > 1,
-                            egui::Button::new("Merge Down"),
-                        )
-                        .clicked()
-                    {
-                        self.command(CommandId::MergeDown);
-                        ui.close_menu();
-                    }
-                    if ui.button("Merge Visible").clicked() {
-                        self.command(CommandId::MergeVisible);
-                        ui.close_menu();
-                    }
-                    if ui.button("Flatten Image").clicked() {
-                        self.command(CommandId::FlattenImage);
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("Canvas", |ui| {
-                    if ui.button("Fit to Screen").clicked() {
-                        self.command(CommandId::FitToScreen);
-                        ui.close_menu();
-                    }
-                    if ui.button("Actual Size (100%)").clicked() {
-                        self.command(CommandId::ActualSize);
-                        ui.close_menu();
-                    }
-                    if ui.button("Reset View").clicked() {
-                        self.command(CommandId::ResetView);
-                        ui.close_menu();
-                    }
-
-                    ui.separator();
-                    ui.label("Canvas Size:");
-                    ui.horizontal(|ui| {
-                        ui.label("W:");
-                        if ui.add(
-                            egui::DragValue::new(&mut self.canvas_width)
-                                .clamp_range(256..=4096)
-                                .suffix("px"),
-                        ).changed() {
-                            if let Some(r) = &mut self.renderer {
-                                r.clear_cache();
-                            }
-                        }
-                        ui.label("H:");
-                        if ui.add(
-                            egui::DragValue::new(&mut self.canvas_height)
-                                .clamp_range(256..=4096)
-                                .suffix("px"),
-                        ).changed() {
-                            if let Some(r) = &mut self.renderer {
-                                r.clear_cache();
-                            }
-                        }
-                    });
-
-                    egui::ComboBox::from_id_source("canvas_preset_menu")
-                        .selected_text(format!("Preset: {}x{}", self.canvas_width, self.canvas_height))
-                        .show_ui(ui, |ui| {
-                            if ui.selectable_label(
-                                self.canvas_width == 1024 && self.canvas_height == 1024,
-                                "Square (1024x1024)",
-                            ).clicked() {
-                                self.canvas_width = 1024;
-                                self.canvas_height = 1024;
-                                if let Some(r) = &mut self.renderer {
-                                    r.clear_cache();
-                                }
-                            }
-                            if ui.selectable_label(
-                                self.canvas_width == 1920 && self.canvas_height == 1080,
-                                "FullHD (1920x1080)",
-                            ).clicked() {
-                                self.canvas_width = 1920;
-                                self.canvas_height = 1080;
-                                if let Some(r) = &mut self.renderer {
-                                    r.clear_cache();
-                                }
-                            }
-                            if ui.selectable_label(
-                                self.canvas_width == 2048 && self.canvas_height == 2048,
-                                "2K Square (2048x2048)",
-                            ).clicked() {
-                                self.canvas_width = 2048;
-                                self.canvas_height = 2048;
-                                if let Some(r) = &mut self.renderer {
-                                    r.clear_cache();
-                                }
-                            }
-                            if ui.selectable_label(
-                                self.canvas_width == 2480 && self.canvas_height == 3508,
-                                "A4 (2480x3508)",
-                            ).clicked() {
-                                self.canvas_width = 2480;
-                                self.canvas_height = 3508;
-                                if let Some(r) = &mut self.renderer {
-                                    r.clear_cache();
-                                }
-                            }
-                        });
-                });
-
-                ui.menu_button("Selection", |ui| {
-                    if ui.button("Select All (Ctrl+A)").clicked() {
-                        self.command(CommandId::SelectAll);
-                        ui.close_menu();
-                    }
-                    if ui.button("Deselect (Ctrl+D)").clicked() {
-                        self.command(CommandId::Deselect);
-                        ui.close_menu();
-                    }
-                    if ui.button("Invert Selection (Ctrl+I)").clicked() {
-                        self.command(CommandId::InvertSelection);
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("View", |ui| {
-                    if ui.button("Show Grid").clicked() {
-                        self.show_grid = !self.show_grid;
-                        ui.close_menu();
-                    }
-                    if ui.button("Minimal UI (Tab)").clicked() {
-                        self.show_minimal_ui = !self.show_minimal_ui;
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button("Help", |ui| {
-                    if ui.button("Keyboard Shortcuts").clicked() {
-                        self.show_shortcut_editor = true;
-                        ui.close_menu();
-                    }
-                });
-
-                ui.separator();
-                ui.label("Stabilizer:");
-                let current_level = self.stabilizer.level;
-                let text = match current_level {
-                    StabilizerLevel::Off => "Off".to_string(),
-                    StabilizerLevel::Level(val) => format!("Level {}", val),
-                    StabilizerLevel::SLevel(val) => format!("S-{}", val),
-                };
-                let response = egui::ComboBox::from_id_source("top_stabilizer_level")
-                    .selected_text(text)
-                    .width(90.0)
-                    .show_ui(ui, |ui| {
-                        let mut selected = false;
-                        if ui.selectable_label(matches!(current_level, StabilizerLevel::Off), "Off").clicked() {
-                            self.stabilizer.set_level(StabilizerLevel::Off);
-                            selected = true;
-                        }
-                        for val in 1..=15 {
-                            let is_sel = match current_level {
-                                StabilizerLevel::Level(v) => v == val,
-                                _ => false,
-                            };
-                            if ui.selectable_label(is_sel, format!("Level {}", val)).clicked() {
-                                self.stabilizer.set_level(StabilizerLevel::Level(val));
-                                selected = true;
-                            }
-                        }
-                        for val in 1..=5 {
-                            let is_sel = match current_level {
-                                StabilizerLevel::SLevel(v) => v == val,
-                                _ => false,
-                            };
-                            if ui.selectable_label(is_sel, format!("S-{}", val)).clicked() {
-                                self.stabilizer.set_level(StabilizerLevel::SLevel(val));
-                                selected = true;
-                            }
-                        }
-                        selected
-                    });
-                if response.inner.unwrap_or(false) {
-                    ctx.request_repaint();
-                    self.brush_settings_dirty = true;
-                }
-
-                ui.label("Mode:");
-                let current_mode = self.stabilizer.mode;
-                let mode_text = match current_mode {
-                    StabilizerMode::Ema => "EMA",
-                    StabilizerMode::SpringMassDamper => "Spring Physics",
-                };
-                let response = egui::ComboBox::from_id_source("top_stabilizer_mode")
-                    .selected_text(mode_text)
-                    .width(120.0)
-                    .show_ui(ui, |ui| {
-                        let mut selected = false;
-                        if ui.selectable_label(current_mode == StabilizerMode::Ema, "EMA").clicked() {
-                            self.stabilizer.mode = StabilizerMode::Ema;
-                            selected = true;
-                        }
-                        if ui.selectable_label(current_mode == StabilizerMode::SpringMassDamper, "Spring Physics").clicked() {
-                            self.stabilizer.mode = StabilizerMode::SpringMassDamper;
-                            selected = true;
-                        }
-                        selected
-                    });
-                if response.inner.unwrap_or(false) {
-                    ctx.request_repaint();
-                    self.brush_settings_dirty = true;
-                }
-            });
-        });
-
-        // 1b. QUICK BAR
-        if self.quick_bar_visible && !self.show_minimal_ui {
-            egui::TopBottomPanel::top("quick_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    // Group 1: File & History
-                    if ui.button("Undo").clicked() { self.command(CommandId::Undo); }
-                    if ui.button("Redo").clicked() { self.command(CommandId::Redo); }
-                    if ui.button("Save").clicked() { self.command(CommandId::Save); }
-                    ui.separator();
-
-                    // Group 2: Selection
-                    if ui.button("Select All").clicked() { self.command(CommandId::SelectAll); }
-                    if ui.button("Deselect").clicked() { self.command(CommandId::Deselect); }
-                    if ui.button("Invert").clicked() { self.command(CommandId::InvertSelection); }
-                    ui.separator();
-
-                    // Group 3: Edit Operations
-                    if ui.button("Cut").clicked() { self.command(CommandId::Clear); }
-                    if ui.button("Copy").clicked() { self.command(CommandId::Copy); }
-                    if ui.button("Paste").clicked() { self.command(CommandId::Paste); }
-                    if ui.button("Fill").clicked() { self.command(CommandId::Fill); }
-                    ui.separator();
-
-                    // Group 4: View Reset
-                    if ui.button("Fit").clicked() { self.command(CommandId::FitToScreen); }
-                    if ui.button("100%").clicked() { self.command(CommandId::ActualSize); }
-                    if ui.button("Reset").clicked() { self.command(CommandId::ResetView); }
-                    ui.separator();
-
-                    // Group 5: Zoom Controls
-                    ui.label("Zoom:");
-                    if ui.button("-").clicked() {
-                        self.viewport_zoom = (self.viewport_zoom - 0.25).max(0.1);
-                    }
-                    let zoom_text = format!("{:.0}%", self.viewport_zoom * 100.0);
-                    if ui.button(zoom_text).on_hover_text("Click to reset to 100%").clicked() {
-                        self.viewport_zoom = 1.0;
-                    }
-                    if ui.button("+").clicked() {
-                        self.viewport_zoom = (self.viewport_zoom + 0.25).min(10.0);
-                    }
-                    ui.separator();
-
-                    // Group 6: Rotation Controls
-                    if ui.button("-15°").clicked() {
-                        self.rotation_angle = (self.rotation_angle - 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
-                    }
-                    let rot_text = format!("{:.0}°", self.rotation_angle.to_degrees());
-                    if ui.button(rot_text).on_hover_text("Click to reset rotation to 0°").clicked() {
-                        self.rotation_angle = 0.0;
-                    }
-                    if ui.button("+15°").clicked() {
-                        self.rotation_angle = (self.rotation_angle + 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
-                    }
-                    ui.separator();
-
-                    // Group 7: Mirror & Stabilizer
-                    let mirror_label = if self.mirror_horizontal { "Mirror: On" } else { "Mirror: Off" };
-                    if ui.button(mirror_label).clicked() {
-                        self.mirror_horizontal = !self.mirror_horizontal;
-                    }
-                    ui.separator();
-                    ui.label("Stab:");
-                    let current_level = self.stabilizer.level;
-                    let text = match current_level {
-                        StabilizerLevel::Off => "Off".to_string(),
-                        StabilizerLevel::Level(val) => format!("L{}", val),
-                        StabilizerLevel::SLevel(val) => format!("S-{}", val),
-                    };
-                    let stab_changed = egui::ComboBox::from_id_source("quick_bar_stab")
-                        .selected_text(text)
-                        .width(60.0)
-                        .show_ui(ui, |ui| {
-                            let mut changed = false;
-                            if ui.selectable_label(matches!(current_level, StabilizerLevel::Off), "Off").clicked() {
-                                self.stabilizer.set_level(StabilizerLevel::Off);
-                                changed = true;
-                            }
-                            for val in 1..=15 {
-                                let is_sel = matches!(current_level, StabilizerLevel::Level(v) if v == val);
-                                if ui.selectable_label(is_sel, format!("L{}", val)).clicked() {
-                                    self.stabilizer.set_level(StabilizerLevel::Level(val));
-                                    changed = true;
-                                }
-                            }
-                            for val in 1..=5 {
-                                let is_sel = matches!(current_level, StabilizerLevel::SLevel(v) if v == val);
-                                if ui.selectable_label(is_sel, format!("S-{}", val)).clicked() {
-                                    self.stabilizer.set_level(StabilizerLevel::SLevel(val));
-                                    changed = true;
-                                }
-                            }
-                            changed
-                        }).inner.unwrap_or(false);
-                    if stab_changed {
-                        self.brush_settings_dirty = true;
-                    }
-                    ui.separator();
-                    if !self.autosave_status.is_empty() {
-                        ui.label(&self.autosave_status);
-                    }
-                });
-            });
-        }
-
-        // EXPORT PNG DIALOG
-        if self.show_export_png_dialog {
-            let mut close = false;
-            let mut do_export = false;
-            egui::Window::new("Export PNG")
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .resizable(false)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("Export Canvas as PNG").strong());
-                    });
-                    ui.add_space(8.0);
-                    egui::Grid::new("export_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                        ui.label("File path:");
-                        ui.text_edit_singleline(&mut self.export_png_path);
-                        ui.end_row();
-                        ui.label("Background:");
-                        let mut bg_val = match self.export_png_options.background {
-                            crate::export::png::ExportBackground::Transparent => 0,
-                            crate::export::png::ExportBackground::White => 1,
-                        };
-                        egui::ComboBox::from_id_source("export_bg")
-                            .selected_text(if bg_val == 0 { "Transparent" } else { "White" })
-                            .show_ui(ui, |ui| {
-                                if ui.selectable_value(&mut bg_val, 0, "Transparent").changed() { }
-                                if ui.selectable_value(&mut bg_val, 1, "White").changed() { }
-                            });
-                        self.export_png_options.background = if bg_val == 0 {
-                            crate::export::png::ExportBackground::Transparent
-                        } else {
-                            crate::export::png::ExportBackground::White
-                        };
-                        ui.end_row();
-                        ui.label("Scale:");
-                        ui.add(egui::Slider::new(&mut self.export_png_options.scale, 0.1..=4.0).text("x"));
-                        ui.end_row();
-                    });
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Export").clicked() { do_export = true; }
-                        if ui.button("Cancel").clicked() { close = true; }
-                    });
-                });
-            if do_export {
-                let path = std::path::Path::new(&self.export_png_path).to_path_buf();
-                let layers = self.layers.clone();
-                let layer_order = self.layer_order.clone();
-                let w = self.canvas_width;
-                let h = self.canvas_height;
-                let options = self.export_png_options.clone();
-                std::thread::spawn(move || {
-                    match crate::export::png::export_png(&path, &layers, &layer_order, w, h, &options) {
-                        Ok(()) => log::info!("Exported PNG to {:?}", path),
-                        Err(e) => log::error!("PNG export failed: {:?}", e),
-                    }
-                });
-                self.show_export_png_dialog = false;
-            }
-            if close {
-                self.show_export_png_dialog = false;
-            }
-        }
-
-        // KEYBOARD SHORTCUT EDITOR
-        if self.show_shortcut_editor {
-            egui::Window::new("Keyboard Shortcuts")
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .resizable(true)
-                .default_width(550.0)
-                .default_height(400.0)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Search:");
-                        ui.text_edit_singleline(&mut self.shortcut_search);
-                    });
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    let mut close = false;
-                    let mut clicked_idx = None;
-
-                    // Capture keyboard input when listening
-                    if self.shortcut_listen_idx.is_some() {
-                        ui.add_enabled(false, egui::Button::new("Press a key... (Esc to cancel)"));
-                        let captured = ctx.input(|i| {
-                            for event in &i.events {
-                                if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
-                                    let captured_idx = self.shortcut_listen_idx;
-                                    if let Some(idx) = captured_idx {
-                                        if *key != egui::Key::Escape {
-                                            return Some((idx, crate::shortcuts::KeyBinding::from_event(*key, modifiers.ctrl, modifiers.shift, modifiers.alt)));
-                                        }
-                                    }
-                                    return None; // Escape cancels
-                                }
-                            }
-                            None
-                        });
-                        if let Some((idx, binding)) = captured {
-                            if idx < self.shortcuts.entries.len() {
-                                self.shortcuts.entries[idx].primary = Some(binding);
-                            }
-                            self.shortcut_listen_idx = None;
-                        }
-                        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                            self.shortcut_listen_idx = None;
-                        }
-                        // Don't render the list while listening
-                        return;
-                    }
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        let search_lower = self.shortcut_search.to_lowercase();
-                        for (entry_idx, entry) in self.shortcuts.entries.iter().enumerate() {
-                            let name_lower = entry.name.to_lowercase();
-                            let cat_lower = entry.category.to_lowercase();
-                            if !search_lower.is_empty() && !name_lower.contains(&search_lower) && !cat_lower.contains(&search_lower) {
-                                continue;
-                            }
-
-                            let is_editing = self.shortcut_edit_idx == Some(entry_idx);
-
-                            ui.horizontal(|ui| {
-                                ui.label(entry.name);
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if is_editing {
-                                        if let Some(ref binding) = entry.primary {
-                                            if ui.button(binding.display()).clicked() {
-                                                self.shortcut_listen_idx = Some(entry_idx);
-                                            }
-                                        } else {
-                                            if ui.button("[none]").clicked() {
-                                                self.shortcut_listen_idx = Some(entry_idx);
-                                            }
-                                        }
-                                        if ui.button("Clear").clicked() {
-                                            self.shortcut_edit_idx = None;
-                                        }
-                                    } else {
-                                        if let Some(ref binding) = entry.primary {
-                                            ui.label(binding.display());
-                                        } else {
-                                            ui.label("[none]");
-                                        }
-                                        if ui.button("Edit").clicked() {
-                                            clicked_idx = Some(entry_idx);
-                                        }
-                                    }
-                                });
-                            });
-                            ui.separator();
-                        }
-                    });
-
-                    if let Some(idx) = clicked_idx {
-                        self.shortcut_edit_idx = Some(idx);
-                    }
-
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Reset to Defaults").clicked() {
-                            self.shortcuts = crate::shortcuts::ShortcutManager::new();
-                            self.shortcut_edit_idx = None;
-                            self.shortcut_listen_idx = None;
-                        }
-                        if ui.button("Close").clicked() {
-                            close = true;
-                        }
-                    });
-
-                    if close {
-                        self.show_shortcut_editor = false;
-                        self.shortcut_edit_idx = None;
-                        self.shortcut_listen_idx = None;
-                    }
-                });
-        }
-
-        // ==================== SELECTION DIALOGS ====================
-        if self.show_grow_dialog {
-            let mut close = false;
-            egui::Window::new("Grow Selection")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Grow selection by:");
-                        ui.add(egui::DragValue::new(&mut self.grow_pixels).clamp_range(1..=100));
-                        ui.label("pixels");
-                    });
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Grow").clicked() {
-                            let grow_px = self.grow_pixels;
-                            selection::grow_selection(&mut self.selection_mask, grow_px, self.canvas_width as i32, self.canvas_height as i32);
-                            self.show_selection_overlay = self.selection_mask.is_active;
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                    });
-                });
-            if close {
-                self.show_grow_dialog = false;
-            }
-        }
-
-        if self.show_shrink_dialog {
-            let mut close = false;
-            egui::Window::new("Shrink Selection")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Shrink selection by:");
-                        ui.add(egui::DragValue::new(&mut self.shrink_pixels).clamp_range(1..=100));
-                        ui.label("pixels");
-                    });
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Shrink").clicked() {
-                            let shrink_px = self.shrink_pixels;
-                            selection::shrink_selection(&mut self.selection_mask, shrink_px, self.canvas_width as i32, self.canvas_height as i32);
-                            self.show_selection_overlay = self.selection_mask.is_active;
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                    });
-                });
-            if close {
-                self.show_shrink_dialog = false;
-            }
-        }
-
-        if self.show_feather_dialog {
-            let mut close = false;
-            egui::Window::new("Feather Selection")
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Feather radius:");
-                        ui.add(egui::DragValue::new(&mut self.feather_pixels).clamp_range(1..=100));
-                        ui.label("pixels");
-                    });
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Feather").clicked() {
-                            let feather_px = self.feather_pixels;
-                            selection::feather_selection(&mut self.selection_mask, feather_px, self.canvas_width as i32, self.canvas_height as i32);
-                            self.show_selection_overlay = self.selection_mask.is_active;
-                            close = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            close = true;
-                        }
-                    });
-                });
-            if close {
-                self.show_feather_dialog = false;
-            }
-        }
-
-        // ==================== PREFERENCES DIALOG ====================
-        if self.show_preferences_dialog {
-            let mut close = false;
-            egui::Window::new("Preferences")
-                .collapsible(false)
-                .resizable(true)
-                .default_size([300.0, 250.0])
-                .show(ctx, |ui| {
-                    egui::Grid::new("pref_grid").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
-                        ui.label("Theme:");
-                        let old_theme = self.pref_theme.clone();
-                        egui::ComboBox::from_id_source("pref_theme")
-                            .selected_text(&self.pref_theme)
-                            .show_ui(ui, |ui| {
-                                for theme in &["Light", "Gray", "Dark"] {
-                                    ui.selectable_value(&mut self.pref_theme, theme.to_string(), *theme);
-                                }
-                            });
-                        if self.pref_theme != old_theme {
-                            if self.pref_theme == "Light" {
-                                ctx.set_visuals(egui::Visuals::light());
-                            } else if self.pref_theme == "Dark" {
-                                ctx.set_visuals(egui::Visuals::dark());
-                            } else {
-                                let mut visuals = egui::Visuals::light();
-                                visuals.panel_fill = egui::Color32::from_rgb(240, 240, 240);
-                                visuals.window_fill = egui::Color32::from_rgb(245, 245, 245);
-                                visuals.widgets.active.bg_fill = egui::Color32::from_rgb(180, 200, 240);
-                                visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(215, 225, 250);
-                                visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(230, 230, 230);
-                                ctx.set_visuals(visuals);
-                            }
-                        }
-                        ui.end_row();
-
-                        ui.label("UI Scale:");
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Slider::new(&mut self.pref_ui_scale, 0.5..=2.0).step_by(0.1));
-                            if ui.button("Apply").clicked() {
-                                ctx.set_pixels_per_point(self.pref_ui_scale);
-                            }
-                        });
-                        ui.end_row();
-
-                        ui.label("Canvas Background:");
-                        egui::ComboBox::from_id_source("pref_canvas_bg")
-                            .selected_text(&self.pref_canvas_bg)
-                            .show_ui(ui, |ui| {
-                                for bg in &["Checkerboard", "White", "Gray", "Black"] {
-                                    ui.selectable_value(&mut self.pref_canvas_bg, bg.to_string(), *bg);
-                                }
-                            });
-                        ui.end_row();
-
-                        ui.label("Autosave:");
-                        ui.checkbox(&mut self.pref_autosave_enabled, "Enabled");
-                        ui.end_row();
-
-                        ui.label("Autosave Interval:");
-                        let old_interval = self.pref_autosave_interval_mins;
-                        ui.horizontal(|ui| {
-                            ui.add(egui::DragValue::new(&mut self.pref_autosave_interval_mins).clamp_range(1..=60));
-                            ui.label("minutes");
-                        });
-                        if self.pref_autosave_interval_mins != old_interval || self.pref_autosave_enabled != self.autosave_enabled {
-                            self.autosave_enabled = self.pref_autosave_enabled;
-                            self.autosave_interval_secs = (self.pref_autosave_interval_mins * 60) as f64;
-                        }
-                        ui.end_row();
-                    });
-                    
-                    ui.add_space(12.0);
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
-            if close {
-                self.show_preferences_dialog = false;
-            }
-        }
-
-        // ==================== TABLET DIAGNOSTICS DIALOG ====================
-        if self.show_tablet_diagnostics {
-            let mut close = false;
-            egui::Window::new("Tablet Diagnostics")
-                .collapsible(false)
-                .resizable(true)
-                .default_size([400.0, 450.0])
-                .show(ctx, |ui| {
-                    ui.label("RAW INPUT STATES:");
-                    ui.group(|ui| {
-                        let pressure = self.tablet_axis.pressure;
-                        let tx = self.tablet_axis.tilt_x.unwrap_or(0.0);
-                        let ty = self.tablet_axis.tilt_y.unwrap_or(0.0);
-                        ui.label(format!("Pressure: {:.3}", pressure));
-                        ui.label(format!("Tilt X: {:.3}", tx));
-                        ui.label(format!("Tilt Y: {:.3}", ty));
-                        ui.label(format!("Touch Active: {}", self.egui_touch_active));
-                        if let Some(force) = self.egui_touch_pressure {
-                            ui.label(format!("Touch Force: {:.3}", force));
-                        }
-                    });
-
-                    ui.add_space(8.0);
-                    ui.label("STABILIZATION SETTINGS:");
-                    ui.horizontal(|ui| {
-                        ui.label("Stabilizer Level:");
-                        let preset = &mut self.presets[self.active_preset_index];
-                        egui::ComboBox::from_id_source("stabilizer_level_combo")
-                            .selected_text(format!("{:?}", preset.stabilizer_level))
-                            .show_ui(ui, |ui| {
-                                for level in &[
-                                    crate::input::StabilizerLevel::Off,
-                                    crate::input::StabilizerLevel::Level(3),
-                                    crate::input::StabilizerLevel::Level(5),
-                                    crate::input::StabilizerLevel::Level(10),
-                                    crate::input::StabilizerLevel::Level(15),
-                                    crate::input::StabilizerLevel::Level(20),
-                                    crate::input::StabilizerLevel::Level(30),
-                                ] {
-                                    ui.selectable_value(&mut preset.stabilizer_level, *level, format!("{:?}", level));
-                                }
-                            });
-                    });
-                    
-                    ui.add_space(8.0);
-                    ui.label("PRESSURE CURVE DIAGRAM:");
-                    let size = egui::Vec2::splat(120.0);
-                    let (rect_curve, _response_curve) = ui.allocate_exact_size(size, egui::Sense::hover());
-                    ui.painter().rect_filled(rect_curve, 4.0, egui::Color32::from_gray(240));
-                    ui.painter().rect_stroke(rect_curve, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
-                    ui.painter().line_segment([rect_curve.left_bottom(), rect_curve.right_top()], egui::Stroke::new(1.0, egui::Color32::GRAY));
-                    
-                    let mut pts = Vec::new();
-                    let curve_steps = 20;
-                    for i in 0..=curve_steps {
-                        let x_val = i as f32 / curve_steps as f32;
-                        let y_val = self.remap_pressure(x_val);
-                        let sx = rect_curve.left() + x_val * rect_curve.width();
-                        let sy = rect_curve.bottom() - y_val * rect_curve.height();
-                        pts.push(egui::Pos2::new(sx, sy));
-                    }
-                    for i in 0..pts.len() - 1 {
-                        ui.painter().line_segment([pts[i], pts[i + 1]], egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215)));
-                    }
-                    for pt in &pts {
-                        ui.painter().circle_filled(*pt, 3.0, egui::Color32::from_rgb(0, 120, 215));
-                    }
-
-                    ui.add_space(8.0);
-                    ui.label("Stabilizer Test Pad (Draw here):");
-                    let pad_size = egui::Vec2::new(380.0, 100.0);
-                    let (pad_rect, pad_resp) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
-                    ui.painter().rect_filled(pad_rect, 4.0, egui::Color32::from_gray(255));
-                    ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
-                    
-                    thread_local! {
-                        static DIAG_POINTS: std::cell::RefCell<Vec<egui::Pos2>> = std::cell::RefCell::new(Vec::new());
-                    }
-                    
-                    if pad_resp.dragged_by(egui::PointerButton::Primary) {
-                        if let Some(hover_pos) = pad_resp.hover_pos() {
-                            DIAG_POINTS.with(|pts| {
-                                pts.borrow_mut().push(hover_pos);
-                            });
-                        }
-                    }
-                    
-                    DIAG_POINTS.with(|pts| {
-                        let points = pts.borrow();
-                        if points.len() >= 2 {
-                            for i in 0..points.len() - 1 {
-                                ui.painter().line_segment([points[i], points[i + 1]], egui::Stroke::new(2.0, egui::Color32::from_rgb(200, 40, 40)));
-                            }
-                        }
-                    });
-                    
-                    if ui.button("Clear Test Pad").clicked() {
-                        DIAG_POINTS.with(|pts| {
-                            pts.borrow_mut().clear();
-                        });
-                    }
-
-                    ui.add_space(12.0);
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
-                });
-            if close {
-                self.show_tablet_diagnostics = false;
-            }
-        }
+        // 2. QUICK BAR PANEL
+        crate::ui::quick_bar::draw_quick_bar(self, ctx);
 
         // Autosave check
         if self.autosave_enabled {
@@ -3595,1393 +2583,11 @@ impl eframe::App for PaintApp {
             }
         }
 
-        // 2. LEFT SIDEBAR TOOLPANEL (Creation inputs)
-        if !self.show_minimal_ui {
-            egui::SidePanel::left("left_sidebar")
-                .resizable(false)
-                .default_width(160.0)
-                .min_width(120.0)
-                .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_source("left_sidebar_scroll")
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                    // Combined TOOLS + BRUSH PRESETS (SAI-style)
-                    ui.group(|ui| {
-                        ui.label("TOOLS / BRUSH PRESETS");
-
-                                egui::Grid::new("tools_grid")
-                                    .num_columns(4)
-                                    .spacing([4.0, 4.0])
-                                    .show(ui, |ui| {
-                                        let tools: [(ToolId, &str, &str); 16] = [
-                                            (ToolId::RectSelect, "▢", "Rect Selection [Ctrl+A/D/I]"),
-                                            (ToolId::EllipseSelect, "⭘", "Oval Selection"),
-                                            (ToolId::Lasso, "➰", "Lasso Selection"),
-                                            (ToolId::MagicWand, "🪄", "Magic Wand Selection"),
-                                            (ToolId::Move, "✥", "Move Tool"),
-                                            (ToolId::Transform, "⛶", "Transform Tool [Ctrl+T]"),
-                                            (ToolId::ColorPicker, "🧪", "Color Picker (Eyedropper) [Alt/I]"),
-                                            (ToolId::Hand, "✋", "Hand Panning Tool [Space]"),
-                                            (ToolId::Zoom, "🔍", "Zoom Canvas"),
-                                            (ToolId::RotateView, "⟳", "Rotate View [R]"),
-                                            (ToolId::Brush, "🖌", "Paint Brush [B]"),
-                                            (ToolId::Eraser, "🧼", "Eraser [E]"),
-                                            (ToolId::Fill, "🪣", "Fill Bucket [Alt+Backspace]"),
-                                            (ToolId::Line, "╱", "Straight Line Tool [Shift]"),
-                                            (ToolId::Shape, "⬡", "Shape Tool"),
-                                            (ToolId::Reference, "◎", "Reference Layer Toggle"),
-                                        ];
-                                        for (i, (tool_id, label, tooltip)) in tools.iter().enumerate() {
-                                            let is_active = self.active_tool == *tool_id;
-                                            let btn = egui::Button::new(
-                                                egui::RichText::new(*label).size(12.0)
-                                            )
-                                            .selected(is_active);
-                                            let r = ui.add_sized([32.0, 28.0], btn).on_hover_text(*tooltip);
-                                            if r.clicked() {
-                                                self.active_tool = *tool_id;
-                                                if *tool_id == ToolId::Brush {
-                                                    if self.presets[self.active_preset_index].is_eraser {
-                                                        if let Some(pos) = self.presets.iter().position(|p| !p.is_eraser) {
-                                                            self.select_preset(pos);
-                                                        }
-                                                    }
-                                                } else if *tool_id == ToolId::Eraser {
-                                                    if !self.presets[self.active_preset_index].is_eraser {
-                                                        if let Some(pos) = self.presets.iter().position(|p| p.is_eraser) {
-                                                            self.select_preset(pos);
-                                                        }
-                                                    }
-                                                }
-                                                ctx.request_repaint();
-                                            }
-                                            if i % 4 == 3 {
-                                                ui.end_row();
-                                            }
-                                        }
-                                    });
-                                ui.separator();
-                                ui.label("BRUSH PRESETS");
-                                egui::Grid::new("presets_grid")
-                                    .num_columns(4)
-                                    .spacing([4.0, 4.0])
-                                    .show(ui, |ui| {
-                                        let num_presets = self.presets.len();
-                                        for i in 0..16 {
-                                            if i < num_presets {
-                                                let preset_icon = self.presets[i].icon;
-                                                let preset_name = self.presets[i].name.clone();
-                                                let is_selected = self.active_preset_index == i && matches!(self.active_tool, ToolId::Brush | ToolId::Eraser);
-                                                
-                                                let type_tag = match preset_icon {
-                                                    PresetIcon::Pencil => "[P]",
-                                                    PresetIcon::InkPen => "[I]",
-                                                    PresetIcon::PaintBrush => "[B]",
-                                                    PresetIcon::Smudge => "[S]",
-                                                    PresetIcon::Eraser => "[E]",
-                                                    PresetIcon::AirBrush => "[A]",
-                                                    PresetIcon::Water => "[W]",
-                                                    PresetIcon::Marker => "[M]",
-                                                    PresetIcon::BinaryPen => "[1]",
-                                                };
-                                                
-                                                let label = format!("{}\n{}", type_tag, preset_name);
-                                                let btn = egui::Button::new(
-                                                    egui::RichText::new(&label)
-                                                        .size(8.0)
-                                                        .line_height(Some(10.0))
-                                                )
-                                                .selected(is_selected);
-                                                
-                                                let btn_response = ui.add_sized([32.0, 36.0], btn);
-                                                
-                                                // Border highlight if active (contrasting deep blue)
-                                                if is_selected {
-                                                    ui.painter().rect_stroke(
-                                                        btn_response.rect.expand(1.0),
-                                                        3.0,
-                                                        egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))
-                                                    );
-                                                }
-                                                
-                                                if btn_response.clicked() {
-                                                    self.select_preset(i);
-                                                }
-                                                
-                                                // Right click context menu
-                                                btn_response.context_menu(|ui| {
-                                                    if ui.button("Rename").clicked() {
-                                                        self.renaming_preset_index = Some(i);
-                                                        self.rename_input = preset_name.clone();
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Duplicate").clicked() {
-                                                        self.duplicate_preset(i);
-                                                        ui.close_menu();
-                                                    }
-                                                    ui.separator();
-                                                    let can_delete = num_presets > 1;
-                                                    if ui.add_enabled(can_delete, egui::Button::new("Delete")).clicked() {
-                                                        self.delete_preset(i);
-                                                        ui.close_menu();
-                                                    }
-                                                });
-                                            } else {
-                                                // Empty slot placeholder
-                                                let btn = egui::Button::new(
-                                                    egui::RichText::new("+")
-                                                        .size(16.0)
-                                                        .color(egui::Color32::GRAY)
-                                                )
-                                                .fill(egui::Color32::from_gray(245));
-                                                let btn_response = ui.add_sized([32.0, 36.0], btn);
-                                                
-                                                // Left click or right click context menu to create
-                                                let mut show_creation_menu = false;
-                                                if btn_response.clicked() {
-                                                    show_creation_menu = true;
-                                                }
-                                                btn_response.context_menu(|ui| {
-                                                    ui.label("Create New Brush:");
-                                                    if ui.button("Pencil").clicked() {
-                                                        self.create_preset(PresetIcon::Pencil);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Ink Pen").clicked() {
-                                                        self.create_preset(PresetIcon::InkPen);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Paint Brush").clicked() {
-                                                        self.create_preset(PresetIcon::PaintBrush);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Smudge").clicked() {
-                                                        self.create_preset(PresetIcon::Smudge);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Eraser").clicked() {
-                                                        self.create_preset(PresetIcon::Eraser);
-                                                        ui.close_menu();
-                                                    }
-                                                    ui.separator();
-                                                    ui.label("Import Brush Preset:");
-                                                    ui.horizontal(|ui| {
-                                                        ui.label("Path:");
-                                                        ui.text_edit_singleline(&mut self.brush_import_path);
-                                                    });
-                                                    if ui.button("Load .artybrush").clicked() {
-                                                        let path = std::path::Path::new(&self.brush_import_path);
-                                                        match crate::brush_io::load_artybrush(path, &mut self.brush_textures) {
-                                                            Ok(mut new_preset) => {
-                                                                self.preset_id_counter += 1;
-                                                                new_preset.id = self.preset_id_counter;
-
-                                                                let mut brush = Brush::new();
-                                                                Self::set_constant(&mut brush, BrushSetting::Radius, new_preset.radius_log);
-                                                                Self::set_constant(&mut brush, BrushSetting::Opaque, new_preset.opacity);
-                                                                Self::set_constant(&mut brush, BrushSetting::Hardness, new_preset.hardness);
-                                                                Self::set_constant(&mut brush, BrushSetting::Smudge, new_preset.color_blending);
-                                                                Self::set_constant(&mut brush, BrushSetting::SmudgeLength, new_preset.dilution);
-                                                                if new_preset.is_eraser {
-                                                                    Self::set_constant(&mut brush, BrushSetting::Eraser, 1.0);
-                                                                }
-
-                                                                self.presets.push(new_preset);
-                                                                self.brushes.push(brush);
-                                                                self.brush_states.push(BrushState::default());
-
-                                                                let new_idx = self.presets.len() - 1;
-                                                                self.select_preset(new_idx);
-                                                                log::info!("Imported .artybrush successfully!");
-                                                            }
-                                                            Err(e) => {
-                                                                log::error!("Failed to import .artybrush: {:?}", e);
-                                                            }
-                                                        }
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("⚡ Extract & Import .sut").clicked() {
-                                                        let path = std::path::Path::new(&self.brush_import_path);
-                                                        match crate::brush_io::extract_sut_texture(path) {
-                                                            Ok((gray_bytes, w, h)) => {
-                                                                let mut final_bytes = vec![255u8; 256 * 256];
-                                                                for y in 0..h.min(256) {
-                                                                    for x in 0..w.min(256) {
-                                                                        final_bytes[(y * 256 + x) as usize] = gray_bytes[(y * w + x) as usize];
-                                                                    }
-                                                                }
-                                                                self.brush_textures.push(final_bytes);
-                                                                let texture_id = (self.brush_textures.len() - 1) as u8;
-
-                                                                self.preset_id_counter += 1;
-                                                                let new_preset = BrushPreset {
-                                                                    id: self.preset_id_counter,
-                                                                    name: path.file_stem().and_then(|s| s.to_str()).unwrap_or("SUT Brush").to_string(),
-                                                                    icon: PresetIcon::PaintBrush,
-                                                                    radius_log: 2.0,
-                                                                    opacity: 1.0,
-                                                                    hardness: 0.8,
-                                                                    min_size_fraction: 0.2,
-                                                                    color_blending: 0.0,
-                                                                    dilution: 0.0,
-                                                                    is_eraser: false,
-                                                                    texture_id,
-                                                                    texture_scale: 1.0,
-                                                                    bristle_id: 0,
-                                                                    stabilizer_level: StabilizerLevel::default(),
-                                                                    stabilizer_mode: StabilizerMode::SpringMassDamper,
-                                                                    spacing: 2.0,
-                                                                    density: 1.0,
-                                                                };
-
-                                                                let mut brush = Brush::new();
-                                                                Self::set_constant(&mut brush, BrushSetting::Radius, new_preset.radius_log);
-                                                                Self::set_constant(&mut brush, BrushSetting::Opaque, new_preset.opacity);
-                                                                Self::set_constant(&mut brush, BrushSetting::Hardness, new_preset.hardness);
-
-                                                                self.presets.push(new_preset);
-                                                                self.brushes.push(brush);
-                                                                self.brush_states.push(BrushState::default());
-
-                                                                let new_idx = self.presets.len() - 1;
-                                                                self.select_preset(new_idx);
-                                                                log::info!("Extracted and imported SUT brush successfully!");
-                                                            }
-                                                            Err(e) => {
-                                                                log::error!("Failed to extract SUT: {:?}", e);
-                                                            }
-                                                        }
-                                                        ui.close_menu();
-                                                    }
-                                                });
-                                                
-                                                if show_creation_menu {
-                                                    ui.ctx().memory_mut(|mem| mem.open_popup(btn_response.id.with("context_menu")));
-                                                }
-                                            }
-                                            
-                                            if i % 4 == 3 {
-                                                ui.end_row();
-                                            }
-                                        }
-                                    });
-
-                        // Inline renaming text box
-                        if let Some(idx) = self.renaming_preset_index {
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.label("Rename:");
-                                let res = ui.add(egui::TextEdit::singleline(&mut self.rename_input).desired_width(100.0));
-                                if res.lost_focus() || ui.button("OK").clicked() {
-                                    if !self.rename_input.trim().is_empty() {
-                                        self.presets[idx].name = self.rename_input.trim().to_string();
-                                    }
-                                    self.renaming_preset_index = None;
-                                }
-                                if ui.button("✕").clicked() {
-                                    self.renaming_preset_index = None;
-                                }
-                            });
-                        }
-
-                        ui.add_space(6.0);
-
-                        // Stabilizer configuration UI
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label("Stabilizer:");
-                                let current_level = self.stabilizer.level;
-                                let text = match current_level {
-                                    StabilizerLevel::Off => "Off".to_string(),
-                                    StabilizerLevel::Level(val) => format!("Level {}", val),
-                                    StabilizerLevel::SLevel(val) => format!("S-{}", val),
-                                };
-                                let response = egui::ComboBox::from_id_source("side_stabilizer_level")
-                                    .selected_text(text)
-                                    .width(90.0)
-                                    .show_ui(ui, |ui| {
-                                        let mut selected = false;
-                                        if ui.selectable_label(matches!(current_level, StabilizerLevel::Off), "Off").clicked() {
-                                            self.stabilizer.set_level(StabilizerLevel::Off);
-                                            selected = true;
-                                        }
-                                        for val in 1..=15 {
-                                            let is_sel = match current_level {
-                                                StabilizerLevel::Level(v) => v == val,
-                                                _ => false,
-                                            };
-                                            if ui.selectable_label(is_sel, format!("Level {}", val)).clicked() {
-                                                self.stabilizer.set_level(StabilizerLevel::Level(val));
-                                                selected = true;
-                                            }
-                                        }
-                                        for val in 1..=5 {
-                                            let is_sel = match current_level {
-                                                StabilizerLevel::SLevel(v) => v == val,
-                                                _ => false,
-                                            };
-                                            if ui.selectable_label(is_sel, format!("S-{}", val)).clicked() {
-                                                self.stabilizer.set_level(StabilizerLevel::SLevel(val));
-                                                selected = true;
-                                            }
-                                        }
-                                        selected
-                                    });
-                                if response.inner.unwrap_or(false) {
-                                    ctx.request_repaint();
-                                    self.brush_settings_dirty = true;
-                                }
-                            });
-
-                            ui.horizontal(|ui| {
-                                ui.label("Mode:");
-                                let current_mode = self.stabilizer.mode;
-                                let mode_text = match current_mode {
-                                    StabilizerMode::Ema => "EMA",
-                                    StabilizerMode::SpringMassDamper => "Spring Physics",
-                                };
-                                let response = egui::ComboBox::from_id_source("side_stabilizer_mode")
-                                    .selected_text(mode_text)
-                                    .width(120.0)
-                                    .show_ui(ui, |ui| {
-                                        let mut selected = false;
-                                        if ui.selectable_label(current_mode == StabilizerMode::Ema, "EMA").clicked() {
-                                            self.stabilizer.mode = StabilizerMode::Ema;
-                                            selected = true;
-                                        }
-                                        if ui.selectable_label(current_mode == StabilizerMode::SpringMassDamper, "Spring Physics").clicked() {
-                                            self.stabilizer.mode = StabilizerMode::SpringMassDamper;
-                                            selected = true;
-                                        }
-                                        selected
-                                    });
-                                if response.inner.unwrap_or(false) {
-                                    ctx.request_repaint();
-                                    self.brush_settings_dirty = true;
-                                }
-                            });
-                        });
-                    });
-
-                    ui.add_space(5.0);
-
-                    // Dynamic Tool Options - changes based on active tool
-                    ui.group(|ui| {
-                        ui.label("TOOL OPTIONS");
-                        match self.active_tool {
-                            ToolId::Fill => {
-                                ui.horizontal(|ui| {
-                                    ui.label("Detection:");
-                                    egui::ComboBox::from_id_source("fill_detection")
-                                        .selected_text(match self.fill_options.detection_mode {
-                                            fill::FillDetectionMode::TransparencyStrict => "Transp Strict",
-                                            fill::FillDetectionMode::TransparencyFuzzy => "Transp Fuzzy",
-                                            fill::FillDetectionMode::ColorDifference => "Color Diff",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyStrict, "Transp Strict");
-                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyFuzzy, "Transp Fuzzy");
-                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::ColorDifference, "Color Diff");
-                                        });
-                                });
-                                match self.fill_options.detection_mode {
-                                    fill::FillDetectionMode::ColorDifference => {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Color Diff:");
-                                            ui.add(egui::Slider::new(&mut self.fill_options.tolerance, 0..=255));
-                                        });
-                                    }
-                                    fill::FillDetectionMode::TransparencyFuzzy => {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Transp Diff:");
-                                            ui.add(egui::Slider::new(&mut self.fill_options.transp_diff, 0..=255));
-                                        });
-                                    }
-                                    fill::FillDetectionMode::TransparencyStrict => {}
-                                }
-                                ui.horizontal(|ui| {
-                                    ui.label("Reference:");
-                                    egui::ComboBox::from_id_source("fill_reference")
-                                        .selected_text(match self.fill_options.reference {
-                                            fill::FillReference::CurrentLayer => "Current Layer",
-                                            fill::FillReference::SelectionSourceLayers => "Reference Layers",
-                                            fill::FillReference::AllVisibleLayers => "All Visible",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::CurrentLayer, "Current Layer");
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Reference Layers");
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::AllVisibleLayers, "All Visible");
-                                        });
-                                });
-
-                                let has_ref = self.layers.values().any(|l| l.selection_source);
-                                if self.fill_options.reference == fill::FillReference::SelectionSourceLayers && !has_ref {
-                                    ui.colored_label(egui::Color32::RED, "⚠ No reference layer selected!\nEnable Ref (◎) on a lineart layer.");
-                                }
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Expand:");
-                                    ui.add(egui::Slider::new(&mut self.fill_options.expand_px, 0..=10));
-                                });
-                                ui.checkbox(&mut self.fill_options.contiguous, "Contiguous");
-                                ui.checkbox(&mut self.fill_options.antialias, "Anti-alias");
-                                ui.checkbox(&mut self.fill_options.respect_selection, "Respect selection");
-                                ui.checkbox(&mut self.fill_options.fill_transparent_only, "Fill transparent only");
-                            }
-                            ToolId::RectSelect | ToolId::EllipseSelect | ToolId::Lasso => {
-                                ui.horizontal(|ui| {
-                                    ui.label("Mode:");
-                                    egui::ComboBox::from_id_source("sel_mode")
-                                        .selected_text(match self.selection_mode {
-                                            selection::SelectionMode::Replace => "Replace",
-                                            selection::SelectionMode::Add => "Add",
-                                            selection::SelectionMode::Subtract => "Subtract",
-                                            selection::SelectionMode::Intersect => "Intersect",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Replace, "Replace");
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Add, "Add");
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Subtract, "Subtract");
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Intersect, "Intersect");
-                                        });
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("Feather:");
-                                    ui.add(egui::Slider::new(&mut self.selection_feather, 0.0..=100.0));
-                                });
-                            }
-                            ToolId::MagicWand => {
-                                ui.horizontal(|ui| {
-                                    ui.label("Mode:");
-                                    egui::ComboBox::from_id_source("wand_sel_mode")
-                                        .selected_text(match self.selection_mode {
-                                            selection::SelectionMode::Replace => "Replace",
-                                            selection::SelectionMode::Add => "Add",
-                                            selection::SelectionMode::Subtract => "Subtract",
-                                            selection::SelectionMode::Intersect => "Intersect",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Replace, "Replace");
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Add, "Add");
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Subtract, "Subtract");
-                                            ui.selectable_value(&mut self.selection_mode, selection::SelectionMode::Intersect, "Intersect");
-                                        });
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label("Detection:");
-                                    egui::ComboBox::from_id_source("wand_detection")
-                                        .selected_text(match self.fill_options.detection_mode {
-                                            fill::FillDetectionMode::TransparencyStrict => "Transp Strict",
-                                            fill::FillDetectionMode::TransparencyFuzzy => "Transp Fuzzy",
-                                            fill::FillDetectionMode::ColorDifference => "Color Diff",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyStrict, "Transp Strict");
-                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::TransparencyFuzzy, "Transp Fuzzy");
-                                            ui.selectable_value(&mut self.fill_options.detection_mode, fill::FillDetectionMode::ColorDifference, "Color Diff");
-                                        });
-                                });
-                                match self.fill_options.detection_mode {
-                                    fill::FillDetectionMode::ColorDifference => {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Color Diff:");
-                                            ui.add(egui::Slider::new(&mut self.fill_options.tolerance, 0..=255));
-                                        });
-                                    }
-                                    fill::FillDetectionMode::TransparencyFuzzy => {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Transp Diff:");
-                                            ui.add(egui::Slider::new(&mut self.fill_options.transp_diff, 0..=255));
-                                        });
-                                    }
-                                    fill::FillDetectionMode::TransparencyStrict => {}
-                                }
-                                ui.horizontal(|ui| {
-                                    ui.label("Reference:");
-                                    egui::ComboBox::from_id_source("wand_reference")
-                                        .selected_text(match self.fill_options.reference {
-                                            fill::FillReference::CurrentLayer => "Current Layer",
-                                            fill::FillReference::SelectionSourceLayers => "Reference Layers",
-                                            fill::FillReference::AllVisibleLayers => "All Visible",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::CurrentLayer, "Current Layer");
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::SelectionSourceLayers, "Reference Layers");
-                                            ui.selectable_value(&mut self.fill_options.reference, fill::FillReference::AllVisibleLayers, "All Visible");
-                                        });
-                                });
-
-                                let has_ref = self.layers.values().any(|l| l.selection_source);
-                                if self.fill_options.reference == fill::FillReference::SelectionSourceLayers && !has_ref {
-                                    ui.colored_label(egui::Color32::RED, "⚠ No reference layer selected!\nEnable Ref (◎) on a lineart layer.");
-                                }
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Expand:");
-                                    ui.add(egui::Slider::new(&mut self.fill_options.expand_px, 0..=10));
-                                });
-                                ui.checkbox(&mut self.fill_options.contiguous, "Contiguous");
-                                ui.checkbox(&mut self.fill_options.antialias, "Anti-alias");
-                            }
-                            ToolId::Transform => {
-                                ui.horizontal(|ui| {
-                                    ui.label("Interp:");
-                                    egui::ComboBox::from_id_source("interp")
-                                        .selected_text(match self.transform_state.interpolation {
-                                            transform_tool::InterpolationMode::Nearest => "Nearest",
-                                            transform_tool::InterpolationMode::Bilinear => "Bilinear",
-                                            transform_tool::InterpolationMode::Bicubic => "Bicubic",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(&mut self.transform_state.interpolation, transform_tool::InterpolationMode::Nearest, "Nearest");
-                                            ui.selectable_value(&mut self.transform_state.interpolation, transform_tool::InterpolationMode::Bilinear, "Bilinear");
-                                            ui.selectable_value(&mut self.transform_state.interpolation, transform_tool::InterpolationMode::Bicubic, "Bicubic");
-                                        });
-                                });
-                            }
-                            ToolId::ColorPicker => {
-                                ui.label("Picks color from canvas");
-                            }
-                            _ => {
-                                if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
-                                    // Brush preview box + size slider
-                                    let pixel_radius = self.brush_radius_log.exp();
-                                    ui.horizontal(|ui| {
-                                        let (resp, painter) = ui.allocate_painter(egui::Vec2::splat(56.0), egui::Sense::hover());
-                                        let r = resp.rect;
-                                        // Draw base background
-                                        painter.rect_filled(r, 2.0, egui::Color32::WHITE);
-                                        // Draw checkerboard
-                                        let cell_size = 7.0;
-                                        for yi in 0..8 {
-                                            for xi in 0..8 {
-                                                if (xi + yi) % 2 == 1 {
-                                                    let cell_rect = egui::Rect::from_min_size(
-                                                        egui::Pos2::new(r.min.x + xi as f32 * cell_size, r.min.y + yi as f32 * cell_size),
-                                                        egui::Vec2::splat(cell_size),
-                                                    );
-                                                    painter.rect_filled(cell_rect, 0.0, egui::Color32::from_gray(220));
-                                                }
-                                            }
-                                        }
-                                        painter.rect_stroke(r, 2.0, egui::Stroke::new(1.0, egui::Color32::from_gray(180)));
-
-                                        // Draw custom brush preview with hardness falloff
-                                        let center = r.center();
-                                        let h = self.brush_hardness;
-                                        let o = self.brush_opacity;
-                                        let num_steps = 15;
-                                        for i in 0..=num_steps {
-                                            let t = i as f32 / num_steps as f32; // t goes from 0.0 to 1.0
-                                            let r_i = 22.0 * (1.0 - t * (1.0 - h)); // radius from 22.0 down to 22.0 * h
-                                            let alpha_i = o * t; // alpha from 0.0 to o
-                                            let col = egui::Color32::from_rgba_unmultiplied(
-                                                (self.brush_color[0] * 255.0) as u8,
-                                                (self.brush_color[1] * 255.0) as u8,
-                                                (self.brush_color[2] * 255.0) as u8,
-                                                (alpha_i * 255.0) as u8,
-                                            );
-                                            painter.circle_filled(center, r_i, col);
-                                        }
-
-                                        ui.vertical(|ui| {
-                                            ui.label(format!("Size: {:.1} px", pixel_radius));
-                                            if ui.add(
-                                                egui::Slider::new(&mut self.brush_radius_log, -1.0..=5.0)
-                                                    .show_value(false),
-                                            ).changed() {
-                                                self.brush_settings_dirty = true;
-                                            }
-                                        });
-                                    });
-
-                                    // Opacity
-                                    ui.horizontal(|ui| {
-                                        ui.label("Opacity:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_opacity, 0.0..=1.0)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Hardness
-                                    ui.horizontal(|ui| {
-                                        ui.label("Hardness:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_hardness, 0.0..=1.0)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Min Size %
-                                    ui.horizontal(|ui| {
-                                        ui.label("Min Size %:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_min_size_fraction, 0.0..=1.0)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Blending
-                                    ui.horizontal(|ui| {
-                                        ui.label("Blending:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_color_blending, 0.0..=1.0)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Dilution
-                                    ui.horizontal(|ui| {
-                                        ui.label("Dilution:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_dilution, 0.0..=1.0)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Spacing
-                                    ui.horizontal(|ui| {
-                                        ui.label("Spacing:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_spacing, 0.5..=10.0)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Density
-                                    ui.horizontal(|ui| {
-                                        ui.label("Density:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_density, 0.0..=1.0)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Eraser Checkbox
-                                    if !self.presets.is_empty() {
-                                        let is_eraser = &mut self.presets[self.active_preset_index].is_eraser;
-                                        if ui.checkbox(is_eraser, "Eraser Mode [E]").changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    }
-
-                                    // Texture Dropdown
-                                    ui.horizontal(|ui| {
-                                        ui.label("Texture:");
-                                        let mut selected_tex = self.brush_texture_id;
-                                        let res = egui::ComboBox::from_id_source("brush_texture_combo")
-                                            .selected_text(match selected_tex {
-                                                0 => "None",
-                                                1 => "Noise",
-                                                2 => "Bristle",
-                                                _ => "Unknown",
-                                            })
-                                            .show_ui(ui, |ui| {
-                                                let mut changed = false;
-                                                if ui.selectable_value(&mut selected_tex, 0, "None").clicked() { changed = true; }
-                                                if ui.selectable_value(&mut selected_tex, 1, "Noise").clicked() { changed = true; }
-                                                if ui.selectable_value(&mut selected_tex, 2, "Bristle").clicked() { changed = true; }
-                                                changed
-                                            });
-                                        if res.inner.unwrap_or(false) {
-                                            self.brush_texture_id = selected_tex;
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Texture Scale Slider
-                                    if self.brush_texture_id > 0 {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Tex Scale:");
-                                            if ui.add(egui::Slider::new(&mut self.brush_texture_scale, 0.1..=10.0)).changed() {
-                                                self.brush_settings_dirty = true;
-                                            }
-                                        });
-                                    }
-
-                                    // Bristle ID Slider
-                                    ui.horizontal(|ui| {
-                                        ui.label("Bristle ID:");
-                                        if ui.add(egui::Slider::new(&mut self.brush_bristle_id, 0..=5)).changed() {
-                                            self.brush_settings_dirty = true;
-                                        }
-                                    });
-
-                                    // Lock Canvas Bounds
-                                    ui.checkbox(&mut self.lock_canvas_bounds, "Lock Canvas Bounds");
-
-                                    ui.add_space(5.0);
-
-                                    // Advanced / debug Info
-                                    ui.collapsing("Debug / Advanced Info", |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label("Pressure response:");
-                                            ui.add(
-                                                egui::Slider::new(&mut self.pressure_curve, 0.25..=2.50)
-                                                    .text("curve"),
-                                            );
-                                        });
-                                        ui.horizontal(|ui| {
-                                            ui.label("Min pressure:");
-                                            ui.add(
-                                                egui::Slider::new(&mut self.pressure_min, 0.00..=0.30)
-                                                    .text("floor"),
-                                            );
-                                        });
-
-                                        let raw_display = self.egui_touch_pressure.unwrap_or(self.tablet_axis.pressure).clamp(0.0, 1.0);
-                                        let raw_level = (raw_display * 8191.0).round() as u32;
-
-                                        let smoothed_display = self.stabilizer.last_smoothed_pressure.unwrap_or(raw_display).clamp(0.0, 1.0);
-                                        let smoothed_level = (smoothed_display * 8191.0).round() as u32;
-
-                                        let remapped_display = self.remap_pressure(smoothed_display);
-
-                                        ui.label(format!("Raw Pen:  {:.4} / 8192 ({})", raw_display, raw_level));
-                                        ui.label(format!("Smoothed: {:.4} / 8192 ({})", smoothed_display, smoothed_level));
-                                        ui.label(format!("Remapped: {:.4}", remapped_display));
-
-                                        // Visual pressure bar
-                                        let pressure_frac = remapped_display;
-                                        let bar_rect = ui.available_rect_before_wrap();
-                                        let bar_width = bar_rect.width().min(190.0);
-                                        let bar_height = 10.0;
-                                        let (bar_response, painter) = ui.allocate_painter(
-                                            egui::Vec2::new(bar_width, bar_height), egui::Sense::hover()
-                                        );
-                                        let r = bar_response.rect;
-                                        painter.rect_filled(r, 2.0, egui::Color32::from_gray(60));
-                                        let filled = egui::Rect::from_min_max(
-                                            r.min,
-                                            egui::Pos2::new(r.min.x + r.width() * pressure_frac, r.max.y),
-                                        );
-                                        painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(100, 180, 255));
-                                    });
-
-                                    // Brush Test Pad
-                                    ui.add_space(8.0);
-                                    ui.label("BRUSH TEST PAD:");
-                                    let pad_size = egui::Vec2::new(120.0, 60.0);
-                                    let (pad_rect, pad_response) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
-                                    
-                                    let test_pad_img = self.test_pad_image.clone();
-                                    let tex = self.test_pad_texture.get_or_insert_with(|| {
-                                        ui.ctx().load_texture(
-                                            "brush_test_pad",
-                                            test_pad_img,
-                                            egui::TextureOptions::default()
-                                        )
-                                    });
-                                    
-                                    ui.painter().rect_filled(pad_rect, 4.0, egui::Color32::WHITE);
-                                    ui.painter().image(
-                                        tex.id(),
-                                        pad_rect,
-                                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                                        egui::Color32::WHITE,
-                                    );
-                                    ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
-                                    
-                                    if pad_response.dragged_by(egui::PointerButton::Primary) {
-                                        if let Some(hover_pos) = pad_response.hover_pos() {
-                                            let local_pos = hover_pos - pad_rect.min;
-                                            let lx = local_pos.x as i32;
-                                            let ly = local_pos.y as i32;
-                                            let r = (self.brush_radius_log.exp() as i32).clamp(1, 15);
-                                            let color = egui::Color32::from_rgba_unmultiplied(
-                                                (self.brush_color[0] * 255.0) as u8,
-                                                (self.brush_color[1] * 255.0) as u8,
-                                                (self.brush_color[2] * 255.0) as u8,
-                                                (self.brush_opacity * 255.0) as u8,
-                                            );
-                                            
-                                            let w = self.test_pad_image.width() as i32;
-                                            let h = self.test_pad_image.height() as i32;
-                                            
-                                             for dy in -r..=r {
-                                                 for dx in -r..=r {
-                                                     if dx * dx + dy * dy <= r * r {
-                                                         let px = lx + dx;
-                                                         let py = ly + dy;
-                                                         if px >= 0 && px < w && py >= 0 && py < h {
-                                                             let idx = (py * w + px) as usize;
-                                                             let d = (dx * dx + dy * dy) as f32 / (r * r) as f32;
-                                                             let factor = (1.0 - d).max(0.0) * self.brush_density;
-                                                             
-                                                             let current_color = self.test_pad_image.pixels[idx];
-                                                             let src_a = (color.a() as f32 * factor) / 255.0;
-                                                             let dst_a = current_color.a() as f32 / 255.0;
-                                                             
-                                                             let out_a = src_a + dst_a * (1.0 - src_a);
-                                                             if out_a > 0.0 {
-                                                                 let r_out = ((color.r() as f32 * src_a + current_color.r() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                                                                 let g_out = ((color.g() as f32 * src_a + current_color.g() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                                                                 let b_out = ((color.b() as f32 * src_a + current_color.b() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                                                                 self.test_pad_image.pixels[idx] = egui::Color32::from_rgba_unmultiplied(r_out, g_out, b_out, (out_a * 255.0) as u8);
-                                                             }
-                                                         }
-                                                     }
-                                                 }
-                                             }
-                                             if let Some(tex) = &mut self.test_pad_texture {
-                                                 tex.set(self.test_pad_image.clone(), egui::TextureOptions::default());
-                                             }
-                                         }
-                                     }
-                                     
-                                     ui.add_space(2.0);
-                                     ui.horizontal(|ui| {
-                                         if ui.button("Clear Pad").clicked() {
-                                             self.test_pad_image = egui::ColorImage::new([120, 60], egui::Color32::WHITE);
-                                             if let Some(tex) = &mut self.test_pad_texture {
-                                                 tex.set(self.test_pad_image.clone(), egui::TextureOptions::default());
-                                             }
-                                         }
-                                     });
-                                } else {
-                                    ui.label("No options for this tool");
-                                }
-                            }
-                        }
-                    });
-                });
-            });
-        });
-    }
-
-        // 2b. Update layer thumbnails
+        // 3. SIDEBARS & PANELS
         self.regenerate_dirty_thumbnails();
-
-        // 3. RIGHT SIDEBAR UTILITY PANEL (Asset Management & Color Picking)
-        if !self.show_minimal_ui {
-            egui::SidePanel::right("right_sidebar")
-                .resizable(false)
-                .default_width(260.0)
-                .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_source("right_sidebar_scroll")
-                    .show(ui, |ui| {
-                        ui.vertical(|ui| {
-                    // NAVIGATOR PANEL
-                    ui.group(|ui| {
-                        ui.label("NAVIGATOR");
-                        ui.vertical_centered(|ui| {
-                            // Change sense to click_and_drag to allow panning interaction
-                            let (rect, response) = ui.allocate_exact_size(egui::vec2(240.0, 240.0), egui::Sense::click_and_drag());
-                            
-                            // 1. Draw Navigator Texture
-                            let painter = ui.painter().with_clip_rect(rect);
-                            if let Some(r) = &self.renderer {
-                                if let Some(texture_id) = r.navigator_egui_id {
-                                    painter.image(
-                                        texture_id,
-                                        rect,
-                                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                        Color32::WHITE,
-                                    );
-                                }
-                            }
-
-                            // 2. Calculate the paper sheet bounding box inside the 240x240 navigator box
-                            let canvas_aspect = self.canvas_width as f32 / self.canvas_height as f32;
-                            let paper_rect = if canvas_aspect >= 1.0 {
-                                let paper_h = 240.0 / canvas_aspect;
-                                egui::Rect::from_center_size(rect.center(), egui::vec2(240.0, paper_h))
-                            } else {
-                                let paper_w = 240.0 * canvas_aspect;
-                                egui::Rect::from_center_size(rect.center(), egui::vec2(paper_w, 240.0))
-                            };
-
-                            // 3. Project Viewport outline onto navigator
-                            if let Some(view_rect) = self.last_viewport_rect {
-                                let corners = [
-                                    view_rect.min, // top-left
-                                    egui::pos2(view_rect.max.x, view_rect.min.y), // top-right
-                                    view_rect.max, // bottom-right
-                                    egui::pos2(view_rect.min.x, view_rect.max.y), // bottom-left
-                                ];
-
-                                let mut nav_corners = Vec::with_capacity(4);
-                                for pt in corners {
-                                    let w = self.screen_to_world(pt, view_rect);
-                                    let pct_x = w.x / self.canvas_width as f32;
-                                    let pct_y = w.y / self.canvas_height as f32;
-                                    let nav_x = paper_rect.min.x + pct_x * paper_rect.width();
-                                    let nav_y = paper_rect.min.y + pct_y * paper_rect.height();
-                                    nav_corners.push(egui::pos2(nav_x, nav_y));
-                                }
-
-                                let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 50, 50));
-                                for i in 0..4 {
-                                    painter.line_segment([nav_corners[i], nav_corners[(i + 1) % 4]], stroke);
-                                }
-                            }
-
-                            // 4. Click/Drag Panning Interaction
-                            if response.clicked() || response.dragged() {
-                                if let Some(click_pos) = response.interact_pointer_pos() {
-                                    let pct_x = ((click_pos.x - paper_rect.min.x) / paper_rect.width()).clamp(0.0, 1.0);
-                                    let pct_y = ((click_pos.y - paper_rect.min.y) / paper_rect.height()).clamp(0.0, 1.0);
-                                    let w_target = egui::Vec2::new(pct_x * self.canvas_width as f32, pct_y * self.canvas_height as f32);
-                                    
-                                    let half_w = self.last_viewport_size.x * 0.5;
-                                    let half_h = self.last_viewport_size.y * 0.5;
-                                    self.viewport_offset = w_target - egui::vec2(half_w, half_h) / self.viewport_zoom;
-                                    ctx.request_repaint();
-                                }
-                            }
-                        });
-
-                        // 5. Utility buttons [Fit] [100%] [Reset]
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Fit").clicked() {
-                                self.command(CommandId::FitToScreen);
-                            }
-                            if ui.button("100%").clicked() {
-                                self.command(CommandId::ActualSize);
-                            }
-                            if ui.button("Reset").clicked() {
-                                self.command(CommandId::ResetView);
-                            }
-                        });
-
-                        // 6. Status labels under Navigator
-                        ui.add_space(4.0);
-                        ui.label(format!("Zoom: {:.1}%", self.viewport_zoom * 100.0));
-                        let angle_deg = self.rotation_angle.to_degrees().round();
-                        let mirror_state = if self.mirror_horizontal { "Mirror On" } else { "Mirror Off" };
-                        ui.label(format!("Rot: {:.0}° | {}", angle_deg, mirror_state));
-                    });
-                    ui.add_space(5.0);
-
-                    // COLOR SELECTOR
-                    ui.group(|ui| {
-                        ui.label("COLOR SELECTOR");
-
-                        // Custom HSV Color Wheel
-                        ui.vertical_centered(|ui| {
-                            let res = draw_hsv_color_wheel(ui, &mut self.brush_color, &mut self.color_wheel_drag_zone);
-                            if res.changed() {
-                                self.brush_settings_dirty = true;
-                            }
-                            if res.drag_stopped() || res.clicked() {
-                                self.record_color(self.brush_color);
-                            }
-                        });
-
-                        ui.add_space(5.0);
-
-                        // RGB/HEX preview and text representation
-                        ui.horizontal(|ui| {
-                            let mut color32 = Color32::from_rgb(
-                                (self.brush_color[0] * 255.0) as u8,
-                                (self.brush_color[1] * 255.0) as u8,
-                                (self.brush_color[2] * 255.0) as u8,
-                            );
-
-                            let edit_res = egui::color_picker::color_edit_button_srgba(
-                                ui,
-                                &mut color32,
-                                egui::color_picker::Alpha::Opaque,
-                            );
-                            if edit_res.changed() {
-                                self.brush_color[0] = color32.r() as f32 / 255.0;
-                                self.brush_color[1] = color32.g() as f32 / 255.0;
-                                self.brush_color[2] = color32.b() as f32 / 255.0;
-                                self.brush_settings_dirty = true;
-                            }
-                            if edit_res.drag_stopped() || edit_res.clicked() {
-                                self.record_color(self.brush_color);
-                            }
-
-                            let hex_str = format!(
-                                "#{:02X}{:02X}{:02X}",
-                                color32.r(),
-                                color32.g(),
-                                color32.b()
-                            );
-                            ui.label(hex_str);
-                        });
-
-                        ui.add_space(4.0);
-                        let mut sync_needed = false;
-                        let mut history_needed = false;
-                        egui::Grid::new("color_palette")
-                            .num_columns(6)
-                            .spacing([4.0, 4.0])
-                            .show(ui, |ui| {
-                                for (i, color) in self.palette.iter_mut().enumerate() {
-                                    let fill = Color32::from_rgb(
-                                        (color[0] * 255.0) as u8,
-                                        (color[1] * 255.0) as u8,
-                                        (color[2] * 255.0) as u8,
-                                    );
-                                    let is_selected_swatch = self.selected_palette_index == Some(i);
-                                    let btn_response = ui.add(
-                                        egui::Button::new("")
-                                            .min_size(Vec2::splat(22.0))
-                                            .fill(fill),
-                                    );
-                                    if is_selected_swatch {
-                                        ui.painter().rect_stroke(
-                                            btn_response.rect.expand(1.5),
-                                            1.0,
-                                            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215))
-                                        );
-                                    }
-                                    if btn_response.clicked() {
-                                        let picked = *color;
-                                        self.brush_color = picked;
-                                        self.selected_palette_index = Some(i);
-                                        history_needed = true;
-                                        sync_needed = true;
-                                    }
-                                    if i % 6 == 5 {
-                                        ui.end_row();
-                                    }
-                                }
-                            });
-                        if history_needed {
-                            self.record_color(self.brush_color);
-                        }
-                        if sync_needed {
-                            self.brush_settings_dirty = true;
-                        }
-
-                        // Color history
-                        if !self.color_history.is_empty() {
-                            ui.add_space(6.0);
-                            ui.label("HISTORY");
-                            ui.horizontal_wrapped(|ui| {
-                                let hist_len = self.color_history.len();
-                                for (i, color) in self.color_history.iter().rev().enumerate() {
-                                    if i >= 12 { break; }
-                                    let fill = Color32::from_rgb(
-                                        (color[0] * 255.0) as u8,
-                                        (color[1] * 255.0) as u8,
-                                        (color[2] * 255.0) as u8,
-                                    );
-                                    let btn = ui.add(
-                                        egui::Button::new("")
-                                            .min_size(Vec2::splat(16.0))
-                                            .fill(fill),
-                                    );
-                                    if btn.clicked() {
-                                        self.brush_color = *color;
-                                        self.brush_settings_dirty = true;
-                                    }
-                                    if i < hist_len.min(12) - 1 {
-                                        ui.add_space(2.0);
-                                    }
-                                }
-                            });
-                        }
-
-                        ui.horizontal(|ui| {
-                            if ui.button("Save").clicked() {
-                                if let Some(i) = self.selected_palette_index {
-                                    if let Some(slot) = self.palette.get_mut(i) {
-                                        *slot = self.brush_color;
-                                    }
-                                }
-                            }
-                            if ui.button("+").clicked() && self.palette.len() < 36 {
-                                self.palette.push(self.brush_color);
-                                self.selected_palette_index = Some(self.palette.len() - 1);
-                            }
-                            if ui
-                                .add_enabled(
-                                    self.selected_palette_index.is_some() && self.palette.len() > 1,
-                                    egui::Button::new("-"),
-                                )
-                                .clicked()
-                            {
-                                if let Some(i) = self.selected_palette_index.take() {
-                                    if i < self.palette.len() {
-                                        self.palette.remove(i);
-                                    }
-                                }
-                            }
-                        });
-                    });
-
-                    ui.add_space(5.0);
-
-                    // Layer Manager Tree
-                    ui.group(|ui| {
-                        ui.label("LAYERS MANAGER");
-
-                        ui.horizontal(|ui| {
-                            if ui.button("+ Raster").clicked() {
-                                self.layer_id_counter += 1;
-                                let new_id = self.layer_id_counter;
-                                let mut new_layer = Layer::new(new_id, format!("Layer {}", new_id));
-                                new_layer.kind = crate::canvas::LayerType::Raster;
-                                self.layers.insert(new_id, new_layer);
-                                self.layer_order.insert(0, new_id); // Add on top
-                                self.active_layer_id = new_id;
-                            }
-                            if ui.button("+ Folder").clicked() {
-                                self.layer_id_counter += 1;
-                                let new_id = self.layer_id_counter;
-                                let mut new_layer = Layer::new(new_id, format!("Folder {}", new_id));
-                                new_layer.kind = crate::canvas::LayerType::Folder { child_ids: Vec::new() };
-                                self.layers.insert(new_id, new_layer);
-                                self.layer_order.insert(0, new_id); // Add on top
-                                self.active_layer_id = new_id;
-                            }
-                            if ui.button("+ Vector").clicked() {
-                                self.layer_id_counter += 1;
-                                let new_id = self.layer_id_counter;
-                                let mut new_layer = Layer::new(new_id, format!("Vector {}", new_id));
-                                new_layer.kind = crate::canvas::LayerType::Vector;
-                                new_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new() });
-                                self.layers.insert(new_id, new_layer);
-                                self.layer_order.insert(0, new_id); // Add on top
-                                self.active_layer_id = new_id;
-                            }
-
-                            if ui
-                                .add_enabled(
-                                    self.layer_order.len() > 1,
-                                    egui::Button::new("- Delete"),
-                                )
-                                .clicked()
-                            {
-                                let active_id = self.active_layer_id;
-                                if let Some(pos) =
-                                    self.layer_order.iter().position(|&x| x == active_id)
-                                {
-                                    self.layer_order.remove(pos);
-                                    self.layers.remove(&active_id);
-                                    self.active_layer_id = self.layer_order[0];
-                                }
-                            }
-                        });
-
-                        ui.add_space(5.0);
-
-                        // Active Layer blending options
-                        if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
-                            ui.horizontal(|ui| {
-                                ui.label("Mode:");
-                                egui::ComboBox::from_id_source("blend_mode_dropdown")
-                                    .selected_text(format!("{:?}", active_layer.blend_mode))
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut active_layer.blend_mode,
-                                            BlendMode::Normal,
-                                            "Normal",
-                                        );
-                                        ui.selectable_value(
-                                            &mut active_layer.blend_mode,
-                                            BlendMode::Multiply,
-                                            "Multiply",
-                                        );
-                                        ui.selectable_value(
-                                            &mut active_layer.blend_mode,
-                                            BlendMode::Screen,
-                                            "Screen",
-                                        );
-                                        ui.selectable_value(
-                                            &mut active_layer.blend_mode,
-                                            BlendMode::Overlay,
-                                            "Overlay",
-                                        );
-                                        ui.selectable_value(
-                                            &mut active_layer.blend_mode,
-                                            BlendMode::Luminosity,
-                                            "Luminosity (Shine)",
-                                        );
-                                        ui.selectable_value(
-                                            &mut active_layer.blend_mode,
-                                            BlendMode::Shade,
-                                            "Shade",
-                                        );
-                                    });
-                            });
-
-                            ui.horizontal(|ui| {
-                                ui.label("Opacity:");
-                                ui.add(egui::Slider::new(&mut active_layer.opacity, 0.0..=1.0).show_value(false));
-                            });
-
-                            ui.horizontal(|ui| {
-                                ui.checkbox(&mut active_layer.lock_alpha, "Lock Alpha");
-                                ui.checkbox(&mut active_layer.is_clipping, "Clipping Group");
-                            });
-                        }
-
-                        ui.separator();
-
-                        // Scrollable Layer Selection List
-                        // Pre-compute thumbnail textures to avoid borrow conflicts
-                        let mut thumb_textures: ahash::AHashMap<u32, egui::TextureHandle> = ahash::AHashMap::default();
-                        for id in &self.layer_order.clone() {
-                            if let Some(tex) = self.get_layer_thumbnail_texture(ctx, *id) {
-                                thumb_textures.insert(*id, tex);
-                            }
-                        }
-                        let order = self.layer_order.clone();
-                        for id in order {
-                            let pointer_released =
-                                ui.ctx().input(|i| i.pointer.any_released());
-                            let is_active = self.active_layer_id == id;
-                            let mut row_hovered = false;
-
-                            ui.horizontal(|ui| {
-                                let drag_response = ui.add(
-                                    egui::Label::new("::")
-                                        .sense(egui::Sense::click_and_drag()),
-                                );
-                                row_hovered |= drag_response.hovered();
-                                if drag_response.drag_started() {
-                                    self.dragging_layer_id = Some(id);
-                                    self.active_layer_id = id;
-                                }
-                                if let Some(layer) = self.layers.get_mut(&id) {
-                                    // Visibility check
-                                    let vis_text = if layer.visible { "👁" } else { "⦂" };
-                                    let btn_vis = egui::Button::new(vis_text).frame(false);
-                                    let vis_resp = ui.add(btn_vis).on_hover_text("Toggle Visibility");
-                                    row_hovered |= vis_resp.hovered();
-                                    if vis_resp.clicked() {
-                                        layer.visible = !layer.visible;
-                                    }
-
-                                    // Selection Source toggle (for Bucket/Magic Wand reference)
-                                    let ref_text = if layer.selection_source { "◎" } else { "⚬" };
-                                    let btn_ref = egui::Button::new(ref_text).frame(false).selected(layer.selection_source);
-                                    let ref_resp = ui.add(btn_ref).on_hover_text("Use layer as reference source for Bucket/Wand");
-                                    row_hovered |= ref_resp.hovered();
-                                    if ref_resp.clicked() {
-                                        layer.selection_source = !layer.selection_source;
-                                    }
-
-                                    // Layer thumbnail (with white background and thin border for empty layers visibility)
-                                    let thumb_size = egui::Vec2::splat(28.0);
-                                    let (thumb_rect, _thumb_resp) = ui.allocate_exact_size(thumb_size, egui::Sense::hover());
-                                    ui.painter().rect_filled(thumb_rect, 1.0, egui::Color32::WHITE);
-                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(180)));
-                                    if let Some(tex) = thumb_textures.get(&id) {
-                                        ui.painter().image(
-                                            tex.id(),
-                                            thumb_rect,
-                                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                                            egui::Color32::WHITE,
-                                        );
-                                    }
-
-                                    // Highlight active layer
-                                    let prefix = match &layer.kind {
-                                        crate::canvas::LayerType::Folder { .. } => "[F] ",
-                                        crate::canvas::LayerType::Vector => "[V] ",
-                                        crate::canvas::LayerType::Raster => "[R] ",
-                                    };
-                                    let display_name = format!("{}{}", prefix, layer.name);
-                                    let label_response = ui.add(egui::SelectableLabel::new(
-                                        is_active,
-                                        &display_name,
-                                    ));
-                                    if is_active {
-                                        ui.painter().rect_stroke(
-                                            label_response.rect.expand(1.0),
-                                            1.0,
-                                            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215))
-                                        );
-                                    }
-                                    row_hovered |= label_response.hovered();
-                                    if label_response.clicked() {
-                                        self.active_layer_id = id;
-                                    }
-                                }
-                            });
-
-                            if let Some(dragging_id) = self.dragging_layer_id {
-                                if dragging_id != id && row_hovered {
-                                    if let (Some(from), Some(to)) = (
-                                        self.layer_order
-                                            .iter()
-                                            .position(|&layer_id| layer_id == dragging_id),
-                                        self.layer_order
-                                            .iter()
-                                            .position(|&layer_id| layer_id == id),
-                                    ) {
-                                        self.layer_order.swap(from, to);
-                                    }
-                                }
-                                if pointer_released {
-                                    self.dragging_layer_id = None;
-                                }
-                            }
-                        }
-                    });
-                });
-            });
-            });
-        }
-
-        // 4. BOTTOM STATUS BAR
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let tool_name = self.active_tool.name();
-                ui.label(format!("Tool: {}", tool_name));
-                ui.separator();
-
-                if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
-                    let px_radius = self.brush_radius_log.exp();
-                    ui.label(format!("Size: {:.1}px", px_radius));
-                    ui.separator();
-
-                    let pct = (self.brush_opacity * 100.0).round();
-                    ui.label(format!("Opacity: {:.0}%", pct));
-                    ui.separator();
-                }
-
-                if matches!(self.active_tool, ToolId::Fill | ToolId::MagicWand) {
-                    let ref_text = match self.fill_options.reference {
-                        fill::FillReference::CurrentLayer => "Current Layer",
-                        fill::FillReference::SelectionSourceLayers => "Reference Layers",
-                        fill::FillReference::AllVisibleLayers => "All Visible",
-                    };
-                    ui.label(format!("Ref: {}", ref_text));
-                    ui.separator();
-
-                    let mode_text = match self.fill_options.detection_mode {
-                        fill::FillDetectionMode::TransparencyStrict => "Transparency Strict".to_string(),
-                        fill::FillDetectionMode::TransparencyFuzzy => format!("Transp Fuzzy ({})", self.fill_options.transp_diff),
-                        fill::FillDetectionMode::ColorDifference => format!("Color Diff ({})", self.fill_options.tolerance),
-                    };
-                    ui.label(format!("Mode: {}", mode_text));
-                    ui.separator();
-
-                    ui.label(format!("Expand: {}px", self.fill_options.expand_px));
-                    ui.separator();
-                }
-
-                let pressure = self.last_ptr_pressure;
-                ui.label(format!("Pressure: {:.2}", pressure));
-                ui.separator();
-
-                ui.label(format!("Canvas: {}x{}", self.canvas_width, self.canvas_height));
-                ui.separator();
-
-                ui.label(format!("Zoom: {:.1}%", self.viewport_zoom * 100.0));
-                ui.separator();
-
-                let angle_deg = self.rotation_angle.to_degrees().round();
-                ui.label(format!("Rot: {:.0}\u{b0}", angle_deg));
-                ui.separator();
-
-                let mirror_state = if self.mirror_horizontal { "Mirror: On" } else { "Mirror: Off" };
-                ui.label(mirror_state);
-                ui.separator();
-
-                let layer_name = self.layers.get(&self.active_layer_id)
-                    .map(|l| l.name.as_str())
-                    .unwrap_or("(none)");
-                ui.label(format!("Layer: {}", layer_name));
-                ui.separator();
-
-                ui.label(&self.autosave_status);
-            });
-        });
+        crate::ui::left_panel::draw_left_panel(self, ctx);
+        crate::ui::right_panel::draw_right_panel(self, ctx);
+        crate::ui::status_bar::draw_status_bar(self, ctx);
 
         // 3. CENTRAL PANEL (DRAWING AREA)
         egui::CentralPanel::default()
@@ -5069,6 +2675,65 @@ impl eframe::App for PaintApp {
                     || (response.is_pointer_button_down_on() && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
                     && !space_down && !r_down;
                 let mut pointer_clicked = response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+
+                // Reference Image Dragging Interaction
+                if matches!(self.active_tool, ToolId::Move | ToolId::Reference) {
+                    if ui.input(|i| i.pointer.any_pressed()) {
+                        if let Some(ptr_pos) = ui.input(|i| i.pointer.press_origin()) {
+                            if response.hovered() {
+                                // Hit test visible reference images from top of stack to bottom
+                                let mut hit_idx = None;
+                                for (idx, img) in self.reference_images.iter().enumerate().rev() {
+                                    if !img.visible { continue; }
+                                    let quad = self.ref_image_corners(img, rect);
+                                    if point_in_quad(ptr_pos, &quad) {
+                                        hit_idx = Some(idx);
+                                        break;
+                                    }
+                                }
+                                if let Some(idx) = hit_idx {
+                                    self.selected_reference_idx = Some(idx);
+                                    self.ref_image_dragging = Some(idx);
+                                    
+                                    let img = &self.reference_images[idx];
+                                    if img.pinned_to_view {
+                                        // Position in viewport/screen space
+                                        self.ref_image_drag_offset = img.world_pos - (ptr_pos - rect.min);
+                                    } else {
+                                        // Position in world space
+                                        let ptr_world = self.screen_to_world(ptr_pos, rect);
+                                        self.ref_image_drag_offset = img.world_pos - ptr_world;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                if let Some(idx) = self.ref_image_dragging {
+                    if idx < self.reference_images.len() {
+                        if ui.input(|i| i.pointer.any_down()) {
+                            if let Some(curr_ptr) = ui.input(|i| i.pointer.hover_pos()) {
+                                let pinned_to_view = self.reference_images[idx].pinned_to_view;
+                                if pinned_to_view {
+                                    let screen_drag_pos = (curr_ptr - rect.min) + self.ref_image_drag_offset;
+                                    self.reference_images[idx].world_pos = screen_drag_pos;
+                                } else {
+                                    let curr_world = self.screen_to_world(curr_ptr, rect);
+                                    let world_drag_pos = curr_world + self.ref_image_drag_offset;
+                                    self.reference_images[idx].world_pos = world_drag_pos;
+                                }
+                                ctx.request_repaint();
+                            }
+                            pointer_down = false;
+                            pointer_clicked = false;
+                        } else {
+                            self.ref_image_dragging = None;
+                        }
+                    } else {
+                        self.ref_image_dragging = None;
+                    }
+                }
 
                 if self.transform_active {
                     if let Some(ptr_pos) = ui.input(|i| i.pointer.hover_pos()) {
@@ -5756,6 +3421,18 @@ impl eframe::App for PaintApp {
                     let mut layer_refs: Vec<&mut Layer> = self.layers.values_mut().collect();
                     renderer.update_textures(&mut layer_refs);
 
+                    let transform_preview = if self.transform_active {
+                        Some(crate::renderer::TransformPreviewParams {
+                            layer_id: self.active_layer_id,
+                            translation: self.transform_translation,
+                            scale: self.transform_scale,
+                            rotation: self.transform_rotation,
+                            pivot: self.transform_pivot,
+                        })
+                    } else {
+                        None
+                    };
+
                     // Re-compose the stack of visible layers using WGPU
                     renderer.compose_layers(
                         &self.layers,
@@ -5766,6 +3443,7 @@ impl eframe::App for PaintApp {
                         self.canvas_height,
                         self.mirror_horizontal,
                         self.rotation_angle,
+                        transform_preview,
                     );
 
                     // Blit WGPU composited output image onto the Egui viewport rect
@@ -5776,6 +3454,96 @@ impl eframe::App for PaintApp {
                             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                             Color32::WHITE,
                         );
+                    }
+
+                    // Render Reference Images
+                    for (ref_idx, ref_img) in self.reference_images.iter().enumerate() {
+                        if !ref_img.visible { continue; }
+                        if let Some(texture_handle) = &ref_img.texture {
+                            let w = ref_img.size.x;
+                            let h = ref_img.size.y;
+                            let half_size = egui::vec2(w * 0.5, h * 0.5);
+                            let corners = [
+                                egui::vec2(-half_size.x, -half_size.y), // TL
+                                egui::vec2(half_size.x, -half_size.y),  // TR
+                                egui::vec2(half_size.x, half_size.y),   // BR
+                                egui::vec2(-half_size.x, half_size.y),  // BL
+                            ];
+                            
+                            // Rotate and scale corner offset locally around reference center
+                            let cos_r = ref_img.rotation.cos();
+                            let sin_r = ref_img.rotation.sin();
+                            let transform_local = |p: egui::Vec2| -> egui::Vec2 {
+                                let sx = p.x * ref_img.scale;
+                                let sy = p.y * ref_img.scale;
+                                egui::vec2(
+                                    sx * cos_r - sy * sin_r,
+                                    sx * sin_r + sy * cos_r,
+                                )
+                            };
+                            
+                            let mut screen_pos = [egui::Pos2::ZERO; 4];
+                            if ref_img.pinned_to_view {
+                                // Pinned to View (viewport screen-relative)
+                                let center_screen = rect.min + ref_img.world_pos;
+                                for i in 0..4 {
+                                    screen_pos[i] = center_screen + transform_local(corners[i]);
+                                }
+                            } else {
+                                // Pinned to Canvas (world/canvas-relative)
+                                for i in 0..4 {
+                                    let pt_world = ref_img.world_pos + transform_local(corners[i]);
+                                    screen_pos[i] = self.world_to_screen(pt_world.to_pos2(), rect);
+                                }
+                            }
+                            
+                            // Render quad mesh
+                            let uvs = [
+                                egui::pos2(0.0, 0.0),
+                                egui::pos2(1.0, 0.0),
+                                egui::pos2(1.0, 1.0),
+                                egui::pos2(0.0, 1.0),
+                            ];
+                            let alpha = (ref_img.opacity * 255.0).clamp(0.0, 255.0) as u8;
+                            let color = egui::Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha);
+                            
+                            let mut mesh = egui::Mesh::with_texture(texture_handle.id());
+                            for i in 0..4 {
+                                mesh.vertices.push(egui::epaint::Vertex {
+                                    pos: screen_pos[i],
+                                    uv: uvs[i],
+                                    color,
+                                });
+                            }
+                            mesh.add_triangle(0, 1, 2);
+                            mesh.add_triangle(0, 2, 3);
+                            ui.painter().add(egui::Shape::mesh(mesh));
+                            
+                            // If selected, draw active transform / selection dashed border
+                            if self.selected_reference_idx == Some(ref_idx) {
+                                let border_color = egui::Color32::from_rgb(0, 120, 215);
+                                let stroke = egui::Stroke::new(1.5, border_color);
+                                for i in 0..4 {
+                                    ui.painter().line_segment(
+                                        [screen_pos[i], screen_pos[(i + 1) % 4]],
+                                        stroke,
+                                    );
+                                }
+                                // Draw a small square handle at each corner
+                                for i in 0..4 {
+                                    ui.painter().rect_filled(
+                                        egui::Rect::from_center_size(screen_pos[i], egui::vec2(6.0, 6.0)),
+                                        1.0,
+                                        border_color,
+                                    );
+                                    ui.painter().rect_stroke(
+                                        egui::Rect::from_center_size(screen_pos[i], egui::vec2(6.0, 6.0)),
+                                        1.0,
+                                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                                    );
+                                }
+                            }
+                        }
                     }
                 } else {
                     // Fallback CPU drawing to egui painter in case WGPU is unavailable (e.g. baseline safety)
@@ -6031,7 +3799,7 @@ impl eframe::App for PaintApp {
     }
 }
 impl PaintApp {
-    fn screen_to_world(&self, screen_pos: egui::Pos2, view_rect: egui::Rect) -> egui::Vec2 {
+    pub(crate) fn screen_to_world(&self, screen_pos: egui::Pos2, view_rect: egui::Rect) -> egui::Vec2 {
         let center = view_rect.center();
         let half_w = view_rect.width() * 0.5;
         let half_h = view_rect.height() * 0.5;
@@ -6055,6 +3823,123 @@ impl PaintApp {
             ((1.0 - py) * half_h) / self.viewport_zoom + self.viewport_offset.y,
         )
     }
+
+    pub fn load_reference_image(&mut self, path_str: &str, ctx: &egui::Context) -> Result<(), String> {
+        let path = std::path::PathBuf::from(path_str);
+        if !path.exists() {
+            return Err("File does not exist".to_string());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+        
+        // Decode PNG image using the image crate
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .map_err(|e| format!("Failed to decode PNG image: {}", e))?;
+            
+        let rgba = img.to_rgba8();
+        let width = rgba.width();
+        let height = rgba.height();
+        
+        let color_img = egui::ColorImage::from_rgba_unmultiplied(
+            [width as usize, height as usize],
+            rgba.as_raw(),
+        );
+        
+        self.reference_id_counter += 1;
+        let name = path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("ref_{}", self.reference_id_counter));
+            
+        let texture = ctx.load_texture(
+            format!("ref_img_{}", self.reference_id_counter),
+            color_img,
+            egui::TextureOptions::default(),
+        );
+        
+        let ref_img = ReferenceImage {
+            id: self.reference_id_counter,
+            name,
+            path,
+            visible: true,
+            opacity: 1.0,
+            pinned_to_view: false, // Default to pinned to canvas (world coordinates)
+            world_pos: egui::vec2(self.canvas_width as f32 * 0.5, self.canvas_height as f32 * 0.5),
+            scale: 1.0,
+            rotation: 0.0,
+            size: egui::vec2(width as f32, height as f32),
+            texture: Some(texture),
+        };
+        
+        self.reference_images.push(ref_img);
+        self.selected_reference_idx = Some(self.reference_images.len() - 1);
+        Ok(())
+    }
+
+    pub(crate) fn ref_image_corners(&self, ref_img: &ReferenceImage, view_rect: egui::Rect) -> [egui::Pos2; 4] {
+        let w = ref_img.size.x;
+        let h = ref_img.size.y;
+        let half_size = egui::vec2(w * 0.5, h * 0.5);
+        let corners = [
+            egui::vec2(-half_size.x, -half_size.y), // TL
+            egui::vec2(half_size.x, -half_size.y),  // TR
+            egui::vec2(half_size.x, half_size.y),   // BR
+            egui::vec2(-half_size.x, half_size.y),  // BL
+        ];
+        
+        let cos_r = ref_img.rotation.cos();
+        let sin_r = ref_img.rotation.sin();
+        let transform_local = |p: egui::Vec2| -> egui::Vec2 {
+            let sx = p.x * ref_img.scale;
+            let sy = p.y * ref_img.scale;
+            egui::vec2(
+                sx * cos_r - sy * sin_r,
+                sx * sin_r + sy * cos_r,
+            )
+        };
+        
+        let mut screen_pos = [egui::Pos2::ZERO; 4];
+        if ref_img.pinned_to_view {
+            let center_screen = view_rect.min + ref_img.world_pos;
+            for i in 0..4 {
+                screen_pos[i] = center_screen + transform_local(corners[i]);
+            }
+        } else {
+            for i in 0..4 {
+                let pt_world = ref_img.world_pos + transform_local(corners[i]);
+                screen_pos[i] = self.world_to_screen(pt_world.to_pos2(), view_rect);
+            }
+        }
+        screen_pos
+    }
+}
+
+pub fn point_in_quad(p: egui::Pos2, quad: &[egui::Pos2; 4]) -> bool {
+    let mut inside = true;
+    for i in 0..4 {
+        let p0 = quad[i];
+        let p1 = quad[(i + 1) % 4];
+        let v0 = p1 - p0;
+        let v1 = p - p0;
+        let cross = v0.x * v1.y - v0.y * v1.x;
+        if cross < 0.0 {
+            inside = false;
+            break;
+        }
+    }
+    if inside { return true; }
+    
+    let mut inside = true;
+    for i in 0..4 {
+        let p0 = quad[i];
+        let p1 = quad[(i + 1) % 4];
+        let v0 = p1 - p0;
+        let v1 = p - p0;
+        let cross = v0.x * v1.y - v0.y * v1.x;
+        if cross > 0.0 {
+            inside = false;
+            break;
+        }
+    }
+    inside
 }
 
 // =========================================================================
@@ -6101,7 +3986,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     (r1 + m, g1 + m, b1 + m)
 }
 
-fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3], drag_zone: &mut Option<u8>) -> egui::Response {
+pub(crate) fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3], drag_zone: &mut Option<u8>) -> egui::Response {
     let desired_size = egui::Vec2::new(160.0, 160.0);
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
@@ -6260,4 +4145,27 @@ fn generate_bristle_texture() -> Vec<u8> {
         }
     }
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_point_in_quad() {
+        let quad = [
+            egui::pos2(0.0, 0.0),
+            egui::pos2(10.0, 0.0),
+            egui::pos2(10.0, 10.0),
+            egui::pos2(0.0, 10.0),
+        ];
+
+        // Inside
+        assert!(point_in_quad(egui::pos2(5.0, 5.0), &quad));
+        assert!(point_in_quad(egui::pos2(1.0, 1.0), &quad));
+
+        // Outside
+        assert!(!point_in_quad(egui::pos2(-1.0, 5.0), &quad));
+        assert!(!point_in_quad(egui::pos2(5.0, 11.0), &quad));
+    }
 }

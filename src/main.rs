@@ -8,6 +8,8 @@ mod brush_io;
 mod save;
 mod commands;
 mod shortcuts;
+mod ui;
+mod preferences;
 
 mod tools {
     pub mod fill;
