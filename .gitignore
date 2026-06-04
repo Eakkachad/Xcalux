@@ -4,6 +4,7 @@
 # Agent specific configuration
 /.agent/
 /plans/
+/UI Ref/
 /AGENTS.md
 /bigplane.md
 /PROGRESS.md

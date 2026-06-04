@@ -88,7 +88,7 @@ pub fn decode_png_to_grayscale(png_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), 
     Ok((grayscale, w, h))
 }
 
-pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<Vec<u8>>) -> std::io::Result<BrushPreset> {
+pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<crate::app::BrushTexture>) -> std::io::Result<BrushPreset> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
@@ -126,8 +126,17 @@ pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<Vec<u8>>) -> std:
                         final_bytes[(y * 256 + x) as usize] = gray_bytes[(y * w + x) as usize];
                     }
                 }
-                textures_registry.push(final_bytes);
-                (textures_registry.len() - 1) as u8
+                let name = path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Imported")
+                    .to_string();
+                textures_registry.push(crate::app::BrushTexture {
+                    name: format!("[imported] {}", name),
+                    width: 256,
+                    height: 256,
+                    pixels: final_bytes,
+                });
+                (textures_registry.len() - 1) as u32
             }
             Err(_) => 0,
         }

@@ -306,7 +306,7 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
         };
 
         let vector_data = if let crate::canvas::LayerType::Vector = kind {
-            lm.vector_strokes.map(|strokes| crate::canvas::VectorLayer { strokes })
+            lm.vector_strokes.map(|strokes| crate::canvas::VectorLayer { strokes, display_mode: Default::default() })
         } else {
             None
         };

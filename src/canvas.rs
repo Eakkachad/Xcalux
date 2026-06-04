@@ -63,11 +63,26 @@ pub struct VectorControlPoint {
 pub struct VectorStroke {
     pub control_points: Vec<VectorControlPoint>,
     pub brush_preset_id: u64,
+    pub color: [f32; 3],
+    pub width: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VectorDisplayMode {
+    Rasterized,
+    SplineMesh,
+}
+
+impl Default for VectorDisplayMode {
+    fn default() -> Self {
+        Self::Rasterized
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VectorLayer {
     pub strokes: Vec<VectorStroke>,
+    pub display_mode: VectorDisplayMode,
 }
 
 pub type MaskTile = [u8; 4096]; // 64x64 single-channel alpha mask values

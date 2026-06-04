@@ -68,6 +68,39 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         }
                                     });
                                 ui.separator();
+                                ui.label("VECTOR TOOLS");
+                                egui::Grid::new("vector_tools_grid")
+                                    .num_columns(3)
+                                    .spacing([4.0, 4.0])
+                                    .show(ui, |ui| {
+                                        let vec_tools: [(ToolId, &str, &str); 3] = [
+                                            (ToolId::VectorPen, "✎", "Vector Pen — draw smooth vector strokes"),
+                                            (ToolId::Curve, "〰", "Curve — place 4 control points for a bezier curve"),
+                                            (ToolId::EditCP, "⬩", "Edit CP — select and drag control points"),
+                                        ];
+                                        for &(tool_id, label, tooltip) in &vec_tools {
+                                            let is_active = app.active_tool == tool_id;
+                                            let btn = egui::Button::new(
+                                                egui::RichText::new(label).size(12.0)
+                                            )
+                                            .selected(is_active);
+                                            let r = ui.add_sized([32.0, 28.0], btn).on_hover_text(tooltip);
+                                            if r.clicked() {
+                                                app.active_tool = tool_id;
+                                                if tool_id == ToolId::VectorPen {
+                                                    // If current layer is not vector, create one
+                                                    let is_vector = app.layers.get(&app.active_layer_id)
+                                                        .map(|l| l.kind == crate::canvas::LayerType::Vector)
+                                                        .unwrap_or(false);
+                                                    if !is_vector {
+                                                        app.create_vector_layer();
+                                                    }
+                                                }
+                                                ctx.request_repaint();
+                                            }
+                                        }
+                                    });
+                                ui.separator();
                                 ui.label("BRUSH PRESETS");
                                 ui.dnd_drop_zone::<usize, _>(egui::Frame::none(), |ui| {
                                     egui::Grid::new("presets_grid")
@@ -263,8 +296,17 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                                                         final_bytes[(y * 256 + x) as usize] = gray_bytes[(y * w + x) as usize];
                                                                     }
                                                                 }
-                                                                app.brush_textures.push(final_bytes);
-                                                                let texture_id = (app.brush_textures.len() - 1) as u8;
+                                                                let name = path.file_stem()
+                                                                    .and_then(|s| s.to_str())
+                                                                    .unwrap_or("SUT Brush")
+                                                                    .to_string();
+                                                                app.brush_textures.push(crate::app::BrushTexture {
+                                                                    name: format!("[sut] {}", name),
+                                                                    width: 256,
+                                                                    height: 256,
+                                                                    pixels: final_bytes,
+                                                                });
+                                                                let texture_id = (app.brush_textures.len() - 1) as u32;
 
                                                                 app.preset_id_counter += 1;
                                                                 let new_preset = crate::app::BrushPreset {
@@ -768,18 +810,18 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                             ui.horizontal(|ui| {
                                                 ui.label("Texture:");
                                                 let mut selected_tex = app.brush_texture_id;
+                                                let current_name = app.brush_textures.get(selected_tex as usize)
+                                                    .map(|t| t.name.as_str())
+                                                    .unwrap_or("None");
                                                 let res = egui::ComboBox::from_id_source("brush_texture_combo")
-                                                    .selected_text(match selected_tex {
-                                                        0 => "None",
-                                                        1 => "Noise",
-                                                        2 => "Bristle",
-                                                        _ => "Unknown",
-                                                    })
+                                                    .selected_text(current_name)
                                                     .show_ui(ui, |ui| {
                                                         let mut changed = false;
-                                                        if ui.selectable_value(&mut selected_tex, 0, "None").clicked() { changed = true; }
-                                                        if ui.selectable_value(&mut selected_tex, 1, "Noise").clicked() { changed = true; }
-                                                        if ui.selectable_value(&mut selected_tex, 2, "Bristle").clicked() { changed = true; }
+                                                        for (idx, tex) in app.brush_textures.iter().enumerate() {
+                                                            if ui.selectable_value(&mut selected_tex, idx as u32, &tex.name).clicked() {
+                                                                changed = true;
+                                                            }
+                                                        }
                                                         changed
                                                     });
                                                 if res.inner.unwrap_or(false) {

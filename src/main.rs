@@ -12,6 +12,7 @@ mod ui;
 mod preferences;
 mod pressure;
 mod diagnostics;
+mod vector;
 
 mod tools {
     pub mod fill;

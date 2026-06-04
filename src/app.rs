@@ -78,7 +78,7 @@ pub struct BrushPreset {
     pub color_blending: f32,    // Smudge setting (0.0 to 1.0)
     pub dilution: f32,          // Smudge length setting (0.0 to 1.0)
     pub is_eraser: bool,
-    pub texture_id: u8,
+    pub texture_id: u32,
     pub texture_scale: f32,
     pub bristle_id: u8,
     pub stabilizer_level: StabilizerLevel,
@@ -104,6 +104,7 @@ pub struct PaintApp {
     pub(crate) foreground_color: [f32; 3], // RGB float [0.0, 1.0]
     pub(crate) background_color: [f32; 3], // RGB float [0.0, 1.0]
     pub(crate) active_color_is_bg: bool,
+    pub(crate) active_color_is_transparent: bool,
     pub(crate) hex_color_input: String,
     pub(crate) toggle_fullscreen_requested: bool,
     pub(crate) palette: Vec<[f32; 3]>,
@@ -165,13 +166,16 @@ pub struct PaintApp {
     pub(crate) lock_canvas_bounds: bool,
     pub(crate) selection_mask: crate::canvas::SelectionMask,
     pub(crate) active_mask_editing: bool,
-    pub(crate) brush_textures: Vec<Vec<u8>>,
+    pub(crate) brush_textures: Vec<BrushTexture>,
 
     pub(crate) save_sender: std::sync::mpsc::Sender<crate::save::SaveTask>,
     pub(crate) current_vector_points: Vec<crate::canvas::VectorControlPoint>,
+    pub(crate) curve_points: Vec<crate::canvas::VectorControlPoint>,
+    pub(crate) edit_cp_selection: Option<(usize, usize)>,
+    pub(crate) edit_cp_dragging: bool,
     pub(crate) document_path: String,
     pub(crate) brush_import_path: String,
-    pub(crate) brush_texture_id: u8,
+    pub(crate) brush_texture_id: u32,
     pub(crate) brush_texture_scale: f32,
     pub(crate) brush_bristle_id: u8,
 
@@ -328,6 +332,7 @@ pub enum ToolId {
     RectSelect, EllipseSelect, Lasso, PolygonLasso,
     MagicWand, Move, Transform, ColorPicker,
     Hand, Zoom, RotateView, Line, Shape, Reference,
+    VectorPen, Curve, EditCP,
 }
 
 impl ToolId {
@@ -341,6 +346,7 @@ impl ToolId {
             Move => "Move", Transform => "Transform", ColorPicker => "Color Picker",
             Hand => "Hand", Zoom => "Zoom", RotateView => "Rotate View",
             Line => "Line", Shape => "Shape", Reference => "Reference",
+            VectorPen => "Vector Pen", Curve => "Curve", EditCP => "Edit CP",
         }
     }
 }
@@ -806,6 +812,7 @@ impl PaintApp {
             foreground_color: [0.1, 0.1, 0.1], // Default charcoal dark
             background_color: [1.0, 1.0, 1.0], // Default white
             active_color_is_bg: false,
+            active_color_is_transparent: false,
             hex_color_input: "#1A1A1A".to_string(),
             toggle_fullscreen_requested: false,
             palette: default_palette,
@@ -849,13 +856,12 @@ impl PaintApp {
             lock_canvas_bounds: true,
             selection_mask: crate::canvas::SelectionMask::new(),
             active_mask_editing: false,
-            brush_textures: vec![
-                vec![255u8; 256 * 256],
-                generate_noise_texture(),
-                generate_bristle_texture(),
-            ],
+            brush_textures: scan_and_load_textures(),
             save_sender,
             current_vector_points: Vec::with_capacity(10000),
+            curve_points: Vec::new(),
+            edit_cp_selection: None,
+            edit_cp_dragging: false,
             document_path: "canvas.arty".to_string(),
             brush_import_path: "brush.artybrush".to_string(),
             brush_texture_id: 0,
@@ -1083,6 +1089,7 @@ impl PaintApp {
         } else {
             self.foreground_color = rgb;
         }
+        self.active_color_is_transparent = false;
         self.brush_settings_dirty = true;
     }
 
@@ -1143,6 +1150,7 @@ impl PaintApp {
             return;
         }
         self.brush_settings_dirty = false;
+        let col = self.active_color();
 
         // Update the active preset structure with the slider values
         let preset = &mut self.presets[self.active_preset_index];
@@ -1218,8 +1226,8 @@ impl PaintApp {
         // Spacing: Set constant for Hokusai's brush engine spacing (DabsPerActualRadius)
         Self::set_constant(active_brush, BrushSetting::DabsPerActualRadius, preset.spacing);
 
-        // 6. Set Eraser Mode
-        if preset.is_eraser {
+        // 6. Set Eraser Mode (override if active color is transparent)
+        if preset.is_eraser || self.active_color_is_transparent {
             Self::set_constant(active_brush, BrushSetting::Eraser, 1.0);
         } else {
             Self::set_constant(active_brush, BrushSetting::Eraser, 0.0);
@@ -1227,9 +1235,9 @@ impl PaintApp {
 
         // 7. Convert RGB color picker value to HSV for Hokusai's brush engine
         let hsv = hokusai::color::rgb_to_hsv(
-            self.foreground_color[0],
-            self.foreground_color[1],
-            self.foreground_color[2],
+            col[0],
+            col[1],
+            col[2],
         );
         active_brush.get_mut(BrushSetting::ColorH).base_value = hsv.h;
         active_brush.get_mut(BrushSetting::ColorS).base_value = hsv.s;
@@ -1415,34 +1423,20 @@ impl PaintApp {
         p3: &crate::canvas::VectorControlPoint,
         t: f32,
     ) -> crate::canvas::VectorControlPoint {
-        let t2 = t * t;
-        let t3 = t2 * t;
-
-        let f1 = -0.5 * t3 + t2 - 0.5 * t;
-        let f2 = 1.5 * t3 - 2.5 * t2 + 1.0;
-        let f3 = -1.5 * t3 + 2.0 * t2 + 0.5 * t;
-        let f4 = 0.5 * t3 - 0.5 * t2;
-
-        crate::canvas::VectorControlPoint {
-            x: p0.x * f1 + p1.x * f2 + p2.x * f3 + p3.x * f4,
-            y: p0.y * f1 + p1.y * f2 + p2.y * f3 + p3.y * f4,
-            pressure: p0.pressure * f1 + p1.pressure * f2 + p2.pressure * f3 + p3.pressure * f4,
-            tilt_x: p0.tilt_x * f1 + p1.tilt_x * f2 + p2.tilt_x * f3 + p3.tilt_x * f4,
-            tilt_y: p0.tilt_y * f1 + p1.tilt_y * f2 + p2.tilt_y * f3 + p3.tilt_y * f4,
-        }
+        crate::vector::centripetal_catmull_rom(p0, p1, p2, p3, t, 0.5)
     }
 
     pub fn redraw_vector_layer(&mut self, layer_id: u32) {
-        let mut strokes_to_draw = Vec::new();
-        if let Some(layer) = self.layers.get_mut(&layer_id) {
+        let strokes_to_draw = {
+            let layer = match self.layers.get(&layer_id) {
+                Some(l) => l,
+                None => return,
+            };
             if layer.kind != crate::canvas::LayerType::Vector {
                 return;
             }
-            layer.tiles.clear();
-            if let Some(v_data) = &layer.vector_data {
-                strokes_to_draw = v_data.strokes.clone();
-            }
-        }
+            layer.vector_data.as_ref().map(|vd| vd.strokes.clone()).unwrap_or_default()
+        };
 
         for stroke in strokes_to_draw {
             let preset_idx = self
@@ -1451,95 +1445,30 @@ impl PaintApp {
                 .position(|p| p.id == stroke.brush_preset_id)
                 .unwrap_or(0);
 
-            let brush = &self.brushes[preset_idx];
-            let mut brush_state = BrushState::default();
-
             if stroke.control_points.len() < 2 {
                 continue;
             }
+
+            let sampled = crate::vector::sample_stroke(&stroke.control_points, 2.0, 0.5);
 
             if let Some(layer) = self.layers.get_mut(&layer_id) {
                 layer.begin_atomic();
             }
 
+            let brush = &self.brushes[preset_idx];
+            let mut brush_state = BrushState::default();
             let preset = &self.presets[preset_idx];
             let tex_idx = preset.texture_id as usize;
-            let brush_texture = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                Some(self.brush_textures[tex_idx].as_slice())
+            let (brush_texture, tex_w, tex_h) = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                let t = &self.brush_textures[tex_idx];
+                (Some(t.pixels.as_slice()), t.width, t.height)
             } else {
-                None
+                (None, 256, 256)
             };
 
             let mut current_stroke_snapshots = Vec::new();
 
-            for k in 3..=stroke.control_points.len() {
-                let p0 = if k >= 4 {
-                    &stroke.control_points[k - 4]
-                } else {
-                    &stroke.control_points[k - 3]
-                };
-                let p1 = &stroke.control_points[k - 3];
-                let p2 = &stroke.control_points[k - 2];
-                let p3 = &stroke.control_points[k - 1];
-
-                let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-                let steps = ((dist / 2.0) as usize).clamp(2, 100);
-
-                let start_i = if k == 3 { 0 } else { 1 };
-
-                for i in start_i..=steps {
-                    let t = i as f32 / steps as f32;
-                    let pt = Self::catmull_rom(p0, p1, p2, p3, t);
-                    if let Some(layer) = self.layers.get_mut(&layer_id) {
-                        let mut stroke_surface = StrokeSurface {
-                            layer,
-                            history: &mut self.history,
-                            snapshots: &mut current_stroke_snapshots,
-                            stroke_id: 0,
-                            canvas_width: self.canvas_width,
-                            canvas_height: self.canvas_height,
-                            lock_canvas_bounds: self.lock_canvas_bounds,
-                            selection_mask: Some(&self.selection_mask),
-                            brush_texture,
-                            brush_texture_width: 256,
-                            brush_texture_height: 256,
-                            brush_texture_scale: preset.texture_scale,
-                            active_mask_editing: false,
-                        };
-
-                        brush.stroke_to(
-                            &mut brush_state,
-                            &mut stroke_surface,
-                            pt.x,
-                            pt.y,
-                            pt.pressure,
-                            pt.tilt_x,
-                            pt.tilt_y,
-                            0.016,
-                        );
-                        self.performance_hud.note_stroke_point(crate::diagnostics::now_secs());
-                    }
-                }
-            }
-
-            let len = stroke.control_points.len();
-            let p0 = if len >= 3 {
-                &stroke.control_points[len - 3]
-            } else {
-                &stroke.control_points[len - 2]
-            };
-            let p1 = &stroke.control_points[len - 2];
-            let p2 = &stroke.control_points[len - 1];
-            let p3 = &stroke.control_points[len - 1];
-
-            let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-            let steps = ((dist / 2.0) as usize).clamp(2, 100);
-
-            let start_i = if len == 2 { 0 } else { 1 };
-            for i in start_i..=steps {
-                let t = i as f32 / steps as f32;
-                let pt = Self::catmull_rom(p0, p1, p2, p3, t);
-
+            for pt in &sampled {
                 if let Some(layer) = self.layers.get_mut(&layer_id) {
                     let mut stroke_surface = StrokeSurface {
                         layer,
@@ -1551,8 +1480,8 @@ impl PaintApp {
                         lock_canvas_bounds: self.lock_canvas_bounds,
                         selection_mask: Some(&self.selection_mask),
                         brush_texture,
-                        brush_texture_width: 256,
-                        brush_texture_height: 256,
+                        brush_texture_width: tex_w,
+                        brush_texture_height: tex_h,
                         brush_texture_scale: preset.texture_scale,
                         active_mask_editing: false,
                     };
@@ -1997,6 +1926,38 @@ impl PaintApp {
         self.layer_order.insert(0, new_id);
         self.active_layer_id = new_id;
         self.history.push_command(HistoryCommand::LayerCreate { layer: Box::new(new_layer), index: 0 });
+    }
+
+    pub(crate) fn create_vector_layer(&mut self) {
+        self.layer_id_counter += 1;
+        let new_id = self.layer_id_counter;
+        let mut new_layer = Layer::new(new_id, format!("Vector {}", new_id));
+        new_layer.kind = crate::canvas::LayerType::Vector;
+        new_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new(), display_mode: Default::default() });
+        self.layers.insert(new_id, new_layer.clone());
+        self.layer_order.insert(0, new_id);
+        self.active_layer_id = new_id;
+        self.history.push_command(HistoryCommand::LayerCreate { layer: Box::new(new_layer), index: 0 });
+    }
+
+    pub(crate) fn convert_active_vector_to_raster(&mut self) {
+        let layer_id = self.active_layer_id;
+        let is_vector = self.layers.get(&layer_id)
+            .map(|l| matches!(l.kind, crate::canvas::LayerType::Vector))
+            .unwrap_or(false);
+        if !is_vector {
+            return;
+        }
+        // Rasterize all vector strokes into the layer's tiles
+        self.redraw_vector_layer(layer_id);
+        // Convert layer type to raster and clear vector data
+        if let Some(layer) = self.layers.get_mut(&layer_id) {
+            layer.kind = crate::canvas::LayerType::Raster;
+            layer.vector_data = None;
+            if let Some(r) = &mut self.renderer {
+                r.clear_cache();
+            }
+        }
     }
 
     fn duplicate_active_layer(&mut self) {
@@ -2835,6 +2796,7 @@ impl eframe::App for PaintApp {
                             } else if *key == egui::Key::D {
                                 self.foreground_color = [0.0, 0.0, 0.0];
                                 self.background_color = [1.0, 1.0, 1.0];
+                                self.active_color_is_transparent = false;
                                 self.brush_settings_dirty = true;
                             }
                         }
@@ -3358,8 +3320,181 @@ impl eframe::App for PaintApp {
                     }
                 }
 
+                // =============================================================
+                // VECTOR PEN TOOL — auto-switch to vector layer and draw
+                // =============================================================
+                if pointer_clicked && matches!(self.active_tool, ToolId::VectorPen) {
+                    let is_vector = self.layers.get(&self.active_layer_id)
+                        .map(|l| matches!(l.kind, crate::canvas::LayerType::Vector))
+                        .unwrap_or(false);
+                    if !is_vector {
+                        self.create_vector_layer();
+                        ctx.request_repaint();
+                    }
+                }
+
+                // =============================================================
+                // CURVE TOOL — place 4 control points, then generate a curve
+                // =============================================================
+                if pointer_clicked && matches!(self.active_tool, ToolId::Curve) {
+                    if let Some(ptr_pos) = response.hover_pos() {
+                        let world_pos = self.screen_to_world(ptr_pos, rect);
+                        let pressure = self.last_ptr_pressure;
+
+                        let is_vector = self.layers.get(&self.active_layer_id)
+                            .map(|l| matches!(l.kind, crate::canvas::LayerType::Vector))
+                            .unwrap_or(false);
+                        if !is_vector {
+                            self.create_vector_layer();
+                        }
+
+                        self.curve_points.push(crate::canvas::VectorControlPoint {
+                            x: world_pos.x,
+                            y: world_pos.y,
+                            pressure,
+                            tilt_x: 0.0,
+                            tilt_y: 0.0,
+                        });
+
+                        if self.curve_points.len() >= 4 {
+                            // Generate a smooth stroke through the 4 control points
+                            let sampled = crate::vector::sample_stroke(&self.curve_points, 2.0, 0.5);
+
+                            let layer_id = self.active_layer_id;
+                            let layer_exists = self.layers.contains_key(&layer_id);
+                            if !layer_exists {
+                                self.create_vector_layer();
+                            }
+
+                            let preset_id;
+                            let brush_texture_info;
+                            let brush_texture_scale;
+                            {
+                                self.sync_brush_settings();
+                                let preset = &self.presets[self.active_preset_index];
+                                preset_id = preset.id;
+                                brush_texture_scale = preset.texture_scale;
+                                let tex_idx = preset.texture_id as usize;
+                                brush_texture_info = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                                    let t = &self.brush_textures[tex_idx];
+                                    (Some(t.pixels.as_slice()), t.width, t.height)
+                                } else {
+                                    (None, 256, 256)
+                                };
+                            }
+                            let (brush_texture, tex_w, tex_h) = brush_texture_info;
+
+                            let active_brush = &self.brushes[self.active_preset_index];
+                            let mut active_brush_state = self.brush_states[self.active_preset_index].clone();
+                            let stroke_color = self.active_color();
+
+                            if let Some(active_layer) = self.layers.get_mut(&layer_id) {
+                                active_layer.begin_atomic();
+
+                                for pt in &sampled {
+                                    let mut stroke_surface = StrokeSurface {
+                                        layer: active_layer,
+                                        history: &mut self.history,
+                                        snapshots: &mut self.current_stroke_snapshots,
+                                        stroke_id: self.stroke_id,
+                                        canvas_width: self.canvas_width,
+                                        canvas_height: self.canvas_height,
+                                        lock_canvas_bounds: self.lock_canvas_bounds,
+                                        selection_mask: Some(&self.selection_mask),
+                                        brush_texture,
+                                        brush_texture_width: tex_w,
+                                        brush_texture_height: tex_h,
+                                        brush_texture_scale,
+                                        active_mask_editing: self.active_mask_editing,
+                                    };
+                                    active_brush.stroke_to(
+                                        &mut active_brush_state,
+                                        &mut stroke_surface,
+                                        pt.x, pt.y, pt.pressure, pt.tilt_x, pt.tilt_y, 0.016,
+                                    );
+                                    self.performance_hud.note_stroke_point(ctx.input(|i| i.time) as f32);
+                                }
+
+                                let _dirty = active_layer.end_atomic();
+                                let snapshots = std::mem::take(&mut self.current_stroke_snapshots);
+                                if !snapshots.is_empty() {
+                                    self.history.push_command(HistoryCommand::TileEdit { snapshots });
+                                    self.document_modified = true;
+                                }
+                                if let Some(r) = &mut self.renderer {
+                                    r.clear_cache();
+                                }
+
+                                // Store as vector stroke
+                                let v_stroke = crate::canvas::VectorStroke {
+                                    control_points: self.curve_points.clone(),
+                                    brush_preset_id: preset_id,
+                                    color: stroke_color,
+                                    width: 1.0,
+                                };
+                                if active_layer.vector_data.is_none() {
+                                    active_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new(), display_mode: Default::default() });
+                                }
+                                if let Some(v_data) = &mut active_layer.vector_data {
+                                    v_data.strokes.push(v_stroke);
+                                }
+                            }
+                            self.curve_points.clear();
+                            ctx.request_repaint();
+                        }
+                    }
+                }
+
+                // =============================================================
+                // EDIT CP TOOL — select and drag vector control points
+                // =============================================================
+                if matches!(self.active_tool, ToolId::EditCP) {
+                    if pointer_clicked {
+                        if let Some(ptr_pos) = response.hover_pos() {
+                            let world_pos = self.screen_to_world(ptr_pos, rect);
+                            if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                                if let Some(v_data) = &active_layer.vector_data {
+                                    let hit = crate::vector::hit_test_control_point(
+                                        &v_data.strokes,
+                                        world_pos.x, world_pos.y,
+                                    );
+                                    if let Some((si, pi)) = hit {
+                                        self.edit_cp_selection = Some((si, pi));
+                                        self.edit_cp_dragging = true;
+                                    } else {
+                                        self.edit_cp_selection = None;
+                                        self.edit_cp_dragging = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if self.edit_cp_dragging && pointer_down {
+                        if let Some(ptr_pos) = response.hover_pos() {
+                            let world_pos = self.screen_to_world(ptr_pos, rect);
+                            if let Some((si, pi)) = self.edit_cp_selection {
+                                if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                                    if let Some(v_data) = &mut active_layer.vector_data {
+                                        if si < v_data.strokes.len() && pi < v_data.strokes[si].control_points.len() {
+                                            v_data.strokes[si].control_points[pi].x = world_pos.x;
+                                            v_data.strokes[si].control_points[pi].y = world_pos.y;
+                                        }
+                                    }
+                                }
+                                // Live-preview update of vector layer rasterization
+                                self.redraw_vector_layer(self.active_layer_id);
+                            }
+                        }
+                    }
+
+                    if !pointer_down {
+                        self.edit_cp_dragging = false;
+                    }
+                }
+
                 // Handle brush/eraser stroke drawing
-                if pointer_down && matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
+                if pointer_down && matches!(self.active_tool, ToolId::Brush | ToolId::Eraser | ToolId::VectorPen) {
                     if let Some(ptr_pos) = response.hover_pos() {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         let cx = world_pos.x;
@@ -3480,10 +3615,11 @@ impl eframe::App for PaintApp {
                                 if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
                                     let preset = &self.presets[self.active_preset_index];
                                     let tex_idx = preset.texture_id as usize;
-                                    let brush_texture = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                                        Some(self.brush_textures[tex_idx].as_slice())
+                                    let (brush_texture, tex_w, tex_h) = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                                        let t = &self.brush_textures[tex_idx];
+                                        (Some(t.pixels.as_slice()), t.width, t.height)
                                     } else {
-                                        None
+                                        (None, 256, 256)
                                     };
                                     for i in start_i..=steps {
                                         let t = i as f32 / steps as f32;
@@ -3499,8 +3635,8 @@ impl eframe::App for PaintApp {
                                             lock_canvas_bounds: self.lock_canvas_bounds,
                                             selection_mask: Some(&self.selection_mask),
                                             brush_texture,
-                                            brush_texture_width: 256,
-                                            brush_texture_height: 256,
+                                            brush_texture_width: tex_w,
+                                            brush_texture_height: tex_h,
                                             brush_texture_scale: preset.texture_scale,
                                             active_mask_editing: self.active_mask_editing,
                                         };
@@ -3540,10 +3676,11 @@ impl eframe::App for PaintApp {
                             if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
                                 let preset = &self.presets[self.active_preset_index];
                                 let tex_idx = preset.texture_id as usize;
-                                let brush_texture = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                                    Some(self.brush_textures[tex_idx].as_slice())
+                                let (brush_texture, tex_w, tex_h) = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                                    let t = &self.brush_textures[tex_idx];
+                                    (Some(t.pixels.as_slice()), t.width, t.height)
                                 } else {
-                                    None
+                                    (None, 256, 256)
                                 };
 
                                 let mut stroke_surface = StrokeSurface {
@@ -3556,8 +3693,8 @@ impl eframe::App for PaintApp {
                                     lock_canvas_bounds: self.lock_canvas_bounds,
                                     selection_mask: Some(&self.selection_mask),
                                     brush_texture,
-                                    brush_texture_width: 256,
-                                    brush_texture_height: 256,
+                                    brush_texture_width: tex_w,
+                                    brush_texture_height: tex_h,
                                     brush_texture_scale: preset.texture_scale,
                                     active_mask_editing: self.active_mask_editing,
                                 };
@@ -3700,17 +3837,18 @@ impl eframe::App for PaintApp {
                             let active_brush_state = &mut self.brush_states[self.active_preset_index];
 
                             if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
-                                let preset = &self.presets[self.active_preset_index];
-                                let tex_idx = preset.texture_id as usize;
-                                let brush_texture = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                                    Some(self.brush_textures[tex_idx].as_slice())
-                                } else {
-                                    None
-                                };
-
                                 for i in start_i..=steps {
                                     let t = i as f32 / steps as f32;
                                     let pt = Self::catmull_rom(p0, p1, p2, p3, t);
+
+                                    let preset = &self.presets[self.active_preset_index];
+                                    let tex_idx = preset.texture_id as usize;
+                                    let (brush_texture, tex_w, tex_h) = if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                                        let t = &self.brush_textures[tex_idx];
+                                        (Some(t.pixels.as_slice()), t.width, t.height)
+                                    } else {
+                                        (None, 256, 256)
+                                    };
 
                                     let mut stroke_surface = StrokeSurface {
                                         layer: active_layer,
@@ -3722,8 +3860,8 @@ impl eframe::App for PaintApp {
                                         lock_canvas_bounds: self.lock_canvas_bounds,
                                         selection_mask: Some(&self.selection_mask),
                                         brush_texture,
-                                        brush_texture_width: 256,
-                                        brush_texture_height: 256,
+                                        brush_texture_width: tex_w,
+                                        brush_texture_height: tex_h,
                                         brush_texture_scale: preset.texture_scale,
                                         active_mask_editing: self.active_mask_editing,
                                     };
@@ -3744,14 +3882,17 @@ impl eframe::App for PaintApp {
                         }
 
                         // Store the vector stroke in vector_data
+                        let stroke_color = self.active_color();
                         if is_vector && !self.current_vector_points.is_empty() {
                             if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
                                 let stroke = crate::canvas::VectorStroke {
                                     control_points: self.current_vector_points.clone(),
                                     brush_preset_id: self.presets[self.active_preset_index].id,
+                                    color: stroke_color,
+                                    width: 1.0,
                                 };
                                 if active_layer.vector_data.is_none() {
-                                    active_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new() });
+                                    active_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new(), display_mode: Default::default() });
                                 }
                                 if let Some(v_data) = &mut active_layer.vector_data {
                                     v_data.strokes.push(stroke);
@@ -3964,48 +4105,31 @@ impl eframe::App for PaintApp {
 
                 // SYMMETRY AXIS GUIDES
                 if !matches!(self.symmetry_mode, SymmetryMode::None) {
-                    let canvas_top = 0.0;
-                    let canvas_bottom = self.canvas_height as f32;
-                    let canvas_left = 0.0;
-                    let canvas_right = self.canvas_width as f32;
-                    let top_sy = ((canvas_top - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
-                    let bot_sy = ((canvas_bottom - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
-                    let left_sx = ((canvas_left - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
-                    let right_sx = ((canvas_right - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
-
                     let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 100, 200, 160));
 
                     match self.symmetry_mode {
                         SymmetryMode::None => {}
                         SymmetryMode::Horizontal => {
-                            let sx = ((self.symmetry_center.x - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
-                            ui.painter().line_segment(
-                                [egui::Pos2::new(sx, top_sy), egui::Pos2::new(sx, bot_sy)],
-                                stroke,
-                            );
+                            let p0 = self.world_to_screen(egui::Pos2::new(self.symmetry_center.x, 0.0), rect);
+                            let p1 = self.world_to_screen(egui::Pos2::new(self.symmetry_center.x, self.canvas_height as f32), rect);
+                            ui.painter().line_segment([p0, p1], stroke);
                         }
                         SymmetryMode::Vertical => {
-                            let sy = ((self.symmetry_center.y - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
-                            ui.painter().line_segment(
-                                [egui::Pos2::new(left_sx, sy), egui::Pos2::new(right_sx, sy)],
-                                stroke,
-                            );
+                            let p0 = self.world_to_screen(egui::Pos2::new(0.0, self.symmetry_center.y), rect);
+                            let p1 = self.world_to_screen(egui::Pos2::new(self.canvas_width as f32, self.symmetry_center.y), rect);
+                            ui.painter().line_segment([p0, p1], stroke);
                         }
                         SymmetryMode::Radial => {
-                            let cx = ((self.symmetry_center.x - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
-                            let cy = ((self.symmetry_center.y - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                            let p_center = self.world_to_screen(self.symmetry_center, rect);
                             let count = self.symmetry_radial_count.max(2);
                             let step = 2.0 * std::f32::consts::PI / count as f32;
                             // Draw radial lines from center
                             for i in 0..count {
                                 let theta = step * i as f32;
-                                let max_r = ((canvas_right.max(canvas_bottom) - self.symmetry_center.x.max(self.symmetry_center.y)).abs() + 100.0) * self.viewport_zoom;
-                                let ex = cx + max_r * theta.cos();
-                                let ey = cy + max_r * theta.sin();
-                                ui.painter().line_segment(
-                                    [egui::Pos2::new(cx, cy), egui::Pos2::new(ex, ey)],
-                                    stroke,
-                                );
+                                let max_r = (self.canvas_width.max(self.canvas_height) as f32) * 2.0;
+                                let pt_world = self.symmetry_center + egui::vec2(max_r * theta.cos(), max_r * theta.sin());
+                                let p_end = self.world_to_screen(pt_world, rect);
+                                ui.painter().line_segment([p_center, p_end], stroke);
                             }
                         }
                     }
@@ -4023,21 +4147,16 @@ impl eframe::App for PaintApp {
                                         let wx = (tx * 64) as f32 + lx as f32;
                                         let wy = (ty * 64) as f32 + ly as f32;
 
-                                        let sx = ((wx - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
-                                        let sy = ((wy - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
-                                        let sw = 1.0 * self.viewport_zoom;
-                                        let sh = 1.0 * self.viewport_zoom;
+                                        let p0 = self.world_to_screen(egui::Pos2::new(wx, wy), rect);
+                                        let p1 = self.world_to_screen(egui::Pos2::new(wx + 1.0, wy), rect);
+                                        let p2 = self.world_to_screen(egui::Pos2::new(wx + 1.0, wy + 1.0), rect);
+                                        let p3 = self.world_to_screen(egui::Pos2::new(wx, wy + 1.0), rect);
 
-                                        if sx + sw >= rect.min.x && sx <= rect.max.x && sy + sh >= rect.min.y && sy <= rect.max.y {
-                                            ui.painter().rect_filled(
-                                                egui::Rect::from_min_size(
-                                                    egui::Pos2::new(sx, sy),
-                                                    egui::Vec2::new(sw.max(1.0), sh.max(1.0)),
-                                                ),
-                                                0.0,
-                                                egui::Color32::from_rgba_premultiplied(60, 120, 255, (val as u32 * 80 / 255) as u8),
-                                            );
-                                        }
+                                        ui.painter().add(egui::Shape::convex_polygon(
+                                            vec![p0, p1, p2, p3],
+                                            egui::Color32::from_rgba_premultiplied(60, 120, 255, (val as u32 * 80 / 255) as u8),
+                                            egui::Stroke::NONE,
+                                        ));
                                     }
                                 }
                             }
@@ -4151,6 +4270,105 @@ impl eframe::App for PaintApp {
                     let pivot_screen = self.world_to_screen(self.transform_pivot + self.transform_translation, rect);
                     ui.painter().circle_stroke(pivot_screen, 8.0, stroke_blue);
                     ui.painter().circle_filled(pivot_screen, 2.0, egui::Color32::from_rgb(0, 120, 215));
+                }
+
+                // =============================================================
+                // VECTOR TOOLS OVERLAY — show control points and previews
+                // =============================================================
+                if matches!(self.active_tool, ToolId::VectorPen | ToolId::Curve | ToolId::EditCP) {
+                    // Show curve preview points
+                    if !self.curve_points.is_empty() && matches!(self.active_tool, ToolId::Curve) {
+                        let cp_color = egui::Color32::from_rgb(0, 180, 255);
+                        for cp in &self.curve_points {
+                            let screen_pt = self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
+                            ui.painter().circle_filled(screen_pt, 4.0, cp_color);
+                            ui.painter().circle_stroke(screen_pt, 4.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                        }
+
+                        // Preview curve connection lines
+                        if self.curve_points.len() >= 2 {
+                            for i in 0..self.curve_points.len() - 1 {
+                                let a = self.world_to_screen(egui::Pos2::new(self.curve_points[i].x, self.curve_points[i].y), rect);
+                                let b = self.world_to_screen(egui::Pos2::new(self.curve_points[i + 1].x, self.curve_points[i + 1].y), rect);
+                                ui.painter().line_segment([a, b], egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 100)));
+                            }
+                        }
+
+                        // Show number of points placed
+                        let num_label = format!("{}/4 points placed", self.curve_points.len());
+                        if let Some(cp) = self.curve_points.last() {
+                            let screen_pt = self.world_to_screen(egui::Pos2::new(cp.x + 10.0, cp.y - 20.0), rect);
+                            ui.painter().text(
+                                screen_pt,
+                                egui::Align2::LEFT_BOTTOM,
+                                num_label,
+                                egui::FontId::proportional(12.0),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    }
+
+                    // Show vector stroke control points (EditCP tool)
+                    if matches!(self.active_tool, ToolId::EditCP) {
+                        if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                            if let Some(v_data) = &active_layer.vector_data {
+                                let cp_color = egui::Color32::from_rgb(0, 200, 100);
+                                let sel_color = egui::Color32::from_rgb(255, 200, 0);
+                                for (si, stroke) in v_data.strokes.iter().enumerate() {
+                                    for (pi, cp) in stroke.control_points.iter().enumerate() {
+                                        let screen_pt = self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
+                                        let is_selected = self.edit_cp_selection == Some((si, pi));
+                                        let color = if is_selected { sel_color } else { cp_color };
+                                        let radius = if is_selected { 5.0 } else { 3.0 };
+                                        ui.painter().circle_filled(screen_pt, radius, color);
+                                        ui.painter().circle_stroke(screen_pt, radius, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                                    }
+
+                                    // Draw stroke connection lines
+                                    if stroke.control_points.len() >= 2 {
+                                        for i in 0..stroke.control_points.len() - 1 {
+                                            let a = self.world_to_screen(egui::Pos2::new(stroke.control_points[i].x, stroke.control_points[i].y), rect);
+                                            let b = self.world_to_screen(egui::Pos2::new(stroke.control_points[i + 1].x, stroke.control_points[i + 1].y), rect);
+                                            ui.painter().line_segment([a, b], egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(0, 200, 100, 80)));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // =============================================================
+                // VECTOR SPLINE MESH RENDERING — resolution-independent wire mesh
+                // =============================================================
+                for &layer_id in &self.layer_order {
+                    let should_render = self.layers.get(&layer_id).map(|layer| {
+                        layer.visible
+                            && matches!(layer.kind, crate::canvas::LayerType::Vector)
+                            && layer.vector_data.as_ref().map(|vd| vd.display_mode == crate::canvas::VectorDisplayMode::SplineMesh).unwrap_or(false)
+                    }).unwrap_or(false);
+
+                    if should_render {
+                        if let Some(layer) = self.layers.get(&layer_id) {
+                            if let Some(v_data) = &layer.vector_data {
+                                let meshes = crate::vector::generate_layer_egui_meshes(
+                                    &v_data.strokes,
+                                    5.0,   // base_radius
+                                    1.0,   // min_radius
+                                    layer.opacity,
+                                );
+                                for mesh in meshes {
+                                    let mut screen_mesh = egui::Mesh::with_texture(mesh.texture_id);
+                                    for v in &mesh.vertices {
+                                        let screen_pos = self.world_to_screen(v.pos, rect);
+                                        screen_mesh.vertices.push(egui::epaint::Vertex { pos: screen_pos, uv: v.uv, color: v.color });
+                                    }
+                                    screen_mesh.indices = mesh.indices;
+                                    ui.painter().add(egui::Shape::mesh(screen_mesh));
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // PERFORMANCE HUD OVERLAY
@@ -4557,6 +4775,87 @@ fn generate_bristle_texture() -> Vec<u8> {
     data
 }
 
+#[derive(Clone)]
+pub(crate) struct BrushTexture {
+    pub(crate) name: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) pixels: Vec<u8>,
+}
+
+fn load_bmp_texture(path: &std::path::Path) -> Result<BrushTexture, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let gray_img = img.to_luma8();
+    let width = gray_img.width();
+    let height = gray_img.height();
+    let pixels = gray_img.into_raw();
+    let name = path.file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Unnamed")
+        .to_string();
+    Ok(BrushTexture {
+        name,
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn scan_and_load_textures() -> Vec<BrushTexture> {
+    let mut textures = vec![
+        BrushTexture {
+            name: "None".to_string(),
+            width: 256,
+            height: 256,
+            pixels: vec![255u8; 256 * 256],
+        },
+        BrushTexture {
+            name: "Noise".to_string(),
+            width: 256,
+            height: 256,
+            pixels: generate_noise_texture(),
+        },
+        BrushTexture {
+            name: "Bristle".to_string(),
+            width: 256,
+            height: 256,
+            pixels: generate_bristle_texture(),
+        },
+    ];
+
+    let base_dir = "C:\\Users\\User\\Downloads\\Paint Tool Sai 2.0 x64 (2019)\\Paint Tool Sai 2.0 x64 (2019)";
+    let folders = ["brushtex", "papertex", "brshape", "blotmap", "bristle", "scatter"];
+
+    let mut custom_textures = Vec::new();
+    for folder in &folders {
+        let folder_path = std::path::Path::new(base_dir).join(folder);
+        if folder_path.exists() && folder_path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(folder_path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("bmp")) {
+                        match load_bmp_texture(&path) {
+                            Ok(mut tex) => {
+                                tex.name = format!("[{}] {}", folder, tex.name);
+                                custom_textures.push(tex);
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to load texture {:?}: {}", path, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    custom_textures.sort_by(|a, b| a.name.cmp(&b.name));
+    textures.extend(custom_textures);
+
+    textures
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4682,5 +4981,440 @@ mod tests {
         assert_eq!(PaintApp::parse_hex_color("invalid"), None);
         assert_eq!(PaintApp::parse_hex_color("#ff"), None);
         assert_eq!(PaintApp::parse_hex_color("12345"), None);
+    }
+
+    #[test]
+    fn test_transparency_painting() {
+        let mut app = PaintApp {
+            active_layer_id: 1,
+            layers: ahash::AHashMap::default(),
+            layer_order: vec![1],
+            layer_id_counter: 1,
+            active_preset_index: 0,
+            presets: vec![
+                BrushPreset {
+                    id: 1,
+                    name: "Pencil".to_string(),
+                    icon: PresetIcon::Pencil,
+                    radius_log: 1.0,
+                    opacity: 0.95,
+                    hardness: 0.95,
+                    min_size_fraction: 0.8,
+                    color_blending: 0.0,
+                    dilution: 0.0,
+                    is_eraser: false,
+                    texture_id: 0,
+                    texture_scale: 1.0,
+                    bristle_id: 0,
+                    stabilizer_level: StabilizerLevel::default(),
+                    stabilizer_mode: StabilizerMode::SpringMassDamper,
+                    spacing: 2.0,
+                    density: 1.0,
+                }
+            ],
+            preset_id_counter: 1,
+            brushes: vec![Brush::new()],
+            brush_states: vec![BrushState::default()],
+            foreground_color: [0.0, 0.0, 0.0],
+            background_color: [1.0, 1.0, 1.0],
+            active_color_is_bg: false,
+            active_color_is_transparent: false,
+            hex_color_input: String::new(),
+            toggle_fullscreen_requested: false,
+            palette: Vec::new(),
+            selected_palette_index: None,
+            brush_radius_log: 1.0,
+            brush_opacity: 1.0,
+            brush_hardness: 0.8,
+            brush_min_size_fraction: 0.8,
+            brush_color_blending: 0.0,
+            brush_dilution: 0.0,
+            brush_spacing: 2.0,
+            brush_density: 1.0,
+            pressure_curve: 0.5,
+            pressure_min: 0.0,
+            renaming_preset_index: None,
+            rename_input: String::new(),
+            input_manager: None,
+            tablet_axis: TabletAxisState::default(),
+            egui_touch_pressure: None,
+            egui_touch_active: false,
+            stabilizer: StrokeStabilizer::new(0),
+            performance_hud: PerformanceHud::default(),
+            tablet_diagnostics: TabletDiagnostics::default(),
+            last_ptr_pos: None,
+            last_ptr_pressure: 0.0,
+            last_event_time: 0.0,
+            viewport_offset: Vec2::ZERO,
+            viewport_zoom: 1.0,
+            mirror_horizontal: false,
+            rotation_angle: 0.0,
+            canvas_width: 100,
+            canvas_height: 100,
+            show_new_canvas_dialog: false,
+            new_canvas_width: 100,
+            new_canvas_height: 100,
+            history: HistoryManager::new(100),
+            current_stroke_snapshots: Vec::new(),
+            dragging_layer_id: None,
+            drag_start_order: None,
+            stroke_id: 1,
+            lock_canvas_bounds: false,
+            selection_mask: crate::canvas::SelectionMask::new(),
+            active_mask_editing: false,
+            brush_textures: Vec::new(),
+            save_sender: std::sync::mpsc::channel().0,
+            current_vector_points: Vec::new(),
+            curve_points: Vec::new(),
+            edit_cp_selection: None,
+            edit_cp_dragging: false,
+            document_path: String::new(),
+            brush_import_path: String::new(),
+            brush_texture_id: 0,
+            brush_texture_scale: 1.0,
+            brush_bristle_id: 0,
+            brush_settings_dirty: true,
+            renderer: None,
+            shortcuts: ShortcutManager::new(),
+            active_tool: ToolId::Brush,
+            fill_options: fill::FillOptions::default(),
+            selection_mode: selection::SelectionMode::Replace,
+            selection_rect: None,
+            lasso_points: None,
+            is_selecting: false,
+            show_selection_overlay: false,
+            selection_feather: 0.0,
+            transform_state: transform_tool::TransformState::new(),
+            show_export_png_dialog: false,
+            export_png_options: crate::export::png::ExportPngOptions::default(),
+            export_png_path: String::new(),
+            show_export_ora_dialog: false,
+            export_ora_path: String::new(),
+            show_import_ora_dialog: false,
+            import_ora_path: String::new(),
+            autosave_enabled: false,
+            autosave_interval_secs: 0.0,
+            autosave_path: String::new(),
+            last_autosave_time: 0.0,
+            document_modified: false,
+            autosave_status: String::new(),
+            show_minimal_ui: false,
+            show_grid: false,
+            show_symmetry: false,
+            quick_bar_visible: false,
+            symmetry_mode: SymmetryMode::None,
+            symmetry_center: Pos2::ZERO,
+            symmetry_radial_count: 2,
+            symmetry_brush_states: Vec::new(),
+            shift_snap_enabled: false,
+            stroke_start_pos: None,
+            pressure_response: crate::pressure::PressureCurve::new_linear(),
+            show_pressure_calibration: false,
+            show_grow_dialog: false,
+            show_shrink_dialog: false,
+            show_feather_dialog: false,
+            grow_pixels: 0,
+            shrink_pixels: 0,
+            feather_pixels: 0,
+            color_history: Vec::new(),
+            color_history_max: 12,
+            color_wheel_drag_zone: None,
+            show_layer_properties: false,
+            show_shortcut_editor: false,
+            shortcut_search: String::new(),
+            shortcut_edit_idx: None,
+            shortcut_listen_idx: None,
+            show_recovery_dialog: false,
+            recovery_files: Vec::new(),
+            layer_thumbnails: ahash::AHashMap::default(),
+            thumbnail_textures: ahash::AHashMap::default(),
+            thumbnail_regenerate_counter: 0,
+            last_viewport_rect: None,
+            last_viewport_size: Vec2::ZERO,
+            clipboard: None,
+            selection_display_mode: SelectionDisplayMode::MarchingAnts,
+            transform_active: false,
+            transform_orig_bounds: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
+            transform_translation: Vec2::ZERO,
+            transform_scale: Vec2::splat(1.0),
+            transform_rotation: 0.0,
+            transform_pivot: Pos2::ZERO,
+            transform_dragging: None,
+            transform_drag_start_ptr: None,
+            transform_drag_start_translation: Vec2::ZERO,
+            transform_drag_start_scale: Vec2::splat(1.0),
+            transform_drag_start_rotation: 0.0,
+            test_pad_image: egui::ColorImage::new([10, 10], Color32::WHITE),
+            test_pad_texture: None,
+            show_preferences_dialog: false,
+            pref_theme: String::new(),
+            pref_ui_scale: 1.0,
+            pref_canvas_bg: String::new(),
+            pref_autosave_enabled: false,
+            pref_autosave_interval_mins: 10,
+            show_tablet_diagnostics: false,
+            show_performance_hud: false,
+            reference_images: Vec::new(),
+            selected_reference_idx: None,
+            ref_image_path_input: String::new(),
+            reference_id_counter: 0,
+            ref_image_dragging: None,
+            ref_image_drag_offset: Vec2::ZERO,
+        };
+
+        // Assert initial state
+        assert!(!app.active_color_is_transparent);
+
+        // Turn on transparent color mode
+        app.active_color_is_transparent = true;
+        app.brush_settings_dirty = true;
+
+        // Test synchronization
+        app.sync_brush_settings();
+        let active_brush = &app.brushes[app.active_preset_index];
+        assert_eq!(active_brush.get(BrushSetting::Eraser).base_value, 1.0);
+
+        // Changing color should reset it
+        app.set_active_color([1.0, 0.0, 0.0]);
+        assert!(!app.active_color_is_transparent);
+
+        // Test active background color synchronization
+        app.active_color_is_bg = true;
+        app.set_active_color([0.0, 1.0, 0.0]); // set background color to green
+        app.brush_settings_dirty = true;
+        app.sync_brush_settings();
+        let active_brush = &app.brushes[app.active_preset_index];
+        // Green is [0.0, 1.0, 0.0]. HSV of green is H=120/360=0.333, S=1.0, V=1.0
+        let h = active_brush.get(BrushSetting::ColorH).base_value;
+        let s = active_brush.get(BrushSetting::ColorS).base_value;
+        let v = active_brush.get(BrushSetting::ColorV).base_value;
+        assert!((h - 0.3333).abs() < 1e-2);
+        assert!((s - 1.0).abs() < 1e-4);
+        assert!((v - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_coordinate_mirroring() {
+        let mut app = PaintApp {
+            active_layer_id: 1,
+            layers: ahash::AHashMap::default(),
+            layer_order: vec![1],
+            layer_id_counter: 1,
+            active_preset_index: 0,
+            presets: vec![
+                BrushPreset {
+                    id: 1,
+                    name: "Pencil".to_string(),
+                    icon: PresetIcon::Pencil,
+                    radius_log: 1.0,
+                    opacity: 0.95,
+                    hardness: 0.95,
+                    min_size_fraction: 0.8,
+                    color_blending: 0.0,
+                    dilution: 0.0,
+                    is_eraser: false,
+                    texture_id: 0,
+                    texture_scale: 1.0,
+                    bristle_id: 0,
+                    stabilizer_level: StabilizerLevel::default(),
+                    stabilizer_mode: StabilizerMode::SpringMassDamper,
+                    spacing: 2.0,
+                    density: 1.0,
+                }
+            ],
+            preset_id_counter: 1,
+            brushes: vec![Brush::new()],
+            brush_states: vec![BrushState::default()],
+            foreground_color: [0.0, 0.0, 0.0],
+            background_color: [1.0, 1.0, 1.0],
+            active_color_is_bg: false,
+            active_color_is_transparent: false,
+            hex_color_input: String::new(),
+            toggle_fullscreen_requested: false,
+            palette: Vec::new(),
+            selected_palette_index: None,
+            brush_radius_log: 1.0,
+            brush_opacity: 1.0,
+            brush_hardness: 0.8,
+            brush_min_size_fraction: 0.8,
+            brush_color_blending: 0.0,
+            brush_dilution: 0.0,
+            brush_spacing: 2.0,
+            brush_density: 1.0,
+            pressure_curve: 0.5,
+            pressure_min: 0.0,
+            renaming_preset_index: None,
+            rename_input: String::new(),
+            input_manager: None,
+            tablet_axis: TabletAxisState::default(),
+            egui_touch_pressure: None,
+            egui_touch_active: false,
+            stabilizer: StrokeStabilizer::new(0),
+            performance_hud: PerformanceHud::default(),
+            tablet_diagnostics: TabletDiagnostics::default(),
+            last_ptr_pos: None,
+            last_ptr_pressure: 0.0,
+            last_event_time: 0.0,
+            viewport_offset: Vec2::ZERO,
+            viewport_zoom: 1.0,
+            mirror_horizontal: false,
+            rotation_angle: 0.0,
+            canvas_width: 1000,
+            canvas_height: 800,
+            show_new_canvas_dialog: false,
+            new_canvas_width: 1000,
+            new_canvas_height: 800,
+            history: HistoryManager::new(100),
+            current_stroke_snapshots: Vec::new(),
+            dragging_layer_id: None,
+            drag_start_order: None,
+            stroke_id: 1,
+            lock_canvas_bounds: false,
+            selection_mask: crate::canvas::SelectionMask::new(),
+            active_mask_editing: false,
+            brush_textures: Vec::new(),
+            save_sender: std::sync::mpsc::channel().0,
+            current_vector_points: Vec::new(),
+            curve_points: Vec::new(),
+            edit_cp_selection: None,
+            edit_cp_dragging: false,
+            document_path: String::new(),
+            brush_import_path: String::new(),
+            brush_texture_id: 0,
+            brush_texture_scale: 1.0,
+            brush_bristle_id: 0,
+            brush_settings_dirty: true,
+            renderer: None,
+            shortcuts: ShortcutManager::new(),
+            active_tool: ToolId::Brush,
+            fill_options: fill::FillOptions::default(),
+            selection_mode: selection::SelectionMode::Replace,
+            selection_rect: None,
+            lasso_points: None,
+            is_selecting: false,
+            show_selection_overlay: false,
+            selection_feather: 0.0,
+            transform_state: transform_tool::TransformState::new(),
+            show_export_png_dialog: false,
+            export_png_options: crate::export::png::ExportPngOptions::default(),
+            export_png_path: String::new(),
+            show_export_ora_dialog: false,
+            export_ora_path: String::new(),
+            show_import_ora_dialog: false,
+            import_ora_path: String::new(),
+            autosave_enabled: false,
+            autosave_interval_secs: 0.0,
+            autosave_path: String::new(),
+            last_autosave_time: 0.0,
+            document_modified: false,
+            autosave_status: String::new(),
+            show_minimal_ui: false,
+            show_grid: false,
+            show_symmetry: false,
+            quick_bar_visible: false,
+            symmetry_mode: SymmetryMode::None,
+            symmetry_center: Pos2::ZERO,
+            symmetry_radial_count: 2,
+            symmetry_brush_states: Vec::new(),
+            shift_snap_enabled: false,
+            stroke_start_pos: None,
+            pressure_response: crate::pressure::PressureCurve::new_linear(),
+            show_pressure_calibration: false,
+            show_grow_dialog: false,
+            show_shrink_dialog: false,
+            show_feather_dialog: false,
+            grow_pixels: 0,
+            shrink_pixels: 0,
+            feather_pixels: 0,
+            color_history: Vec::new(),
+            color_history_max: 12,
+            color_wheel_drag_zone: None,
+            show_layer_properties: false,
+            show_shortcut_editor: false,
+            shortcut_search: String::new(),
+            shortcut_edit_idx: None,
+            shortcut_listen_idx: None,
+            show_recovery_dialog: false,
+            recovery_files: Vec::new(),
+            layer_thumbnails: ahash::AHashMap::default(),
+            thumbnail_textures: ahash::AHashMap::default(),
+            thumbnail_regenerate_counter: 0,
+            last_viewport_rect: None,
+            last_viewport_size: Vec2::ZERO,
+            clipboard: None,
+            selection_display_mode: SelectionDisplayMode::MarchingAnts,
+            transform_active: false,
+            transform_orig_bounds: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
+            transform_translation: Vec2::ZERO,
+            transform_scale: Vec2::splat(1.0),
+            transform_rotation: 0.0,
+            transform_pivot: Pos2::ZERO,
+            transform_dragging: None,
+            transform_drag_start_ptr: None,
+            transform_drag_start_translation: Vec2::ZERO,
+            transform_drag_start_scale: Vec2::splat(1.0),
+            transform_drag_start_rotation: 0.0,
+            test_pad_image: egui::ColorImage::new([10, 10], Color32::WHITE),
+            test_pad_texture: None,
+            show_preferences_dialog: false,
+            pref_theme: String::new(),
+            pref_ui_scale: 1.0,
+            pref_canvas_bg: String::new(),
+            pref_autosave_enabled: false,
+            pref_autosave_interval_mins: 10,
+            show_tablet_diagnostics: false,
+            show_performance_hud: false,
+            reference_images: Vec::new(),
+            selected_reference_idx: None,
+            ref_image_path_input: String::new(),
+            reference_id_counter: 0,
+            ref_image_dragging: None,
+            ref_image_drag_offset: Vec2::ZERO,
+        };
+
+        let view_rect = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(800.0, 600.0));
+        let test_points = vec![
+            egui::Pos2::new(10.0, 20.0),
+            egui::Pos2::new(500.0, 400.0),
+            egui::Pos2::new(990.0, 780.0),
+            egui::Pos2::new(15.5, 32.2),
+        ];
+
+        let configurations = vec![
+            (false, 0.0, 1.0, egui::vec2(0.0, 0.0)),
+            (false, 0.5, 2.0, egui::vec2(50.0, -100.0)),
+            (true, 0.0, 1.0, egui::vec2(0.0, 0.0)),
+            (true, -1.2, 0.5, egui::vec2(-20.0, 80.0)),
+        ];
+
+        for (mirror, rotation, zoom, offset) in configurations {
+            app.mirror_horizontal = mirror;
+            app.rotation_angle = rotation;
+            app.viewport_zoom = zoom;
+            app.viewport_offset = offset;
+
+            for &p in &test_points {
+                let screen = app.world_to_screen(p, view_rect);
+                let world = app.screen_to_world(screen, view_rect).to_pos2();
+                assert!(
+                    (world.x - p.x).abs() < 1e-2 && (world.y - p.y).abs() < 1e-2,
+                    "Failed mapping roundtrip for point {:?}: expected {:?}, got {:?} (mirror: {}, rot: {}, zoom: {}, offset: {:?})",
+                    p, p, world, mirror, rotation, zoom, offset
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_texture_scan_and_load() {
+        let textures = scan_and_load_textures();
+        assert!(textures.len() >= 3);
+        assert_eq!(textures[0].name, "None");
+        assert_eq!(textures[1].name, "Noise");
+        assert_eq!(textures[2].name, "Bristle");
+
+        let bad_path = std::path::Path::new("nonexistent_texture_path_123.bmp");
+        let result = load_bmp_texture(bad_path);
+        assert!(result.is_err());
     }
 }

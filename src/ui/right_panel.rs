@@ -123,63 +123,101 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
 
                                  ui.add_space(5.0);
 
-                                 // Overlapping Foreground & Background Swatches + Swap button
-                                 ui.horizontal(|ui| {
-                                     let (swatches_rect, response) = ui.allocate_exact_size(egui::vec2(50.0, 50.0), egui::Sense::click());
-                                     if response.clicked() {
-                                         if let Some(click_pos) = response.interact_pointer_pos() {
-                                             let local_pos = click_pos - swatches_rect.min;
-                                             // Foreground swatch is [0.0..34.0] x [0.0..34.0]
-                                             // Background swatch is [16.0..50.0] x [16.0..50.0]
-                                             if local_pos.x >= 0.0 && local_pos.x <= 34.0 && local_pos.y >= 0.0 && local_pos.y <= 34.0 {
-                                                 app.active_color_is_bg = false;
-                                             } else if local_pos.x >= 16.0 && local_pos.x <= 50.0 && local_pos.y >= 16.0 && local_pos.y <= 50.0 {
-                                                 app.active_color_is_bg = true;
-                                             }
-                                         }
-                                     }
+                                  // Overlapping Foreground & Background Swatches + Swap button + Transparency
+                                  ui.horizontal(|ui| {
+                                      // Allocate areas first to avoid borrow checker issues with painter
+                                      let (swatches_rect, response) = ui.allocate_exact_size(egui::vec2(50.0, 50.0), egui::Sense::click());
+                                      let (trans_rect, trans_resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
 
-                                     let painter = ui.painter();
-                                     // Draw background swatch first (below)
-                                     let bg_rect = egui::Rect::from_min_size(
-                                         swatches_rect.min + egui::vec2(16.0, 16.0),
-                                         egui::vec2(34.0, 34.0),
-                                     );
-                                     let bg_color = egui::Color32::from_rgb(
-                                         (app.background_color[0] * 255.0) as u8,
-                                         (app.background_color[1] * 255.0) as u8,
-                                         (app.background_color[2] * 255.0) as u8,
-                                     );
-                                     painter.rect_filled(bg_rect, 0.0, bg_color);
-                                     if app.active_color_is_bg {
-                                         painter.rect_stroke(bg_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)));
-                                     } else {
-                                         painter.rect_stroke(bg_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
-                                     }
+                                      if response.clicked() {
+                                          if let Some(click_pos) = response.interact_pointer_pos() {
+                                              let local_pos = click_pos - swatches_rect.min;
+                                              // Foreground swatch is [0.0..34.0] x [0.0..34.0]
+                                              // Background swatch is [16.0..50.0] x [16.0..50.0]
+                                              if local_pos.x >= 0.0 && local_pos.x <= 34.0 && local_pos.y >= 0.0 && local_pos.y <= 34.0 {
+                                                  app.active_color_is_bg = false;
+                                                  app.active_color_is_transparent = false;
+                                                  app.brush_settings_dirty = true;
+                                              } else if local_pos.x >= 16.0 && local_pos.x <= 50.0 && local_pos.y >= 16.0 && local_pos.y <= 50.0 {
+                                                  app.active_color_is_bg = true;
+                                                  app.active_color_is_transparent = false;
+                                                  app.brush_settings_dirty = true;
+                                              }
+                                          }
+                                      }
 
-                                     // Draw foreground swatch on top
-                                     let fg_rect = egui::Rect::from_min_size(
-                                         swatches_rect.min,
-                                         egui::vec2(34.0, 34.0),
-                                     );
-                                     let fg_color = egui::Color32::from_rgb(
-                                         (app.foreground_color[0] * 255.0) as u8,
-                                         (app.foreground_color[1] * 255.0) as u8,
-                                         (app.foreground_color[2] * 255.0) as u8,
-                                     );
-                                     painter.rect_filled(fg_rect, 0.0, fg_color);
-                                     if !app.active_color_is_bg {
-                                         painter.rect_stroke(fg_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)));
-                                     } else {
-                                         painter.rect_stroke(fg_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
-                                     }
+                                      if trans_resp.clicked() {
+                                          app.active_color_is_transparent = true;
+                                          app.brush_settings_dirty = true;
+                                      }
+                                      if trans_resp.hovered() {
+                                          ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                      }
 
-                                     // Swap button
-                                     if ui.button("⇄").on_hover_text("Swap colors (X)").clicked() {
-                                         std::mem::swap(&mut app.foreground_color, &mut app.background_color);
-                                         app.brush_settings_dirty = true;
-                                     }
-                                 });
+                                      let painter = ui.painter();
+                                      // Draw background swatch first (below)
+                                      let bg_rect = egui::Rect::from_min_size(
+                                          swatches_rect.min + egui::vec2(16.0, 16.0),
+                                          egui::vec2(34.0, 34.0),
+                                      );
+                                      let bg_color = egui::Color32::from_rgb(
+                                          (app.background_color[0] * 255.0) as u8,
+                                          (app.background_color[1] * 255.0) as u8,
+                                          (app.background_color[2] * 255.0) as u8,
+                                      );
+                                      painter.rect_filled(bg_rect, 0.0, bg_color);
+                                      if app.active_color_is_bg && !app.active_color_is_transparent {
+                                          painter.rect_stroke(bg_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)));
+                                      } else {
+                                          painter.rect_stroke(bg_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                                      }
+
+                                      // Draw foreground swatch on top
+                                      let fg_rect = egui::Rect::from_min_size(
+                                          swatches_rect.min,
+                                          egui::vec2(34.0, 34.0),
+                                      );
+                                      let fg_color = egui::Color32::from_rgb(
+                                          (app.foreground_color[0] * 255.0) as u8,
+                                          (app.foreground_color[1] * 255.0) as u8,
+                                          (app.foreground_color[2] * 255.0) as u8,
+                                      );
+                                      painter.rect_filled(fg_rect, 0.0, fg_color);
+                                      if !app.active_color_is_bg && !app.active_color_is_transparent {
+                                          painter.rect_stroke(fg_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)));
+                                      } else {
+                                          painter.rect_stroke(fg_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                                      }
+
+                                      // Draw checkerboard inside trans_rect
+                                      let size_w = 6.0;
+                                      for row in 0..4 {
+                                          for col in 0..4 {
+                                              let sq_rect = egui::Rect::from_min_max(
+                                                  trans_rect.min + egui::vec2(col as f32 * size_w, row as f32 * size_w),
+                                                  trans_rect.min + egui::vec2((col + 1) as f32 * size_w, (row + 1) as f32 * size_w),
+                                              );
+                                              let color = if (row + col) % 2 == 0 {
+                                                  egui::Color32::from_gray(240)
+                                              } else {
+                                                  egui::Color32::from_gray(180)
+                                              };
+                                              painter.rect_filled(sq_rect, 0.0, color);
+                                          }
+                                      }
+                                      if app.active_color_is_transparent {
+                                          painter.rect_stroke(trans_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)));
+                                      } else {
+                                          painter.rect_stroke(trans_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+                                      }
+
+                                      // Swap button
+                                      if ui.button("⇄").on_hover_text("Swap colors (X)").clicked() {
+                                          std::mem::swap(&mut app.foreground_color, &mut app.background_color);
+                                          app.active_color_is_transparent = false;
+                                          app.brush_settings_dirty = true;
+                                      }
+                                  });
 
                                  ui.add_space(5.0);
 
@@ -420,7 +458,7 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         let new_id = app.layer_id_counter;
                                         let mut new_layer = Layer::new(new_id, format!("Vector {}", new_id));
                                         new_layer.kind = crate::canvas::LayerType::Vector;
-                                        new_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new() });
+                                        new_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new(), display_mode: Default::default() });
                                         let layer_clone = new_layer.clone();
                                         app.layers.insert(new_id, new_layer);
                                         app.layer_order.insert(0, new_id);
@@ -543,6 +581,87 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                     for cmd in commands {
                                         app.history.push_command(cmd);
                                     }
+                                }
+
+                                // Vector layer display mode toggle
+                                let (is_vector, is_spline_mode) = app.layers.get(&app.active_layer_id).map(|l| {
+                                    let is_v = matches!(l.kind, crate::canvas::LayerType::Vector);
+                                    let is_spline = l.vector_data.as_ref().map(|vd| vd.display_mode == crate::canvas::VectorDisplayMode::SplineMesh).unwrap_or(false);
+                                    (is_v, is_spline)
+                                }).unwrap_or((false, false));
+
+                                if is_vector {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Vector Display:");
+                                        let spline = is_spline_mode;
+                                        if ui.selectable_label(!spline, "Rasterized").clicked() {
+                                            if let Some(layer) = app.layers.get_mut(&app.active_layer_id) {
+                                                if let Some(vd) = &mut layer.vector_data {
+                                                    vd.display_mode = crate::canvas::VectorDisplayMode::Rasterized;
+                                                }
+                                            }
+                                        }
+                                        if ui.selectable_label(spline, "Spline Mesh").clicked() {
+                                            if let Some(layer) = app.layers.get_mut(&app.active_layer_id) {
+                                                if let Some(vd) = &mut layer.vector_data {
+                                                    vd.display_mode = crate::canvas::VectorDisplayMode::SplineMesh;
+                                                }
+                                            }
+                                        }
+                                    });
+
+                                    // Stroke width slider for selected control point
+                                    let selected_width = app.edit_cp_selection.and_then(|(si, _)| {
+                                        app.layers.get(&app.active_layer_id).and_then(|l| {
+                                            l.vector_data.as_ref().and_then(|vd| {
+                                                vd.strokes.get(si).map(|s| s.width)
+                                            })
+                                        })
+                                    });
+                                    if let Some(cur_width) = selected_width {
+                                        let mut new_width = cur_width;
+                                        let si = app.edit_cp_selection.map(|(s, _)| s).unwrap_or(0);
+                                        ui.horizontal(|ui| {
+                                            ui.label("Stroke Width:");
+                                            if ui.add(egui::Slider::new(&mut new_width, 0.1..=10.0).step_by(0.1)).changed() {
+                                                if let Some(layer) = app.layers.get_mut(&app.active_layer_id) {
+                                                    if let Some(vd) = &mut layer.vector_data {
+                                                        if si < vd.strokes.len() {
+                                                            vd.strokes[si].width = new_width;
+                                                            app.redraw_vector_layer(app.active_layer_id);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Convert to Raster").clicked() {
+                                            app.convert_active_vector_to_raster();
+                                            ctx.request_repaint();
+                                        }
+                                    });
+
+                                    // SVG export
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Export SVG").clicked() {
+                                            if let Some(layer) = app.layers.get(&app.active_layer_id) {
+                                                if let Some(vd) = &layer.vector_data {
+                                                    let svg_content = crate::vector::export_strokes_svg(
+                                                        &vd.strokes, app.canvas_width, app.canvas_height,
+                                                    );
+                                                    let svg_path = std::path::Path::new(&app.document_path)
+                                                        .with_extension("svg");
+                                                    if let Err(e) = std::fs::write(&svg_path, &svg_content) {
+                                                        log::error!("Failed to export SVG: {}", e);
+                                                    } else {
+                                                        log::info!("Exported SVG to {:?}", svg_path);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
                                 }
 
                                 ui.separator();
