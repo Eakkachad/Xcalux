@@ -328,6 +328,33 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
         }
     }
 
+    // 2d. ABOUT DIALOG
+    if app.show_about_dialog {
+        let mut close = false;
+        egui::Window::new("About ARTY")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("ARTY").heading().strong());
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("Xcalux Digital Painting Workstation").weak());
+                    ui.add_space(8.0);
+                    ui.label("A digital painting application inspired by Paint Tool SAI");
+                    ui.add_space(4.0);
+                    ui.label("Built with Rust + egui + WGPU");
+                    ui.add_space(8.0);
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            app.show_about_dialog = false;
+        }
+    }
+
     // 3. KEYBOARD SHORTCUT EDITOR
     if app.show_shortcut_editor {
         egui::Window::new("Keyboard Shortcuts")

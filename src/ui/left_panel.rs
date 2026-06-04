@@ -21,10 +21,11 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                     .num_columns(4)
                                     .spacing([4.0, 4.0])
                                     .show(ui, |ui| {
-                                        let tools: [(ToolId, &str, &str); 16] = [
+                                        let tools: [(ToolId, &str, &str); 18] = [
                                             (ToolId::RectSelect, "▢", "Rect Selection [Ctrl+A/D/I]"),
                                             (ToolId::EllipseSelect, "⭘", "Oval Selection"),
                                             (ToolId::Lasso, "➰", "Lasso Selection"),
+                                            (ToolId::PolygonLasso, "⬠", "Polygon Lasso [Shift+L]"),
                                             (ToolId::MagicWand, "🪄", "Magic Wand Selection"),
                                             (ToolId::Move, "✥", "Move Tool"),
                                             (ToolId::Transform, "⛶", "Transform Tool [Ctrl+T]"),
@@ -35,6 +36,7 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                             (ToolId::Brush, "🖌", "Paint Brush [B]"),
                                             (ToolId::Eraser, "🧼", "Eraser [E]"),
                                             (ToolId::Fill, "🪣", "Fill Bucket [Alt+Backspace]"),
+                                            (ToolId::Gradient, "◑", "Gradient Tool [Shift+G]"),
                                             (ToolId::Line, "╱", "Straight Line Tool [Shift]"),
                                             (ToolId::Shape, "⬡", "Shape Tool"),
                                             (ToolId::Reference, "◎", "Reference Layer Toggle"),
@@ -575,7 +577,7 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         ui.checkbox(&mut app.fill_options.respect_selection, "Respect selection");
                                         ui.checkbox(&mut app.fill_options.fill_transparent_only, "Fill transparent only");
                                     }
-                                    ToolId::RectSelect | ToolId::EllipseSelect | ToolId::Lasso => {
+                                    ToolId::RectSelect | ToolId::EllipseSelect | ToolId::Lasso | ToolId::PolygonLasso => {
                                         ui.horizontal(|ui| {
                                             ui.label("Mode:");
                                             egui::ComboBox::from_id_source("sel_mode")
@@ -684,6 +686,35 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                                     ui.selectable_value(&mut app.transform_state.interpolation, crate::tools::transform::InterpolationMode::Bilinear, "Bilinear");
                                                     ui.selectable_value(&mut app.transform_state.interpolation, crate::tools::transform::InterpolationMode::Bicubic, "Bicubic");
                                                 });
+                                        });
+                                    }
+                                    ToolId::Gradient => {
+                                        ui.horizontal(|ui| {
+                                            ui.label("Mode:");
+                                            let mut gm = app.gradient_mode;
+                                            egui::ComboBox::from_id_source("gradient_mode")
+                                                .selected_text(if gm == 0 { "Linear" } else { "Radial" })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut gm, 0u32, "Linear");
+                                                    ui.selectable_value(&mut gm, 1u32, "Radial");
+                                                });
+                                            if gm != app.gradient_mode {
+                                                app.gradient_mode = gm;
+                                            }
+                                        });
+                                        ui.horizontal(|ui| {
+                                            ui.label("Type:");
+                                            let mut gt = app.gradient_type;
+                                            egui::ComboBox::from_id_source("gradient_type")
+                                                .selected_text(match gt { 0 => "FG→BG", 1 => "FG→Transparent", _ => "BG→Transparent" })
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut gt, 0u32, "FG→BG");
+                                                    ui.selectable_value(&mut gt, 1u32, "FG→Transparent");
+                                                    ui.selectable_value(&mut gt, 2u32, "BG→Transparent");
+                                                });
+                                            if gt != app.gradient_type {
+                                                app.gradient_type = gt;
+                                            }
                                         });
                                     }
                                     ToolId::ColorPicker => {

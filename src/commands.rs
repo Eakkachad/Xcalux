@@ -114,6 +114,11 @@ pub enum CommandId {
     About,
     OpenConfigFolder,
 
+    // Filters & Adjustments
+    AdjustBrightnessContrast,
+    AdjustHueSaturation,
+    FilterGaussianBlur,
+
     // Tools
     ToolBrush,
     ToolEraser,

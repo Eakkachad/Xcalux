@@ -2,13 +2,15 @@ use crate::canvas::{Layer, Tile, BlendMode, SelectionMask};
 use ahash::AHashMap;
 use hokusai::tile::{empty_tile, TilePixels};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LayerPropertyChange {
     Opacity { old: f32, new: f32 },
     Visible { old: bool, new: bool },
     LockAlpha { old: bool, new: bool },
+    Locked { old: bool, new: bool },
     Clipping { old: bool, new: bool },
     BlendMode { old: BlendMode, new: BlendMode },
+    Rename { old: String, new: String },
 }
 
 pub struct TileSnapshot {
@@ -253,6 +255,14 @@ impl HistoryManager {
                             layer.blend_mode = old;
                             LayerPropertyChange::BlendMode { old: new, new: old }
                         }
+                        LayerPropertyChange::Locked { old, new } => {
+                            layer.locked = old;
+                            LayerPropertyChange::Locked { old: new, new: old }
+                        }
+                        LayerPropertyChange::Rename { old, new } => {
+                            layer.name = old.clone();
+                            LayerPropertyChange::Rename { old: new, new: old }
+                        }
                     };
                     HistoryCommand::LayerProperty { layer_id, property: reverse }
                 } else {
@@ -367,6 +377,14 @@ impl HistoryManager {
                         LayerPropertyChange::BlendMode { old, new } => {
                             layer.blend_mode = old;
                             LayerPropertyChange::BlendMode { old: new, new: old }
+                        }
+                        LayerPropertyChange::Locked { old, new } => {
+                            layer.locked = old;
+                            LayerPropertyChange::Locked { old: new, new: old }
+                        }
+                        LayerPropertyChange::Rename { old, new } => {
+                            layer.name = old.clone();
+                            LayerPropertyChange::Rename { old: new, new: old }
                         }
                     };
                     HistoryCommand::LayerProperty { layer_id, property: reverse }

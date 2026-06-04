@@ -254,6 +254,25 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                             }
                         }
                     });
+                ui.separator();
+                if ui.button("Flip Canvas Horizontal").clicked() {
+                    app.command(CommandId::FlipCanvasHorizontal);
+                    ui.close_menu();
+                }
+                if ui.button("Flip Canvas Vertical").clicked() {
+                    app.command(CommandId::FlipCanvasVertical);
+                    ui.close_menu();
+                }
+                if ui.button("Trim Transparent Pixels").clicked() {
+                    app.command(CommandId::TrimTransparent);
+                    ui.close_menu();
+                }
+                ui.separator();
+                let has_selection = app.selection_mask.is_active && !app.selection_mask.is_empty();
+                if ui.add_enabled(has_selection, egui::Button::new("Crop to Selection")).clicked() {
+                    app.command(CommandId::CropToSelection);
+                    ui.close_menu();
+                }
             });
 
             ui.menu_button("Selection", |ui| {
@@ -280,6 +299,21 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 }
                 if ui.button("Feather Selection...").clicked() {
                     app.command(CommandId::SelectionFeather);
+                    ui.close_menu();
+                }
+            });
+
+            ui.menu_button("Filter", |ui| {
+                if ui.button("Brightness/Contrast...").clicked() {
+                    app.command(CommandId::AdjustBrightnessContrast);
+                    ui.close_menu();
+                }
+                if ui.button("Hue/Saturation...").clicked() {
+                    app.command(CommandId::AdjustHueSaturation);
+                    ui.close_menu();
+                }
+                if ui.button("Gaussian Blur...").clicked() {
+                    app.command(CommandId::FilterGaussianBlur);
                     ui.close_menu();
                 }
             });
@@ -311,6 +345,10 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 }
                 if ui.button("Tablet Diagnostics").clicked() {
                     app.tablet_diagnostics.enabled = !app.tablet_diagnostics.enabled;
+                    ui.close_menu();
+                }
+                if ui.button("About ARTY").clicked() {
+                    app.command(CommandId::About);
                     ui.close_menu();
                 }
             });

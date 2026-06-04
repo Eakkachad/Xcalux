@@ -113,6 +113,7 @@ pub struct Layer {
     pub name: String,
     pub opacity: f32, // 0.0 to 1.0
     pub visible: bool,
+    pub locked: bool,
     pub lock_alpha: bool,
     pub is_clipping: bool,
     #[allow(dead_code)]
@@ -140,6 +141,7 @@ impl Layer {
             name,
             opacity: 1.0,
             visible: true,
+            locked: false,
             lock_alpha: false,
             is_clipping: false,
             selection_source: false,

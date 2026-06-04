@@ -199,6 +199,13 @@ pub struct PaintApp {
     pub selection_mode: selection::SelectionMode,
     pub selection_rect: Option<selection::SelectionRect>,
     pub lasso_points: Option<selection::LassoPoints>,
+    pub polygon_points: Vec<(f32, f32)>,
+    pub polygon_active: bool,
+    pub gradient_start: Option<egui::Vec2>,
+    pub gradient_end: Option<egui::Vec2>,
+    pub gradient_dragging: bool,
+    pub gradient_mode: u32, // 0=Linear, 1=Radial
+    pub gradient_type: u32, // 0=FG→BG, 1=FG→Transparent, 2=BG→Transparent
     pub is_selecting: bool,
     pub show_selection_overlay: bool,
     pub selection_feather: f32,
@@ -322,6 +329,20 @@ pub struct PaintApp {
     pub(crate) reference_id_counter: u64,
     pub(crate) ref_image_dragging: Option<usize>,
     pub(crate) ref_image_drag_offset: egui::Vec2,
+
+    // Adjustment dialogs
+    pub show_brightness_contrast: bool,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub show_hue_saturation: bool,
+    pub hue: f32,
+    pub saturation: f32,
+    pub lightness: f32,
+    pub show_gaussian_blur: bool,
+    pub blur_radius: f32,
+
+    // About
+    pub show_about_dialog: bool,
 }
 
 // Tool ID enum used in app
@@ -875,6 +896,13 @@ impl PaintApp {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
+            polygon_points: Vec::new(),
+            polygon_active: false,
+            gradient_start: None,
+            gradient_end: None,
+            gradient_dragging: false,
+            gradient_mode: 0,
+            gradient_type: 0,
             is_selecting: false,
             show_selection_overlay: false,
             selection_feather: 0.0,
@@ -960,6 +988,18 @@ impl PaintApp {
             reference_id_counter: 0,
             ref_image_dragging: None,
             ref_image_drag_offset: egui::Vec2::ZERO,
+
+            show_brightness_contrast: false,
+            brightness: 0.0,
+            contrast: 0.0,
+            show_hue_saturation: false,
+            hue: 0.0,
+            saturation: 0.0,
+            lightness: 0.0,
+            show_gaussian_blur: false,
+            blur_radius: 3.0,
+
+            show_about_dialog: false,
         };
 
         // Check for autosave recovery files on startup
@@ -1682,211 +1722,245 @@ impl PaintApp {
                 self.cleanup_autosave();
             }
             CommandId::ExportPng => self.show_export_png_dialog = true,
-            CommandId::Exit => {
-                // Would be handled by the frame
-            }
-
-            // Edit
-            CommandId::Undo => { self.history.undo(&mut self.layers, &mut self.layer_order, &mut self.selection_mask, &mut self.active_layer_id); }
-            CommandId::Redo => { self.history.redo(&mut self.layers, &mut self.layer_order, &mut self.selection_mask, &mut self.active_layer_id); }
-            CommandId::SelectAll => {
-                let old_mask = Box::new(self.selection_mask.clone());
-                self.selection_mode = selection::SelectionMode::Replace;
-                let r = selection::SelectionRect {
-                    x0: 0.0, y0: 0.0,
-                    x1: self.canvas_width as f32, y1: self.canvas_height as f32,
-                };
-                selection::apply_rect_selection(&mut self.selection_mask, r, selection::SelectionMode::Replace, 0.0, false);
-                let new_mask = Box::new(self.selection_mask.clone());
-                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
-            }
-            CommandId::Deselect => {
-                let old_mask = Box::new(self.selection_mask.clone());
-                selection::clear_selection(&mut self.selection_mask);
-                let new_mask = Box::new(self.selection_mask.clone());
-                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
-            }
-            CommandId::InvertSelection => {
-                let old_mask = Box::new(self.selection_mask.clone());
-                selection::invert_selection(&mut self.selection_mask, self.canvas_width, self.canvas_height);
-                let new_mask = Box::new(self.selection_mask.clone());
-                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
-            }
-            CommandId::Clear => {
-                if self.selection_mask.is_active && !self.selection_mask.is_empty() {
-                    self.clear_selected_area();
-                } else {
-                    self.clear_entire_layer();
-                }
-            }
-            CommandId::Fill => {
-                if self.selection_mask.is_active && !self.selection_mask.is_empty() {
-                    self.fill_selected_area();
-                } else {
-                    self.fill_entire_layer();
-                }
-            }
-
-            // Canvas
-            CommandId::FitToScreen => self.fit_to_screen(),
-            CommandId::ActualSize => {
-                self.viewport_zoom = 1.0;
-                self.viewport_offset = Vec2::ZERO;
-            }
-            CommandId::ResetView => {
-                self.viewport_zoom = 1.0;
-                self.viewport_offset = Vec2::ZERO;
-                self.rotation_angle = 0.0;
-                self.mirror_horizontal = false;
-            }
-            CommandId::FlipViewHorizontal => self.mirror_horizontal = !self.mirror_horizontal,
-            CommandId::ResetRotation => self.rotation_angle = 0.0,
-            CommandId::RotateCanvasViewLeft => {
-                self.rotation_angle = (self.rotation_angle - 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
-            }
-            CommandId::RotateCanvasViewRight => {
-                self.rotation_angle = (self.rotation_angle + 15.0f32.to_radians()).rem_euclid(2.0 * std::f32::consts::PI);
-            }
-
-            // Layer
-            CommandId::NewRasterLayer => self.create_raster_layer(),
-            CommandId::NewFolder => self.create_folder_layer(),
-            CommandId::DuplicateLayer => {
-                self.duplicate_active_layer();
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.thumbnail_dirty = true;
-                }
-            }
-            CommandId::DeleteLayer => self.delete_active_layer(),
-            CommandId::MergeDown => {
-                self.merge_down();
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.thumbnail_dirty = true;
-                }
-            }
-            CommandId::MergeVisible => {
-                self.merge_visible();
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.thumbnail_dirty = true;
-                }
-            }
-            CommandId::FlattenImage => {
-                self.flatten_image();
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.thumbnail_dirty = true;
-                }
-            }
-            CommandId::ToggleLockAlpha => {
-                if let Some(layer) = self.layers.get(&self.active_layer_id) {
-                    let old = layer.lock_alpha;
-                    let new = !old;
-                    self.history.push_command(HistoryCommand::LayerProperty {
-                        layer_id: self.active_layer_id,
-                        property: crate::history::LayerPropertyChange::LockAlpha { old, new },
-                    });
-                    if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                        layer.lock_alpha = new;
-                    }
-                }
-            }
-            CommandId::ToggleClipping => {
-                if let Some(layer) = self.layers.get(&self.active_layer_id) {
-                    let old = layer.is_clipping;
-                    let new = !old;
-                    self.history.push_command(HistoryCommand::LayerProperty {
-                        layer_id: self.active_layer_id,
-                        property: crate::history::LayerPropertyChange::Clipping { old, new },
-                    });
-                    if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                        layer.is_clipping = new;
-                    }
-                }
-            }
-            CommandId::AddLayerMask => {
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.add_mask();
-                }
-            }
-            CommandId::DeleteLayerMask => {
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.delete_mask();
-                    self.active_mask_editing = false;
-                }
-            }
-            CommandId::ApplyLayerMask => {
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.apply_mask();
-                    self.active_mask_editing = false;
-                }
-            }
-            CommandId::ToggleLayerMask => {
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    if let Some(ref mut mask) = layer.mask {
-                        mask.enabled = !mask.enabled;
-                        layer.thumbnail_dirty = true;
-                    }
-                }
-            }
-            CommandId::InvertLayerMask => {
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.invert_mask();
-                }
-            }
-
-            // Tools
-            CommandId::ToolBrush => self.active_tool = ToolId::Brush,
-            CommandId::ToolEraser => {
-                self.active_tool = ToolId::Eraser;
-                if let Some(p) = self.presets.get_mut(self.active_preset_index) {
-                    p.is_eraser = true;
-                    self.brush_settings_dirty = true;
-                }
-            }
-            CommandId::ToolFill => self.active_tool = ToolId::Fill,
-            CommandId::ToolRectSelect => self.active_tool = ToolId::RectSelect,
-            CommandId::ToolEllipseSelect => self.active_tool = ToolId::EllipseSelect,
-            CommandId::ToolLasso => self.active_tool = ToolId::Lasso,
-            CommandId::ToolMagicWand => self.active_tool = ToolId::MagicWand,
-            CommandId::ToolMove => self.active_tool = ToolId::Move,
-            CommandId::Cut => self.cut_selection(),
-            CommandId::Copy => self.copy_selection(false),
-            CommandId::CopyMerged => self.copy_selection(true),
-            CommandId::Paste => self.paste_selection(false),
-            CommandId::PasteAsNewLayer => self.paste_selection(true),
-
-            CommandId::SelectionGrow => self.show_grow_dialog = true,
-            CommandId::SelectionShrink => self.show_shrink_dialog = true,
-            CommandId::SelectionFeather => self.show_feather_dialog = true,
-            CommandId::ToggleSelectionOverlay => {
-                self.selection_display_mode = match self.selection_display_mode {
-                    SelectionDisplayMode::MarchingAnts => SelectionDisplayMode::BlueOverlay,
-                    SelectionDisplayMode::BlueOverlay => SelectionDisplayMode::Hidden,
-                    SelectionDisplayMode::Hidden => SelectionDisplayMode::MarchingAnts,
-                };
-            }
-
-            CommandId::ToolTransform | CommandId::TransformSelection => {
-                self.active_tool = ToolId::Transform;
-                self.start_transform();
-            }
-            CommandId::ToolColorPicker => self.active_tool = ToolId::ColorPicker,
-            CommandId::ToolHand => self.active_tool = ToolId::Hand,
-            CommandId::ToolZoom => self.active_tool = ToolId::Zoom,
-            CommandId::ToolRotateView => self.active_tool = ToolId::RotateView,
-
-            // View
-            CommandId::MinimalUi => self.show_minimal_ui = !self.show_minimal_ui,
-            CommandId::ShowGrid => self.show_grid = !self.show_grid,
-            CommandId::ShowSymmetry => self.show_symmetry = !self.show_symmetry,
-            CommandId::Fullscreen => self.toggle_fullscreen_requested = true,
-
-            // Misc
+            CommandId::DocumentInfo => {}
             CommandId::Preferences => self.show_preferences_dialog = true,
+            CommandId::About => self.show_about_dialog = true,
             CommandId::KeyboardShortcuts => self.show_shortcut_editor = true,
             CommandId::TabletDiagnostics => self.show_tablet_diagnostics = true,
             CommandId::PerformanceHud => self.show_performance_hud = true,
 
             _ => {}
+        }
+    }
+
+    fn crop_to_selection(&mut self) {
+        if !self.selection_mask.is_active || self.selection_mask.is_empty() {
+            return;
+        }
+        let mut min_x = self.canvas_width as i32;
+        let mut min_y = self.canvas_height as i32;
+        let mut max_x = 0i32;
+        let mut max_y = 0i32;
+        for (&(tx, ty), tile) in &self.selection_mask.tiles {
+            for ly in 0..64 {
+                for lx in 0..64 {
+                    if tile[ly * 64 + lx] > 127 {
+                        let wx = tx * 64 + lx as i32;
+                        let wy = ty * 64 + ly as i32;
+                        min_x = min_x.min(wx);
+                        min_y = min_y.min(wy);
+                        max_x = max_x.max(wx);
+                        max_y = max_y.max(wy);
+                    }
+                }
+            }
+        }
+        if min_x >= max_x || min_y >= max_y {
+            return;
+        }
+        min_x = min_x.max(0).min(self.canvas_width as i32 - 1);
+        min_y = min_y.max(0).min(self.canvas_height as i32 - 1);
+        max_x = max_x.max(0).min(self.canvas_width as i32 - 1);
+        max_y = max_y.max(0).min(self.canvas_height as i32 - 1);
+
+        let new_w = (max_x - min_x + 1) as u32;
+        let new_h = (max_y - min_y + 1) as u32;
+
+        for &id in &self.layer_order.clone() {
+            if let Some(layer) = self.layers.get_mut(&id) {
+                if !matches!(layer.kind, crate::canvas::LayerType::Raster) {
+                    continue;
+                }
+                let old_tiles = std::mem::take(&mut layer.tiles);
+                for ((tx, ty), tile) in old_tiles {
+                    let world_x = tx * 64;
+                    let world_y = ty * 64;
+                    let new_tx = (world_x - min_x).div_euclid(64);
+                    let new_ty = (world_y - min_y).div_euclid(64);
+                    let x_off = (world_x - min_x) - new_tx * 64;
+                    let y_off = (world_y - min_y) - new_ty * 64;
+
+                    if x_off == 0 && y_off == 0 {
+                        layer.tiles.insert((new_tx, new_ty), tile);
+                    } else {
+                        let entry = layer.tiles.entry((new_tx, new_ty));
+                        let new_tile = entry.or_insert_with(|| crate::canvas::Tile {
+                            pixels: hokusai::tile::empty_tile(),
+                            is_dirty: true,
+                            last_stroke_id: 0,
+                        });
+                        for ly in 0..64 {
+                            for lx in 0..64 {
+                                let dst_x = world_x + lx as i32 - min_x;
+                                let dst_y = world_y + ly as i32 - min_y;
+                                if dst_x >= 0 && dst_x < new_w as i32 && dst_y >= 0 && dst_y < new_h as i32 {
+                                    let dst_lx = dst_x - new_tx * 64;
+                                    let dst_ly = dst_y - new_ty * 64;
+                                    if dst_lx >= 0 && dst_lx < 64 && dst_ly >= 0 && dst_ly < 64 {
+                                        new_tile.pixels[dst_ly as usize][dst_lx as usize] = tile.pixels[ly][lx];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.canvas_width = new_w;
+        self.canvas_height = new_h;
+        self.selection_mask = crate::canvas::SelectionMask::new();
+        self.show_selection_overlay = false;
+        if let Some(r) = &mut self.renderer {
+            r.clear_cache();
+        }
+        for layer in self.layers.values_mut() {
+            layer.thumbnail_dirty = true;
+        }
+    }
+
+    fn flip_canvas(&mut self, horizontal: bool) {
+        let w = self.canvas_width as i32;
+        let h = self.canvas_height as i32;
+        for &id in &self.layer_order.clone() {
+            if let Some(layer) = self.layers.get_mut(&id) {
+                if !matches!(layer.kind, crate::canvas::LayerType::Raster) {
+                    continue;
+                }
+                let old_tiles = std::mem::take(&mut layer.tiles);
+                for ((tx, ty), mut tile) in old_tiles {
+                    let world_x = tx * 64;
+                    let world_y = ty * 64;
+                    for ly in 0..64 {
+                        for lx in 0..64 {
+                            let wx = world_x + lx as i32;
+                            let wy = world_y + ly as i32;
+                            if horizontal {
+                                let src_x = wx;
+                                let dst_x = (w - 1) - src_x;
+                                if src_x < dst_x {
+                                    // Read from both sides and swap
+                                    let src_ly = src_x - world_x;
+                                    let dst_ly2 = dst_x - world_x;
+                                    if src_ly >= 0 && src_ly < 64 && dst_ly2 >= 0 && dst_ly2 < 64 {
+                                        let tmp = tile.pixels[ly][src_ly as usize];
+                                        tile.pixels[ly][src_ly as usize] = tile.pixels[ly][dst_ly2 as usize];
+                                        tile.pixels[ly][dst_ly2 as usize] = tmp;
+                                    }
+                                }
+                            } else {
+                                let src_y = wy;
+                                let dst_y = (h - 1) - src_y;
+                                if src_y < dst_y {
+                                    let src_lx = src_y - world_y;
+                                    let dst_lx2 = dst_y - world_y;
+                                    if src_lx >= 0 && src_lx < 64 && dst_lx2 >= 0 && dst_lx2 < 64 {
+                                        let tmp = tile.pixels[src_lx as usize][lx];
+                                        tile.pixels[src_lx as usize][lx] = tile.pixels[dst_lx2 as usize][lx];
+                                        tile.pixels[dst_lx2 as usize][lx] = tmp;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    layer.tiles.insert((tx, ty), tile);
+                }
+                // Remap tiles to flipped positions
+                let old_tiles2 = std::mem::take(&mut layer.tiles);
+                for ((tx, ty), tile) in old_tiles2 {
+                    if horizontal {
+                        let new_tx = ((w - 1) - tx * 64).div_euclid(64);
+                        layer.tiles.insert((new_tx, ty), tile);
+                    } else {
+                        let new_ty = ((h - 1) - ty * 64).div_euclid(64);
+                        layer.tiles.insert((tx, new_ty), tile);
+                    }
+                }
+            }
+        }
+        if let Some(r) = &mut self.renderer {
+            r.clear_cache();
+        }
+        for layer in self.layers.values_mut() {
+            layer.thumbnail_dirty = true;
+        }
+    }
+
+    fn trim_transparent(&mut self) {
+        let mut min_x = self.canvas_width as i32;
+        let mut min_y = self.canvas_height as i32;
+        let mut max_x = 0i32;
+        let mut max_y = 0i32;
+        let mut found = false;
+        for layer in self.layers.values() {
+            if !matches!(layer.kind, crate::canvas::LayerType::Raster) { continue; }
+            for (&(tx, ty), tile) in &layer.tiles {
+                for ly in 0..64 {
+                    for lx in 0..64 {
+                        if tile.pixels[ly][lx][3] > 0 {
+                            let wx = tx * 64 + lx as i32;
+                            let wy = ty * 64 + ly as i32;
+                            min_x = min_x.min(wx);
+                            min_y = min_y.min(wy);
+                            max_x = max_x.max(wx);
+                            max_y = max_y.max(wy);
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !found || min_x >= max_x || min_y >= max_y {
+            return;
+        }
+        min_x = min_x.max(0).min(self.canvas_width as i32 - 1);
+        min_y = min_y.max(0).min(self.canvas_height as i32 - 1);
+        max_x = max_x.max(0).min(self.canvas_width as i32 - 1);
+        max_y = max_y.max(0).min(self.canvas_height as i32 - 1);
+        self.canvas_width = (max_x - min_x + 1) as u32;
+        self.canvas_height = (max_y - min_y + 1) as u32;
+        // Use same shift logic as crop_to_selection
+        for &id in &self.layer_order.clone() {
+            if let Some(layer) = self.layers.get_mut(&id) {
+                if !matches!(layer.kind, crate::canvas::LayerType::Raster) { continue; }
+                let old_tiles = std::mem::take(&mut layer.tiles);
+                for ((tx, ty), tile) in old_tiles {
+                    let world_x = tx * 64;
+                    let world_y = ty * 64;
+                    let new_tx = (world_x - min_x).div_euclid(64);
+                    let new_ty = (world_y - min_y).div_euclid(64);
+                    let x_off = (world_x - min_x) - new_tx * 64;
+                    let y_off = (world_y - min_y) - new_ty * 64;
+                    if x_off == 0 && y_off == 0 {
+                        layer.tiles.insert((new_tx, new_ty), tile);
+                    } else {
+                        let entry = layer.tiles.entry((new_tx, new_ty));
+                        let new_tile = entry.or_insert_with(|| crate::canvas::Tile {
+                            pixels: hokusai::tile::empty_tile(),
+                            is_dirty: true,
+                            last_stroke_id: 0,
+                        });
+                        for ly in 0..64 {
+                            for lx in 0..64 {
+                                let dst_x = world_x + lx as i32 - min_x;
+                                let dst_y = world_y + ly as i32 - min_y;
+                                if dst_x >= 0 && dst_x < self.canvas_width as i32 && dst_y >= 0 && dst_y < self.canvas_height as i32 {
+                                    let dst_lx = dst_x - new_tx * 64;
+                                    let dst_ly = dst_y - new_ty * 64;
+                                    if dst_lx >= 0 && dst_lx < 64 && dst_ly >= 0 && dst_ly < 64 {
+                                        new_tile.pixels[dst_ly as usize][dst_lx as usize] = tile.pixels[ly][lx];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(r) = &mut self.renderer {
+            r.clear_cache();
+        }
+        for layer in self.layers.values_mut() {
+            layer.thumbnail_dirty = true;
         }
     }
 
@@ -1904,6 +1978,10 @@ impl PaintApp {
                 );
             }
         }
+    }
+
+    fn is_active_layer_locked(&self) -> bool {
+        self.layers.get(&self.active_layer_id).map(|l| l.locked).unwrap_or(false)
     }
 
     fn create_raster_layer(&mut self) {
@@ -2237,6 +2315,123 @@ impl PaintApp {
         if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
             layer.thumbnail_dirty = true;
         }
+    }
+
+    fn apply_adjustment(&mut self, f: impl Fn(&mut [u16; 4])) {
+        if self.is_active_layer_locked() { return; }
+        let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
+        if !matches!(layer.kind, crate::canvas::LayerType::Raster) { return; }
+        layer.begin_atomic();
+        for tile in layer.tiles.values_mut() {
+            for ly in 0..64 {
+                for lx in 0..64 {
+                    f(&mut tile.pixels[ly][lx]);
+                }
+            }
+        }
+        let _ = layer.end_atomic();
+        if let Some(r) = &mut self.renderer { r.clear_cache(); }
+        layer.thumbnail_dirty = true;
+    }
+
+    fn adjust_brightness_contrast(&mut self) {
+        let b = self.brightness;
+        let c = self.contrast;
+        self.apply_adjustment(|pix| {
+            // Convert from u16 [0,32768] to f32 [0,1], apply, convert back
+            for i in 0..3 {
+                let mut v = pix[i] as f32 / 32768.0;
+                v += b;
+                v = (v - 0.5) * (1.0 + c) + 0.5;
+                pix[i] = (v.clamp(0.0, 1.0) * 32768.0) as u16;
+            }
+        });
+    }
+
+    fn adjust_hue_saturation(&mut self) {
+        let h_shift = self.hue;
+        let s_scale = 1.0 + self.saturation;
+        let l_shift = self.lightness;
+        self.apply_adjustment(|pix| {
+            let r = pix[0] as f32 / 32768.0;
+            let g = pix[1] as f32 / 32768.0;
+            let b = pix[2] as f32 / 32768.0;
+            let (mut h, mut s, mut v) = crate::app::rgb_to_hsv(r, g, b);
+            h = (h + h_shift) % 1.0;
+            s = (s * s_scale).clamp(0.0, 1.0);
+            v = (v + l_shift).clamp(0.0, 1.0);
+            let (r2, g2, b2) = crate::app::hsv_to_rgb(h, s, v);
+            pix[0] = (r2 * 32768.0) as u16;
+            pix[1] = (g2 * 32768.0) as u16;
+            pix[2] = (b2 * 32768.0) as u16;
+        });
+    }
+
+    fn filter_gaussian_blur(&mut self) {
+        let radius = self.blur_radius.max(0.5) as usize;
+        if radius == 0 { return; }
+        if self.is_active_layer_locked() { return; }
+        let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
+        if !matches!(layer.kind, crate::canvas::LayerType::Raster) { return; }
+        let w = self.canvas_width as usize;
+        let h = self.canvas_height as usize;
+        // Read all pixels into a flat buffer
+        let mut pixels = vec![[0u16; 4]; w * h];
+        for (&(tx, ty), tile) in &layer.tiles {
+            let ox = tx * 64;
+            let oy = ty * 64;
+            for ly in 0..64 {
+                for lx in 0..64 {
+                    let px = (ox + lx as i32).clamp(0, w as i32 - 1) as usize;
+                    let py = (oy + ly as i32).clamp(0, h as i32 - 1) as usize;
+                    pixels[py * w + px] = tile.pixels[ly][lx];
+                }
+            }
+        }
+        let mut output = pixels.clone();
+        // Simple box blur (separable)
+        let kernel_size = radius * 2 + 1;
+        let kernel_scale = 1.0 / kernel_size as f32;
+        // Horizontal pass
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0f32; 4];
+                for k in 0..kernel_size {
+                    let sx = (x as isize + k as isize - radius as isize).clamp(0, w as isize - 1) as usize;
+                    let p = pixels[y * w + sx];
+                    for c in 0..4 { acc[c] += p[c] as f32; }
+                }
+                for c in 0..4 { output[y * w + x][c] = (acc[c] * kernel_scale) as u16; }
+            }
+        }
+        // Vertical pass
+        for y in 0..h {
+            for x in 0..w {
+                let mut acc = [0f32; 4];
+                for k in 0..kernel_size {
+                    let sy = (y as isize + k as isize - radius as isize).clamp(0, h as isize - 1) as usize;
+                    let p = output[sy * w + x];
+                    for c in 0..4 { acc[c] += p[c] as f32; }
+                }
+                for c in 0..4 { pixels[y * w + x][c] = (acc[c] * kernel_scale) as u16; }
+            }
+        }
+        // Write back to tiles
+        layer.begin_atomic();
+        for (&(tx, ty), tile) in &mut layer.tiles {
+            let ox = tx * 64;
+            let oy = ty * 64;
+            for ly in 0..64 {
+                for lx in 0..64 {
+                    let px = (ox + lx as i32).clamp(0, w as i32 - 1) as usize;
+                    let py = (oy + ly as i32).clamp(0, h as i32 - 1) as usize;
+                    tile.pixels[ly][lx] = pixels[py * w + px];
+                }
+            }
+        }
+        let _ = layer.end_atomic();
+        if let Some(r) = &mut self.renderer { r.clear_cache(); }
+        layer.thumbnail_dirty = true;
     }
 
     fn fill_entire_layer(&mut self) {
@@ -3195,6 +3390,47 @@ impl eframe::App for PaintApp {
                     }
                 }
 
+                // Handle polygon lasso clicks
+                if pointer_clicked && matches!(self.active_tool, ToolId::PolygonLasso) {
+                    if let Some(ptr_pos) = response.hover_pos() {
+                        let world_pos = self.screen_to_world(ptr_pos, rect);
+                        let wx = world_pos.x;
+                        let wy = world_pos.y;
+
+                        // Check if clicking near first point to close polygon
+                        let close_threshold = 8.0;
+                        let can_close = self.polygon_points.len() >= 3 && {
+                            let first = self.polygon_points[0];
+                            let dx = wx - first.0;
+                            let dy = wy - first.1;
+                            (dx * dx + dy * dy).sqrt() < close_threshold
+                        };
+
+                        // Also close on double-click
+                        let double_click = response.double_clicked_by(egui::PointerButton::Primary);
+
+                        if (can_close || double_click) && self.polygon_points.len() >= 3 {
+                            // Close polygon and rasterize
+                            if self.selection_mode == selection::SelectionMode::Replace {
+                                selection::clear_selection(&mut self.selection_mask);
+                            }
+                            let points = std::mem::take(&mut self.polygon_points);
+                            self.polygon_active = false;
+                            selection::apply_polygon_lasso_selection(
+                                &mut self.selection_mask, &points,
+                                self.selection_mode,
+                                self.selection_feather, true,
+                            );
+                            self.show_selection_overlay = self.selection_mask.is_active;
+                        } else {
+                            // Add point to polygon
+                            self.polygon_points.push((wx, wy));
+                            self.polygon_active = true;
+                        }
+                        ctx.request_repaint();
+                    }
+                }
+
                 // Handle fill tool click
                 if pointer_clicked && matches!(self.active_tool, ToolId::Fill) {
                     if let Some(ptr_pos) = response.hover_pos() {
@@ -3261,6 +3497,114 @@ impl eframe::App for PaintApp {
                             }
                         }
                     }
+                }
+
+                // Handle gradient tool drag
+                if pointer_down && matches!(self.active_tool, ToolId::Gradient) {
+                    if let Some(ptr_pos) = response.hover_pos() {
+                        let world_pos = self.screen_to_world(ptr_pos, rect);
+                        if !self.gradient_dragging {
+                            self.gradient_dragging = true;
+                            self.gradient_start = Some(world_pos);
+                        }
+                        self.gradient_end = Some(world_pos);
+                        ctx.request_repaint();
+                    }
+                }
+                if !pointer_down && self.gradient_dragging && matches!(self.active_tool, ToolId::Gradient) {
+                    if let (Some(start), Some(end)) = (self.gradient_start, self.gradient_end) {
+                        let fg = self.active_color();
+                        let bg = self.background_color;
+                        let mode = self.gradient_mode;
+                        let gtype = self.gradient_type;
+                        if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                            // Capture snapshots
+                            let mut snapshots: Vec<crate::history::TileSnapshot> = Vec::new();
+                            let tile_keys: Vec<(i32, i32)> = layer.tiles.keys().copied().collect();
+                            for &tk in &tile_keys {
+                                if let Some(tile) = layer.tiles.get(&tk) {
+                                    let mut pixels = self.history.alloc_tile();
+                                    *pixels = *tile.pixels;
+                                    snapshots.push(crate::history::TileSnapshot {
+                                        layer_id: layer.id, coords: tk, pixels: Some(pixels), is_mask: false,
+                                    });
+                                }
+                            }
+                            let mut dirty = Vec::new();
+                            let tx_min = (0f32.max(0.0) as i32).div_euclid(64);
+                            let ty_min = (0f32.max(0.0) as i32).div_euclid(64);
+                            let tx_max = ((self.canvas_width as f32 - 1.0).max(0.0) as i32).div_euclid(64);
+                            let ty_max = ((self.canvas_height as f32 - 1.0).max(0.0) as i32).div_euclid(64);
+                            for ty in ty_min..=ty_max {
+                                for tx in tx_min..=tx_max {
+                                    let tile = layer.tiles.entry((tx, ty)).or_insert_with(|| crate::canvas::Tile::new());
+                                    let mut modified = false;
+                                    for ly in 0i32..64 {
+                                        for lx in 0i32..64 {
+                                            let wx = (tx * 64 + lx) as f32;
+                                            let wy = (ty * 64 + ly) as f32;
+                                            if self.selection_mask.is_active {
+                                                let sel = self.selection_mask.get_value(wx as i32, wy as i32);
+                                                if sel == 0 { continue; }
+                                            }
+                                            let t = if mode == 0 {
+                                                let dx = end.x - start.x;
+                                                let dy = end.y - start.y;
+                                                let len_sq = dx * dx + dy * dy;
+                                                if len_sq < 1.0 { 0.0 } else {
+                                                    ((wx - start.x) * dx + (wy - start.y) * dy) / len_sq
+                                                }
+                                            } else {
+                                                let dx = wx - start.x;
+                                                let dy = wy - start.y;
+                                                let edx = end.x - start.x;
+                                                let edy = end.y - start.y;
+                                                let er = (edx * edx + edy * edy).sqrt().max(1.0);
+                                                (dx * dx + dy * dy).sqrt() / er
+                                            };
+                                            let t = t.clamp(0.0, 1.0);
+                                            let color = match gtype {
+                                                1 => {
+                                                    let a = (1.0 - t) * 32768.0;
+                                                    [(fg[0] * 32768.0) as u16, (fg[1] * 32768.0) as u16, (fg[2] * 32768.0) as u16, a as u16]
+                                                }
+                                                2 => {
+                                                    let a = (1.0 - t) * 32768.0;
+                                                    [(bg[0] * 32768.0) as u16, (bg[1] * 32768.0) as u16, (bg[2] * 32768.0) as u16, a as u16]
+                                                }
+                                                _ => {
+                                                    let r = fg[0] * (1.0 - t) + bg[0] * t;
+                                                    let g = fg[1] * (1.0 - t) + bg[1] * t;
+                                                    let b = fg[2] * (1.0 - t) + bg[2] * t;
+                                                    [(r * 32768.0) as u16, (g * 32768.0) as u16, (b * 32768.0) as u16, 32768]
+                                                }
+                                            };
+                                            tile.pixels[ly as usize][lx as usize] = color;
+                                            modified = true;
+                                        }
+                                    }
+                                    if modified { dirty.push((tx, ty)); }
+                                }
+                            }
+                            if !dirty.is_empty() {
+                                let new_keys: Vec<(i32, i32)> = layer.tiles.keys().copied().collect();
+                                for &tk in &new_keys {
+                                    if !tile_keys.contains(&tk) {
+                                        snapshots.push(crate::history::TileSnapshot {
+                                            layer_id: layer.id, coords: tk, pixels: None, is_mask: false,
+                                        });
+                                    }
+                                }
+                                self.history.push_command(HistoryCommand::TileEdit { snapshots });
+                                self.document_modified = true;
+                                if let Some(r) = &mut self.renderer { r.clear_cache(); }
+                            }
+                        }
+                    }
+                    self.gradient_dragging = false;
+                    self.gradient_start = None;
+                    self.gradient_end = None;
+                    ctx.request_repaint();
                 }
 
                 // Handle magic wand click
@@ -3494,7 +3838,7 @@ impl eframe::App for PaintApp {
                 }
 
                 // Handle brush/eraser stroke drawing
-                if pointer_down && matches!(self.active_tool, ToolId::Brush | ToolId::Eraser | ToolId::VectorPen) {
+                if pointer_down && matches!(self.active_tool, ToolId::Brush | ToolId::Eraser | ToolId::VectorPen) && !self.is_active_layer_locked() {
                     if let Some(ptr_pos) = response.hover_pos() {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         let cx = world_pos.x;
@@ -4135,6 +4479,53 @@ impl eframe::App for PaintApp {
                     }
                 }
 
+                // GRADIENT TOOL PREVIEW
+                if matches!(self.active_tool, ToolId::Gradient) && self.gradient_dragging {
+                    if let (Some(start), Some(end)) = (self.gradient_start, self.gradient_end) {
+                        let a = self.world_to_screen(egui::pos2(start.x, start.y), rect);
+                        let b = self.world_to_screen(egui::pos2(end.x, end.y), rect);
+                        ui.painter().line_segment([a, b], egui::Stroke::new(2.0, egui::Color32::from_rgba_premultiplied(100, 200, 255, 200)));
+                        ui.painter().circle_filled(a, 4.0, egui::Color32::from_rgb(100, 200, 255));
+                        ui.painter().circle_filled(b, 4.0, egui::Color32::from_rgb(255, 200, 100));
+                        // Draw perpendicular bars at start/end to indicate fill region
+                        let dir = (b - a).normalized();
+                        let perp = egui::vec2(-dir.y, dir.x);
+                        for (pt, col) in [(a, egui::Color32::WHITE), (b, egui::Color32::from_gray(100))] {
+                            let p1 = pt + perp * 10.0;
+                            let p2 = pt - perp * 10.0;
+                            ui.painter().line_segment([p1, p2], egui::Stroke::new(1.5, col));
+                        }
+                    }
+                }
+
+                // POLYGON LASSO PREVIEW
+                if matches!(self.active_tool, ToolId::PolygonLasso) && self.polygon_active && self.polygon_points.len() >= 2 {
+                    let pp = &self.polygon_points;
+                    // Draw segment lines
+                    for i in 0..pp.len() - 1 {
+                        let a = self.world_to_screen(egui::Pos2::new(pp[i].0, pp[i].1), rect);
+                        let b = self.world_to_screen(egui::Pos2::new(pp[i + 1].0, pp[i + 1].1), rect);
+                        ui.painter().line_segment([a, b], egui::Stroke::new(2.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 220)));
+                    }
+                    // Draw cursor line from last point to mouse cursor
+                    if let Some(ptr_pos) = response.hover_pos() {
+                        let last_world = egui::Pos2::new(pp[pp.len() - 1].0, pp[pp.len() - 1].1);
+                        let last_screen = self.world_to_screen(last_world, rect);
+                        ui.painter().line_segment([last_screen, ptr_pos], egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 120)));
+                    }
+                    // Draw control points as filled circles
+                    for &(px, py) in pp.iter() {
+                        let screen_pt = self.world_to_screen(egui::Pos2::new(px, py), rect);
+                        ui.painter().circle_filled(screen_pt, 3.0, egui::Color32::from_rgb(0, 180, 255));
+                        ui.painter().circle_stroke(screen_pt, 3.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                    }
+                    // Draw first point slightly larger to indicate close-ability
+                    if pp.len() >= 3 {
+                        let first_pt = self.world_to_screen(egui::Pos2::new(pp[0].0, pp[0].1), rect);
+                        ui.painter().circle_stroke(first_pt, 5.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 0)));
+                    }
+                }
+
                 // SELECTION OVERLAY (marching ants or mask)
                 if self.show_selection_overlay && self.selection_mask.is_active {
                     let time = ui.input(|i| i.time);
@@ -4424,6 +4815,79 @@ impl eframe::App for PaintApp {
                     );
                 }
             });
+
+            // =============================================================
+            // ADJUSTMENT DIALOGS
+            // =============================================================
+            if self.show_brightness_contrast {
+                let mut open = true;
+                egui::Window::new("Brightness / Contrast")
+                    .open(&mut open)
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Brightness:");
+                            ui.add(egui::Slider::new(&mut self.brightness, -0.5..=0.5));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Contrast:");
+                            ui.add(egui::Slider::new(&mut self.contrast, -0.5..=0.5));
+                        });
+                        if ui.button("Apply").clicked() {
+                            self.adjust_brightness_contrast();
+                            self.show_brightness_contrast = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_brightness_contrast = false;
+                        }
+                    });
+                if !open { self.show_brightness_contrast = false; }
+            }
+            if self.show_hue_saturation {
+                let mut open = true;
+                egui::Window::new("Hue / Saturation")
+                    .open(&mut open)
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Hue:");
+                            ui.add(egui::Slider::new(&mut self.hue, -1.0..=1.0));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Saturation:");
+                            ui.add(egui::Slider::new(&mut self.saturation, -0.5..=0.5));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Lightness:");
+                            ui.add(egui::Slider::new(&mut self.lightness, -0.5..=0.5));
+                        });
+                        if ui.button("Apply").clicked() {
+                            self.adjust_hue_saturation();
+                            self.show_hue_saturation = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_hue_saturation = false;
+                        }
+                    });
+                if !open { self.show_hue_saturation = false; }
+            }
+            if self.show_gaussian_blur {
+                let mut open = true;
+                egui::Window::new("Gaussian Blur")
+                    .open(&mut open)
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Radius:");
+                            ui.add(egui::Slider::new(&mut self.blur_radius, 0.5..=20.0));
+                        });
+                        if ui.button("Apply").clicked() {
+                            self.filter_gaussian_blur();
+                            self.show_gaussian_blur = false;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.show_gaussian_blur = false;
+                        }
+                    });
+                if !open { self.show_gaussian_blur = false; }
+            }
     }
 }
 impl PaintApp {
@@ -5081,6 +5545,13 @@ mod tests {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
+            polygon_points: Vec::new(),
+            polygon_active: false,
+            gradient_start: None,
+            gradient_end: None,
+            gradient_dragging: false,
+            gradient_mode: 0,
+            gradient_type: 0,
             is_selecting: false,
             show_selection_overlay: false,
             selection_feather: 0.0,
@@ -5160,6 +5631,18 @@ mod tests {
             reference_id_counter: 0,
             ref_image_dragging: None,
             ref_image_drag_offset: Vec2::ZERO,
+
+            show_brightness_contrast: false,
+            brightness: 0.0,
+            contrast: 0.0,
+            show_hue_saturation: false,
+            hue: 0.0,
+            saturation: 0.0,
+            lightness: 0.0,
+            show_gaussian_blur: false,
+            blur_radius: 3.0,
+
+            show_about_dialog: false,
         };
 
         // Assert initial state
@@ -5291,6 +5774,13 @@ mod tests {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
+            polygon_points: Vec::new(),
+            polygon_active: false,
+            gradient_start: None,
+            gradient_end: None,
+            gradient_dragging: false,
+            gradient_mode: 0,
+            gradient_type: 0,
             is_selecting: false,
             show_selection_overlay: false,
             selection_feather: 0.0,
@@ -5370,6 +5860,18 @@ mod tests {
             reference_id_counter: 0,
             ref_image_dragging: None,
             ref_image_drag_offset: Vec2::ZERO,
+
+            show_brightness_contrast: false,
+            brightness: 0.0,
+            contrast: 0.0,
+            show_hue_saturation: false,
+            hue: 0.0,
+            saturation: 0.0,
+            lightness: 0.0,
+            show_gaussian_blur: false,
+            blur_radius: 3.0,
+
+            show_about_dialog: false,
         };
 
         let view_rect = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(800.0, 600.0));

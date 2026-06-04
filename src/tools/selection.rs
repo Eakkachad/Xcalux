@@ -284,6 +284,74 @@ pub fn apply_lasso_selection(
     }
 }
 
+pub fn apply_polygon_lasso_selection(
+    mask: &mut SelectionMask,
+    points: &[(f32, f32)],
+    mode: SelectionMode,
+    _feather_radius: f32,
+    _antialias: bool,
+) {
+    if points.len() < 3 {
+        return;
+    }
+
+    match mode {
+        SelectionMode::Replace => {
+            mask.tiles.clear();
+            mask.is_active = true;
+        }
+        SelectionMode::Add | SelectionMode::Subtract | SelectionMode::Intersect => {
+            if !mask.is_active {
+                mask.is_active = true;
+            }
+        }
+    }
+
+    let min_x = points.iter().map(|p| p.0).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 - 64;
+    let min_y = points.iter().map(|p| p.1).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 - 64;
+    let max_x = points.iter().map(|p| p.0).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 + 64;
+    let max_y = points.iter().map(|p| p.1).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 + 64;
+
+    let tx0 = min_x.div_euclid(64);
+    let ty0 = min_y.div_euclid(64);
+    let tx1 = max_x.div_euclid(64);
+    let ty1 = max_y.div_euclid(64);
+
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| {
+                Box::new([0u8; 4096])
+            });
+
+            for ly in 0..64 {
+                for lx in 0..64 {
+                    let wx = (tx * 64 + lx) as f32 + 0.5;
+                    let wy = (ty * 64 + ly) as f32 + 0.5;
+
+                    let inside = point_in_polygon(wx, wy, points);
+                    let val = if inside { 255u8 } else { 0u8 };
+
+                    let idx = (ly * 64 + lx) as usize;
+                    match mode {
+                        SelectionMode::Replace => {
+                            tile[idx] = val;
+                        }
+                        SelectionMode::Add => {
+                            tile[idx] = tile[idx].saturating_add(val);
+                        }
+                        SelectionMode::Subtract => {
+                            tile[idx] = tile[idx].saturating_sub(val);
+                        }
+                        SelectionMode::Intersect => {
+                            tile[idx] = tile[idx].min(val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn point_in_polygon(px: f32, py: f32, polygon: &[(f32, f32)]) -> bool {
     let mut inside = false;
     let mut j = polygon.len() - 1;

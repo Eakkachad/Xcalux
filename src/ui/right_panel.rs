@@ -486,6 +486,15 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                             });
                                         }
                                     }
+                                    if ui.button("Clear").clicked() {
+                                        app.command(CommandId::ClearLayer);
+                                    }
+                                    if ui.button("Fill").clicked() {
+                                        app.command(CommandId::FillLayer);
+                                    }
+                                    if ui.button("Import Img").clicked() {
+                                        app.command(CommandId::ImportImageAsLayer);
+                                    }
                                 });
 
                                 ui.add_space(5.0);
@@ -493,14 +502,18 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 // Active Layer blending options
                                 // Capture old values before UI modifies them
                                 let layer_id = app.active_layer_id;
-                                let (old_opacity, old_blend, old_lock_alpha, old_clipping, _old_visible) =
+                                let (old_opacity, old_blend, old_lock_alpha, old_clipping, _old_visible, old_name) =
                                     if let Some(l) = app.layers.get(&layer_id) {
-                                        (l.opacity, l.blend_mode, l.lock_alpha, l.is_clipping, l.visible)
+                                        (l.opacity, l.blend_mode, l.lock_alpha, l.is_clipping, l.visible, l.name.clone())
                                     } else {
-                                        (1.0, BlendMode::Normal, false, false, true)
+                                        (1.0, BlendMode::Normal, false, false, true, String::new())
                                     };
 
                                 if let Some(active_layer) = app.layers.get_mut(&app.active_layer_id) {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Name:");
+                                        ui.add(egui::TextEdit::singleline(&mut active_layer.name).hint_text("Layer name"));
+                                    });
                                     ui.horizontal(|ui| {
                                         ui.label("Mode:");
                                         egui::ComboBox::from_id_source("blend_mode_dropdown")
@@ -576,6 +589,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         commands.push(HistoryCommand::LayerProperty {
                                             layer_id: aid,
                                             property: LayerPropertyChange::Clipping { old: old_clipping, new: active_layer.is_clipping },
+                                        });
+                                    }
+                                    if active_layer.name != old_name {
+                                        commands.push(HistoryCommand::LayerProperty {
+                                            layer_id: aid,
+                                            property: LayerPropertyChange::Rename { old: old_name, new: active_layer.name.clone() },
                                         });
                                     }
                                     for cmd in commands {
@@ -715,6 +734,20 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                             row_hovered |= ref_resp.hovered();
                                             if ref_resp.clicked() {
                                                 layer.selection_source = !layer.selection_source;
+                                            }
+
+                                            // Lock toggle
+                                            let old_locked = layer.locked;
+                                            let lock_text = if layer.locked { "🔒" } else { "🔓" };
+                                            let btn_lock = egui::Button::new(lock_text).frame(false);
+                                            if ui.add(btn_lock).on_hover_text("Lock/Unlock Layer").clicked() {
+                                                layer.locked = !layer.locked;
+                                            }
+                                            if old_locked != layer.locked {
+                                                app.history.push_command(HistoryCommand::LayerProperty {
+                                                    layer_id: id,
+                                                    property: LayerPropertyChange::Locked { old: old_locked, new: layer.locked },
+                                                });
                                             }
 
                                             // Layer thumbnail (with white background and thin border for empty layers visibility)
