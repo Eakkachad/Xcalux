@@ -98,6 +98,7 @@ pub struct WgpuRenderer {
 
     // A single blank 64x64 texture representing empty tiles
     blank_view: wgpu::TextureView,
+    blank_mask_view: wgpu::TextureView,
 
     // Off-screen canvas framebuffers. We keep two to swap back-and-forth during multi-layer blending
     canvas_textures: [wgpu::Texture; 2],
@@ -110,6 +111,8 @@ pub struct WgpuRenderer {
     // Individual GPU Texture views for each LRU slot (to bind as 2D textures)
     slot_textures: Vec<wgpu::Texture>,
     slot_views: Vec<wgpu::TextureView>,
+    mask_slot_textures: Vec<wgpu::Texture>,
+    mask_slot_views: Vec<wgpu::TextureView>,
     upload_staging_buffer: Vec<u8>,
 }
 
@@ -166,6 +169,44 @@ impl WgpuRenderer {
             },
         );
 
+        // Create blank mask 64x64 texture (solid white)
+        let blank_mask_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Blank Mask Tile Texture"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let blank_mask_view = blank_mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Fill blank mask texture with 255s
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &blank_mask_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &vec![255u8; 64 * 64],
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(64),
+                rows_per_image: Some(64),
+            },
+            wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
+
         let mut slot_textures = Vec::with_capacity(MAX_TILE_SLOTS);
         let mut slot_views = Vec::with_capacity(MAX_TILE_SLOTS);
         for i in 0..MAX_TILE_SLOTS {
@@ -186,6 +227,28 @@ impl WgpuRenderer {
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
             slot_textures.push(tex);
             slot_views.push(view);
+        }
+
+        let mut mask_slot_textures = Vec::with_capacity(MAX_TILE_SLOTS);
+        let mut mask_slot_views = Vec::with_capacity(MAX_TILE_SLOTS);
+        for i in 0..MAX_TILE_SLOTS {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(&format!("LRU Slot Mask Texture {}", i)),
+                size: wgpu::Extent3d {
+                    width: 64,
+                    height: 64,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            mask_slot_textures.push(tex);
+            mask_slot_views.push(view);
         }
 
         // Initialize offscreen framebuffers (default to 800x800, will resize)
@@ -243,6 +306,16 @@ impl WgpuRenderer {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -378,12 +451,15 @@ impl WgpuRenderer {
             uniform_bind_group_layout,
             sampler,
             blank_view,
+            blank_mask_view,
             canvas_textures,
             canvas_views,
             folder_textures,
             folder_views,
             slot_textures,
             slot_views,
+            mask_slot_textures,
+            mask_slot_views,
             upload_staging_buffer: vec![0u8; 16384],
         })
     }
@@ -471,9 +547,9 @@ impl WgpuRenderer {
     /// Upload a single CPU tile to a WGPU texture slot. Downsamples fix15 (premultiplied u16) to 8-bit RGBA.
     fn upload_tile(
         &mut self,
-        _layer_id: u32,
-        _tx: i32,
-        _ty: i32,
+        mask: &Option<crate::canvas::LayerMask>,
+        tx: i32,
+        ty: i32,
         tile: &crate::canvas::Tile,
         slot: usize,
     ) {
@@ -509,10 +585,46 @@ impl WgpuRenderer {
                 depth_or_array_layers: 1,
             },
         );
+
+        // Upload mask tile
+        let mut mask_buffer = [255u8; 64 * 64];
+        if let Some(ref m) = mask {
+            if m.enabled {
+                if let Some(mask_tile) = m.tiles.get(&(tx, ty)) {
+                    mask_buffer.copy_from_slice(&**mask_tile);
+                }
+            }
+        }
+
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.mask_slot_textures[slot],
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &mask_buffer,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(64),
+                rows_per_image: Some(64),
+            },
+            wgpu::Extent3d {
+                width: 64,
+                height: 64,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
-    /// Retrieve or allocate a slot for a tile in the GPU LRU cache
-    fn get_slot(&mut self, layer_id: u32, tx: i32, ty: i32, tile: &crate::canvas::Tile) -> usize {
+    /// Retrieve or allocate a slot for a tile in the GPU LRU cache.
+    /// Returns the slot index; the caller must call `upload_tile` to fill it.
+    fn get_slot(
+        &mut self,
+        layer_id: u32,
+        tx: i32,
+        ty: i32,
+    ) -> usize {
         let key = (layer_id, tx, ty);
         if let Some(&slot) = self.lru_cache.get(&key) {
             // Update usage order
@@ -524,7 +636,9 @@ impl WgpuRenderer {
         }
 
         // Cache miss: Allocate a new slot
-        let slot = if self.lru_cache.len() < MAX_TILE_SLOTS {
+        
+
+        if self.lru_cache.len() < MAX_TILE_SLOTS {
             let new_slot = self.lru_cache.len();
             self.lru_cache.insert(key, new_slot);
             self.lru_usage.push(key);
@@ -537,25 +651,58 @@ impl WgpuRenderer {
             self.lru_cache.insert(key, evicted_slot);
             self.lru_usage.push(key);
             evicted_slot
-        };
-
-        // Upload the pixel data to this slot
-        self.upload_tile(layer_id, tx, ty, tile, slot);
-        slot
+        }
     }
 
     /// Incremental texture updates: scans all canvas tiles, checks dirty statuses, and writes to GPU
-    pub fn update_textures(&mut self, layers: &mut [&mut Layer]) {
-        for layer in layers {
-            let layer_id = layer.id;
-            for (&coords, tile) in layer.tiles.iter_mut() {
-                if tile.is_dirty || !self.lru_cache.contains_key(&(layer_id, coords.0, coords.1)) {
-                    let slot = self.get_slot(layer_id, coords.0, coords.1, tile);
-                    self.upload_tile(layer_id, coords.0, coords.1, tile, slot);
-                    tile.is_dirty = false;
+    pub fn update_textures(&mut self, layers: &mut [&mut Layer]) -> u32 {
+        // First pass: sync temp mask tiles to main tiles
+        for layer in layers.iter_mut() {
+            for (&coords, temp_tile) in layer.temp_mask_tiles.iter_mut() {
+                if temp_tile.is_dirty {
+                    layer.tiles.entry(coords).or_insert_with(crate::canvas::Tile::new).is_dirty = true;
+                    temp_tile.is_dirty = false;
                 }
             }
         }
+
+        // Second pass: upload dirty tiles
+        let mut upload_count = 0u32;
+        for layer in layers.iter_mut() {
+            let layer_id = layer.id;
+            // Temporarily take mask to avoid borrow conflicts with tiles
+            let temp_mask = layer.mask.take();
+            let coords_to_upload: Vec<(i32, i32)> = layer.tiles.iter()
+                .filter(|(&coords, tile)| tile.is_dirty || !self.lru_cache.contains_key(&(layer_id, coords.0, coords.1)))
+                .map(|(&coords, _)| coords)
+                .collect();
+
+            for (tx, ty) in &coords_to_upload {
+                if let Some(tile) = layer.tiles.get(&(*tx, *ty)) {
+                    let slot = self.get_slot(layer_id, *tx, *ty);
+                    self.upload_tile(&temp_mask, *tx, *ty, tile, slot);
+                    upload_count += 1;
+                }
+            }
+
+            layer.mask = temp_mask;
+
+            // Clear dirty flags
+            for (_, tile) in layer.tiles.iter_mut() {
+                tile.is_dirty = false;
+            }
+        }
+        upload_count
+    }
+
+    /// Returns the number of currently occupied LRU cache slots
+    pub fn cache_used(&self) -> usize {
+        self.lru_cache.len()
+    }
+
+    /// Returns the maximum number of LRU cache slots
+    pub fn cache_max(&self) -> usize {
+        MAX_TILE_SLOTS
     }
 
     /// Clear the GPU LRU cache and reset all texture slots to clean VRAM
@@ -565,6 +712,7 @@ impl WgpuRenderer {
 
         // Zero out all texture slots
         let blank_pixels = vec![0u8; 64 * 64 * 4];
+        let blank_mask = vec![255u8; 64 * 64];
         for i in 0..self.slot_textures.len() {
             self.queue.write_texture(
                 wgpu::ImageCopyTexture {
@@ -585,9 +733,30 @@ impl WgpuRenderer {
                     depth_or_array_layers: 1,
                 },
             );
+
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.mask_slot_textures[i],
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &blank_mask,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(64),
+                    rows_per_image: Some(64),
+                },
+                wgpu::Extent3d {
+                    width: 64,
+                    height: 64,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
     }
 
+    #[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
     fn compose_recursive(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -702,10 +871,10 @@ impl WgpuRenderer {
 
                     for (&coords, _tile) in layer.tiles.iter() {
                         let key = (layer.id, coords.0, coords.1);
-                        let tile_view = if let Some(&slot) = self.lru_cache.get(&key) {
-                            &self.slot_views[slot]
+                        let (tile_view, mask_view) = if let Some(&slot) = self.lru_cache.get(&key) {
+                            (&self.slot_views[slot], &self.mask_slot_views[slot])
                         } else {
-                            &self.blank_view
+                            (&self.blank_view, &self.blank_mask_view)
                         };
 
                         tile_bind_groups.push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -729,6 +898,10 @@ impl WgpuRenderer {
                                 wgpu::BindGroupEntry {
                                     binding: 3,
                                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 4,
+                                    resource: wgpu::BindingResource::TextureView(mask_view),
                                 },
                             ],
                         }));
@@ -933,6 +1106,10 @@ impl WgpuRenderer {
                                 binding: 3,
                                 resource: wgpu::BindingResource::Sampler(&self.sampler),
                             },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: wgpu::BindingResource::TextureView(&self.blank_mask_view),
+                            },
                         ],
                     });
 
@@ -967,6 +1144,7 @@ impl WgpuRenderer {
     }
 
     /// Compose the layer stack from bottom to top using our custom blending fragment shader on WGPU
+    #[allow(clippy::too_many_arguments)]
     pub fn compose_layers(
         &mut self,
         layers: &AHashMap<u32, Layer>,
@@ -1091,6 +1269,10 @@ impl WgpuRenderer {
                         binding: 3,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&self.blank_mask_view),
+                    },
                 ],
             });
 
@@ -1161,6 +1343,10 @@ impl WgpuRenderer {
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&self.blank_mask_view),
                     },
                 ],
             });
@@ -1319,6 +1505,10 @@ impl WgpuRenderer {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.blank_mask_view),
+                },
             ],
         });
 
@@ -1406,6 +1596,10 @@ impl WgpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&self.blank_mask_view),
                 },
             ],
         });

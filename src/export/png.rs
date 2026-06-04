@@ -89,7 +89,7 @@ pub fn export_png(
                     let out_a = src_a_f + dst_a_f * (1.0 - src_a_f);
 
                     if out_a > 0.0 {
-                        img[idx + 0] = ((src_r as f32 * src_a_f + img[idx] as f32 * dst_a_f * (1.0 - src_a_f)) / out_a) as u8;
+                        img[idx] = ((src_r as f32 * src_a_f + img[idx] as f32 * dst_a_f * (1.0 - src_a_f)) / out_a) as u8;
                         img[idx + 1] = ((src_g as f32 * src_a_f + img[idx + 1] as f32 * dst_a_f * (1.0 - src_a_f)) / out_a) as u8;
                         img[idx + 2] = ((src_b as f32 * src_a_f + img[idx + 2] as f32 * dst_a_f * (1.0 - src_a_f)) / out_a) as u8;
                         img[idx + 3] = (out_a * 255.0) as u8;
@@ -108,7 +108,7 @@ pub fn export_png(
                     if img[idx + 3] < 255 {
                         let a = img[idx + 3] as f32 / 255.0;
                         let inv_a = 1.0 - a;
-                        img[idx + 0] = (img[idx + 0] as f32 * a + 255.0 * inv_a) as u8;
+                        img[idx] = (img[idx] as f32 * a + 255.0 * inv_a) as u8;
                         img[idx + 1] = (img[idx + 1] as f32 * a + 255.0 * inv_a) as u8;
                         img[idx + 2] = (img[idx + 2] as f32 * a + 255.0 * inv_a) as u8;
                         img[idx + 3] = 255;
@@ -120,8 +120,6 @@ pub fn export_png(
     }
 
     let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let w = w;
-    let h = h;
 
     let mut encoder = png::Encoder::new(file, w, h);
     encoder.set_color(png::ColorType::Rgba);

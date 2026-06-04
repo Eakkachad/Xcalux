@@ -21,6 +21,7 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 @group(0) @binding(1) var s_background: sampler;
 @group(0) @binding(2) var t_foreground: texture_2d<f32>;
 @group(0) @binding(3) var s_foreground: sampler;
+@group(0) @binding(4) var t_mask: texture_2d<f32>;
 
 struct BlendUniforms {
     opacity: f32,
@@ -41,11 +42,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let bg_tex_coords = in.clip_position.xy / bg_dimensions;
     let dst = textureSample(t_background, s_background, bg_tex_coords);
     let src_raw = textureSample(t_foreground, s_foreground, in.tex_coords);
+    let mask_val = textureSample(t_mask, s_foreground, in.tex_coords).r;
     
     // The CPU stored tiles are premultiplied fix15, but we upload them to the GPU
     // as Rgba8Unorm, which has premultiplied sRGB colors.
     // Let's get the straight alpha source color first to apply opacity and blend modes properly.
-    let src_alpha = src_raw.a * uniforms.opacity;
+    let src_alpha = src_raw.a * uniforms.opacity * mask_val;
     if (src_alpha <= 0.0) {
         return dst;
     }

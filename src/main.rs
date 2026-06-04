@@ -10,6 +10,8 @@ mod commands;
 mod shortcuts;
 mod ui;
 mod preferences;
+mod pressure;
+mod diagnostics;
 
 mod tools {
     pub mod fill;
@@ -17,9 +19,7 @@ mod tools {
     pub mod transform;
 }
 
-mod export {
-    pub mod png;
-}
+mod export;
 
 fn main() -> eframe::Result<()> {
     // Check for command-line arguments to trigger stress testing headlessly

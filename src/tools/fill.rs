@@ -1,4 +1,4 @@
-use crate::canvas::{Layer, SelectionMask, Tile};
+use crate::canvas::{Layer, SelectionMask};
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +231,7 @@ fn is_seed_same_as_fill(target: [u16; 4], fill: [u16; 4], options: &FillOptions)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn flood_fill(
     layer: &mut Layer,
     all_layers: &[&Layer],
@@ -438,7 +439,7 @@ fn set_pixel(
     let lx = x.rem_euclid(64) as usize;
     let ly = y.rem_euclid(64) as usize;
 
-    let tile = layer.tiles.entry((tx, ty)).or_insert_with(Tile::new);
+    let tile = layer.tiles.entry((tx, ty)).or_default();
 
     if options.fill_transparent_only {
         let old = tile.pixels[ly][lx];
@@ -457,7 +458,7 @@ fn set_pixel(
                     let nty = ny.div_euclid(64);
                     let nlx = nx.rem_euclid(64) as usize;
                     let nly = ny.rem_euclid(64) as usize;
-                    let ntile = layer.tiles.entry((ntx, nty)).or_insert_with(Tile::new);
+                    let ntile = layer.tiles.entry((ntx, nty)).or_default();
                     ntile.pixels[nly][nlx] = blend_colors(color, ntile.pixels[nly][nlx]);
                     ntile.is_dirty = true;
                 }

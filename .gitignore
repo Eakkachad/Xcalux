@@ -3,6 +3,7 @@
 
 # Agent specific configuration
 /.agent/
+/plans/
 /AGENTS.md
 /bigplane.md
 /PROGRESS.md

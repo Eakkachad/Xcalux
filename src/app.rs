@@ -1,5 +1,6 @@
 use crate::canvas::Layer;
-use crate::history::{HistoryManager, TileSnapshot, UndoCommand, StrokeSurface};
+use crate::diagnostics::{DeviceType, PerformanceHud, TabletDiagnostics};
+use crate::history::{HistoryManager, TileSnapshot, HistoryCommand, StrokeSurface};
 use crate::input::{InputManager, StrokeStabilizer, TabletAxisState, StabilizerLevel, StabilizerMode};
 use crate::renderer::WgpuRenderer;
 use crate::commands::CommandId;
@@ -39,6 +40,14 @@ pub enum SelectionDisplayMode {
     MarchingAnts,
     BlueOverlay,
     Hidden,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SymmetryMode {
+    None,
+    Horizontal,
+    Vertical,
+    Radial,
 }
 
 #[derive(Clone)]
@@ -92,7 +101,11 @@ pub struct PaintApp {
     pub(crate) preset_id_counter: u64,
     pub(crate) brushes: Vec<Brush>,
     pub(crate) brush_states: Vec<BrushState>,
-    pub(crate) brush_color: [f32; 3], // RGB float [0.0, 1.0]
+    pub(crate) foreground_color: [f32; 3], // RGB float [0.0, 1.0]
+    pub(crate) background_color: [f32; 3], // RGB float [0.0, 1.0]
+    pub(crate) active_color_is_bg: bool,
+    pub(crate) hex_color_input: String,
+    pub(crate) toggle_fullscreen_requested: bool,
     pub(crate) palette: Vec<[f32; 3]>,
     pub(crate) selected_palette_index: Option<usize>,
 
@@ -118,6 +131,10 @@ pub struct PaintApp {
     pub(crate) egui_touch_pressure: Option<f32>,
     pub(crate) egui_touch_active: bool,
     pub(crate) stabilizer: StrokeStabilizer,
+
+    // Diagnostics
+    pub performance_hud: PerformanceHud,
+    pub tablet_diagnostics: TabletDiagnostics,
     pub(crate) last_ptr_pos: Option<Pos2>,
     pub(crate) last_ptr_pressure: f32,
     pub(crate) last_event_time: f64, // Used for stroke dtime tracking
@@ -141,11 +158,13 @@ pub struct PaintApp {
     pub(crate) history: HistoryManager,
     pub(crate) current_stroke_snapshots: Vec<TileSnapshot>,
     pub(crate) dragging_layer_id: Option<u32>,
+    pub(crate) drag_start_order: Option<Vec<u32>>,
     pub(crate) stroke_id: u32,
 
     // Customization/masking fields
     pub(crate) lock_canvas_bounds: bool,
     pub(crate) selection_mask: crate::canvas::SelectionMask,
+    pub(crate) active_mask_editing: bool,
     pub(crate) brush_textures: Vec<Vec<u8>>,
 
     pub(crate) save_sender: std::sync::mpsc::Sender<crate::save::SaveTask>,
@@ -189,6 +208,12 @@ pub struct PaintApp {
     pub export_png_options: crate::export::png::ExportPngOptions,
     pub export_png_path: String,
 
+    // ORA export/import dialogs
+    pub show_export_ora_dialog: bool,
+    pub export_ora_path: String,
+    pub show_import_ora_dialog: bool,
+    pub import_ora_path: String,
+
     // Autosave
     pub autosave_enabled: bool,
     pub autosave_interval_secs: f64,
@@ -202,6 +227,28 @@ pub struct PaintApp {
     pub show_grid: bool,
     pub show_symmetry: bool,
     pub quick_bar_visible: bool,
+
+    // Brush symmetry (Phase 12)
+    pub symmetry_mode: SymmetryMode,
+    pub symmetry_center: egui::Pos2,
+    pub symmetry_radial_count: usize,
+    pub symmetry_brush_states: Vec<hokusai::BrushState>,
+
+    // Shift-constrain angle snapping (Phase 12)
+    pub shift_snap_enabled: bool,
+    pub stroke_start_pos: Option<egui::Pos2>,
+
+    // Pressure calibration (Phase 12)
+    pub pressure_response: crate::pressure::PressureCurve,
+    pub show_pressure_calibration: bool,
+
+    // Selection modifications (Phase 12)
+    pub show_grow_dialog: bool,
+    pub show_shrink_dialog: bool,
+    pub show_feather_dialog: bool,
+    pub grow_pixels: i32,
+    pub shrink_pixels: i32,
+    pub feather_pixels: i32,
 
     // Color history
     pub color_history: Vec<[f32; 3]>,
@@ -234,14 +281,6 @@ pub struct PaintApp {
     // Clipboard and Selection display mode
     pub clipboard: Option<ClipboardData>,
     pub selection_display_mode: SelectionDisplayMode,
-
-    // Selection operation dialogs
-    pub show_grow_dialog: bool,
-    pub grow_pixels: i32,
-    pub show_shrink_dialog: bool,
-    pub shrink_pixels: i32,
-    pub show_feather_dialog: bool,
-    pub feather_pixels: i32,
 
     // Interactive transform fields
     pub transform_active: bool,
@@ -764,7 +803,11 @@ impl PaintApp {
             preset_id_counter: 5,
             brushes,
             brush_states,
-            brush_color: [0.1, 0.1, 0.1], // Default charcoal dark
+            foreground_color: [0.1, 0.1, 0.1], // Default charcoal dark
+            background_color: [1.0, 1.0, 1.0], // Default white
+            active_color_is_bg: false,
+            hex_color_input: "#1A1A1A".to_string(),
+            toggle_fullscreen_requested: false,
             palette: default_palette,
             selected_palette_index: None,
             brush_radius_log: initial_radius,
@@ -781,6 +824,8 @@ impl PaintApp {
             pressure_min: 0.02,
             input_manager,
             tablet_axis: TabletAxisState::default(),
+            performance_hud: PerformanceHud::default(),
+            tablet_diagnostics: TabletDiagnostics::default(),
             egui_touch_pressure: None,
             egui_touch_active: false,
             stabilizer: StrokeStabilizer::new(8),
@@ -799,9 +844,11 @@ impl PaintApp {
             history: HistoryManager::new(50),
             current_stroke_snapshots: Vec::with_capacity(256),
             dragging_layer_id: None,
+            drag_start_order: None,
             stroke_id: 0,
             lock_canvas_bounds: true,
             selection_mask: crate::canvas::SelectionMask::new(),
+            active_mask_editing: false,
             brush_textures: vec![
                 vec![255u8; 256 * 256],
                 generate_noise_texture(),
@@ -829,6 +876,10 @@ impl PaintApp {
             show_export_png_dialog: false,
             export_png_options: crate::export::png::ExportPngOptions::default(),
             export_png_path: "export.png".to_string(),
+            show_export_ora_dialog: false,
+            export_ora_path: "export.ora".to_string(),
+            show_import_ora_dialog: false,
+            import_ora_path: "import.ora".to_string(),
             autosave_enabled: true,
             autosave_interval_secs: 180.0,
             autosave_path: ".autosave.arty".to_string(),
@@ -839,6 +890,20 @@ impl PaintApp {
             show_grid: false,
             show_symmetry: false,
             quick_bar_visible: true,
+            symmetry_mode: SymmetryMode::None,
+            symmetry_center: egui::Pos2::new(0.0, 0.0),
+            symmetry_radial_count: 4,
+            symmetry_brush_states: Vec::new(),
+            shift_snap_enabled: true,
+            stroke_start_pos: None,
+            pressure_response: crate::pressure::PressureCurve::new_linear(),
+            show_pressure_calibration: false,
+            show_grow_dialog: false,
+            show_shrink_dialog: false,
+            show_feather_dialog: false,
+            grow_pixels: 2,
+            shrink_pixels: 2,
+            feather_pixels: 4,
             color_history: Vec::with_capacity(12),
             color_history_max: 12,
             color_wheel_drag_zone: None,
@@ -857,13 +922,6 @@ impl PaintApp {
 
             clipboard: None,
             selection_display_mode: SelectionDisplayMode::MarchingAnts,
-
-            show_grow_dialog: false,
-            grow_pixels: 5,
-            show_shrink_dialog: false,
-            shrink_pixels: 5,
-            show_feather_dialog: false,
-            feather_pixels: 5,
 
             transform_active: false,
             transform_orig_bounds: egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::ZERO),
@@ -946,6 +1004,49 @@ impl PaintApp {
         (self.pressure_min + normalized * (1.0 - self.pressure_min)).clamp(0.01, 1.0)
     }
 
+    pub(crate) fn snap_to_angle(start_x: f32, start_y: f32, sx: f32, sy: f32) -> (f32, f32) {
+        let dx = sx - start_x;
+        let dy = sy - start_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist < 0.5 {
+            return (sx, sy);
+        }
+        let angle = dy.atan2(dx);
+        let step = 15.0_f32.to_radians();
+        let snapped = (angle / step).round() * step;
+        (start_x + dist * snapped.cos(), start_y + dist * snapped.sin())
+    }
+
+    pub(crate) fn compute_symmetry_points(&self, sx: f32, sy: f32) -> Vec<(f32, f32)> {
+        let mut points = vec![(sx, sy)];
+        match self.symmetry_mode {
+            SymmetryMode::None => {}
+            SymmetryMode::Horizontal => {
+                let rx = self.symmetry_center.x * 2.0 - sx;
+                points.push((rx, sy));
+            }
+            SymmetryMode::Vertical => {
+                let ry = self.symmetry_center.y * 2.0 - sy;
+                points.push((sx, ry));
+            }
+            SymmetryMode::Radial => {
+                let count = self.symmetry_radial_count.max(2);
+                let cx = self.symmetry_center.x;
+                let cy = self.symmetry_center.y;
+                let dx = sx - cx;
+                let dy = sy - cy;
+                let angle_step = 2.0 * std::f32::consts::PI / count as f32;
+                for i in 1..count {
+                    let theta = angle_step * i as f32;
+                    let rx = cx + dx * theta.cos() - dy * theta.sin();
+                    let ry = cy + dx * theta.sin() + dy * theta.cos();
+                    points.push((rx, ry));
+                }
+            }
+        }
+        points
+    }
+
     pub(crate) fn record_color(&mut self, color: [f32; 3]) {
         // Don't record if it's the same as the most recent entry
         if let Some(last) = self.color_history.last() {
@@ -965,6 +1066,73 @@ impl PaintApp {
         self.color_history.push(color);
         if self.color_history.len() > self.color_history_max {
             self.color_history.remove(0);
+        }
+    }
+
+    pub fn active_color(&self) -> [f32; 3] {
+        if self.active_color_is_bg {
+            self.background_color
+        } else {
+            self.foreground_color
+        }
+    }
+
+    pub fn set_active_color(&mut self, rgb: [f32; 3]) {
+        if self.active_color_is_bg {
+            self.background_color = rgb;
+        } else {
+            self.foreground_color = rgb;
+        }
+        self.brush_settings_dirty = true;
+    }
+
+    pub(crate) fn reorder_preset(&mut self, source_idx: usize, mut target_idx: usize) {
+        if source_idx == target_idx {
+            return;
+        }
+        if source_idx >= self.presets.len() || target_idx > self.presets.len() {
+            return;
+        }
+
+        let preset = self.presets.remove(source_idx);
+        let brush = self.brushes.remove(source_idx);
+        let state = self.brush_states.remove(source_idx);
+
+        if source_idx < target_idx {
+            target_idx -= 1;
+        }
+
+        self.presets.insert(target_idx, preset);
+        self.brushes.insert(target_idx, brush);
+        self.brush_states.insert(target_idx, state);
+
+        if self.active_preset_index == source_idx {
+            self.active_preset_index = target_idx;
+        } else if source_idx < self.active_preset_index && target_idx >= self.active_preset_index {
+            self.active_preset_index -= 1;
+        } else if source_idx > self.active_preset_index && target_idx <= self.active_preset_index {
+            self.active_preset_index += 1;
+        }
+        self.brush_settings_dirty = true;
+    }
+
+    pub fn parse_hex_color(s: &str) -> Option<[f32; 3]> {
+        let s = s.trim().trim_start_matches('#');
+        if s.len() == 6 {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+            Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
+        } else if s.len() == 3 {
+            let r = u8::from_str_radix(&s[0..1], 16).ok()?;
+            let g = u8::from_str_radix(&s[1..2], 16).ok()?;
+            let b = u8::from_str_radix(&s[2..3], 16).ok()?;
+            let r = r * 17;
+            let g = g * 17;
+            let b = b * 17;
+            Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0])
+        } else {
+            None
         }
     }
 
@@ -1059,9 +1227,9 @@ impl PaintApp {
 
         // 7. Convert RGB color picker value to HSV for Hokusai's brush engine
         let hsv = hokusai::color::rgb_to_hsv(
-            self.brush_color[0],
-            self.brush_color[1],
-            self.brush_color[2],
+            self.foreground_color[0],
+            self.foreground_color[1],
+            self.foreground_color[2],
         );
         active_brush.get_mut(BrushSetting::ColorH).base_value = hsv.h;
         active_brush.get_mut(BrushSetting::ColorS).base_value = hsv.s;
@@ -1315,14 +1483,13 @@ impl PaintApp {
                 let p3 = &stroke.control_points[k - 1];
 
                 let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-                let steps = ((dist / 2.0) as usize).max(2).min(100);
+                let steps = ((dist / 2.0) as usize).clamp(2, 100);
 
                 let start_i = if k == 3 { 0 } else { 1 };
 
                 for i in start_i..=steps {
                     let t = i as f32 / steps as f32;
                     let pt = Self::catmull_rom(p0, p1, p2, p3, t);
-
                     if let Some(layer) = self.layers.get_mut(&layer_id) {
                         let mut stroke_surface = StrokeSurface {
                             layer,
@@ -1337,6 +1504,7 @@ impl PaintApp {
                             brush_texture_width: 256,
                             brush_texture_height: 256,
                             brush_texture_scale: preset.texture_scale,
+                            active_mask_editing: false,
                         };
 
                         brush.stroke_to(
@@ -1349,6 +1517,7 @@ impl PaintApp {
                             pt.tilt_y,
                             0.016,
                         );
+                        self.performance_hud.note_stroke_point(crate::diagnostics::now_secs());
                     }
                 }
             }
@@ -1364,7 +1533,7 @@ impl PaintApp {
             let p3 = &stroke.control_points[len - 1];
 
             let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-            let steps = ((dist / 2.0) as usize).max(2).min(100);
+            let steps = ((dist / 2.0) as usize).clamp(2, 100);
 
             let start_i = if len == 2 { 0 } else { 1 };
             for i in start_i..=steps {
@@ -1385,6 +1554,7 @@ impl PaintApp {
                         brush_texture_width: 256,
                         brush_texture_height: 256,
                         brush_texture_scale: preset.texture_scale,
+                        active_mask_editing: false,
                     };
 
                     brush.stroke_to(
@@ -1397,6 +1567,7 @@ impl PaintApp {
                         pt.tilt_y,
                         0.016,
                     );
+                    self.performance_hud.note_stroke_point(crate::diagnostics::now_secs());
                 }
             }
 
@@ -1507,7 +1678,7 @@ impl PaintApp {
                 return self.thumbnail_textures.get(&layer_id).cloned();
             }
             let handle = ctx.load_texture(
-                &format!("layer_thumb_{}", layer_id),
+                format!("layer_thumb_{}", layer_id),
                 thumb.clone(),
                 egui::TextureOptions::LINEAR,
             );
@@ -1587,21 +1758,30 @@ impl PaintApp {
             }
 
             // Edit
-            CommandId::Undo => { self.history.undo(&mut self.layers); }
-            CommandId::Redo => { self.history.redo(&mut self.layers); }
+            CommandId::Undo => { self.history.undo(&mut self.layers, &mut self.layer_order, &mut self.selection_mask, &mut self.active_layer_id); }
+            CommandId::Redo => { self.history.redo(&mut self.layers, &mut self.layer_order, &mut self.selection_mask, &mut self.active_layer_id); }
             CommandId::SelectAll => {
+                let old_mask = Box::new(self.selection_mask.clone());
                 self.selection_mode = selection::SelectionMode::Replace;
                 let r = selection::SelectionRect {
                     x0: 0.0, y0: 0.0,
                     x1: self.canvas_width as f32, y1: self.canvas_height as f32,
                 };
                 selection::apply_rect_selection(&mut self.selection_mask, r, selection::SelectionMode::Replace, 0.0, false);
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
             }
             CommandId::Deselect => {
+                let old_mask = Box::new(self.selection_mask.clone());
                 selection::clear_selection(&mut self.selection_mask);
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
             }
             CommandId::InvertSelection => {
+                let old_mask = Box::new(self.selection_mask.clone());
                 selection::invert_selection(&mut self.selection_mask, self.canvas_width, self.canvas_height);
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
             }
             CommandId::Clear => {
                 if self.selection_mask.is_active && !self.selection_mask.is_empty() {
@@ -1668,13 +1848,59 @@ impl PaintApp {
                 }
             }
             CommandId::ToggleLockAlpha => {
-                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.lock_alpha = !layer.lock_alpha;
+                if let Some(layer) = self.layers.get(&self.active_layer_id) {
+                    let old = layer.lock_alpha;
+                    let new = !old;
+                    self.history.push_command(HistoryCommand::LayerProperty {
+                        layer_id: self.active_layer_id,
+                        property: crate::history::LayerPropertyChange::LockAlpha { old, new },
+                    });
+                    if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                        layer.lock_alpha = new;
+                    }
                 }
             }
             CommandId::ToggleClipping => {
+                if let Some(layer) = self.layers.get(&self.active_layer_id) {
+                    let old = layer.is_clipping;
+                    let new = !old;
+                    self.history.push_command(HistoryCommand::LayerProperty {
+                        layer_id: self.active_layer_id,
+                        property: crate::history::LayerPropertyChange::Clipping { old, new },
+                    });
+                    if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                        layer.is_clipping = new;
+                    }
+                }
+            }
+            CommandId::AddLayerMask => {
                 if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                    layer.is_clipping = !layer.is_clipping;
+                    layer.add_mask();
+                }
+            }
+            CommandId::DeleteLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.delete_mask();
+                    self.active_mask_editing = false;
+                }
+            }
+            CommandId::ApplyLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.apply_mask();
+                    self.active_mask_editing = false;
+                }
+            }
+            CommandId::ToggleLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    if let Some(ref mut mask) = layer.mask {
+                        mask.enabled = !mask.enabled;
+                        layer.thumbnail_dirty = true;
+                    }
+                }
+            }
+            CommandId::InvertLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.invert_mask();
                 }
             }
 
@@ -1723,6 +1949,7 @@ impl PaintApp {
             CommandId::MinimalUi => self.show_minimal_ui = !self.show_minimal_ui,
             CommandId::ShowGrid => self.show_grid = !self.show_grid,
             CommandId::ShowSymmetry => self.show_symmetry = !self.show_symmetry,
+            CommandId::Fullscreen => self.toggle_fullscreen_requested = true,
 
             // Misc
             CommandId::Preferences => self.show_preferences_dialog = true,
@@ -1755,9 +1982,10 @@ impl PaintApp {
         let new_id = self.layer_id_counter;
         let mut new_layer = Layer::new(new_id, format!("Layer {}", new_id));
         new_layer.kind = crate::canvas::LayerType::Raster;
-        self.layers.insert(new_id, new_layer);
+        self.layers.insert(new_id, new_layer.clone());
         self.layer_order.insert(0, new_id);
         self.active_layer_id = new_id;
+        self.history.push_command(HistoryCommand::LayerCreate { layer: Box::new(new_layer), index: 0 });
     }
 
     fn create_folder_layer(&mut self) {
@@ -1765,9 +1993,10 @@ impl PaintApp {
         let new_id = self.layer_id_counter;
         let mut new_layer = Layer::new(new_id, format!("Folder {}", new_id));
         new_layer.kind = crate::canvas::LayerType::Folder { child_ids: Vec::new() };
-        self.layers.insert(new_id, new_layer);
+        self.layers.insert(new_id, new_layer.clone());
         self.layer_order.insert(0, new_id);
         self.active_layer_id = new_id;
+        self.history.push_command(HistoryCommand::LayerCreate { layer: Box::new(new_layer), index: 0 });
     }
 
     fn duplicate_active_layer(&mut self) {
@@ -1800,9 +2029,13 @@ impl PaintApp {
         if self.layer_order.len() <= 1 { return; }
         let active_id = self.active_layer_id;
         if let Some(pos) = self.layer_order.iter().position(|&x| x == active_id) {
+            let removed_layer = self.layers.remove(&active_id).unwrap();
             self.layer_order.remove(pos);
-            self.layers.remove(&active_id);
             self.active_layer_id = self.layer_order[0];
+            self.history.push_command(HistoryCommand::LayerDelete {
+                layer: Box::new(removed_layer),
+                index: pos,
+            });
         }
     }
 
@@ -1942,6 +2175,7 @@ impl PaintApp {
                 layer_id: layer.id,
                 coords: (tx, ty),
                 pixels: Some(pixels),
+                is_mask: false,
             });
         }
 
@@ -1959,7 +2193,7 @@ impl PaintApp {
         }
 
         if !snapshots.is_empty() {
-            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.history.push_command(HistoryCommand::TileEdit { snapshots });
             self.document_modified = true;
         }
         if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
@@ -1969,12 +2203,13 @@ impl PaintApp {
 
     fn fill_selected_area(&mut self) {
         if !self.selection_mask.is_active { return; }
+        let active_col = self.active_color();
         let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
         let sel = &self.selection_mask;
         let fill_color: [u16; 4] = [
-            (self.brush_color[0] * 32768.0) as u16,
-            (self.brush_color[1] * 32768.0) as u16,
-            (self.brush_color[2] * 32768.0) as u16,
+            (active_col[0] * 32768.0) as u16,
+            (active_col[1] * 32768.0) as u16,
+            (active_col[2] * 32768.0) as u16,
             32768,
         ];
 
@@ -1987,6 +2222,7 @@ impl PaintApp {
                 layer_id: layer.id,
                 coords: (tx, ty),
                 pixels: Some(pixels),
+                is_mask: false,
             });
         }
 
@@ -2004,7 +2240,7 @@ impl PaintApp {
         }
 
         if !snapshots.is_empty() {
-            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.history.push_command(HistoryCommand::TileEdit { snapshots });
             self.document_modified = true;
         }
     }
@@ -2020,6 +2256,7 @@ impl PaintApp {
                 layer_id: layer.id,
                 coords: (tx, ty),
                 pixels: Some(pixels),
+                is_mask: false,
             });
         }
 
@@ -2033,7 +2270,7 @@ impl PaintApp {
         }
 
         if !snapshots.is_empty() {
-            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.history.push_command(HistoryCommand::TileEdit { snapshots });
             self.document_modified = true;
         }
         if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
@@ -2042,18 +2279,19 @@ impl PaintApp {
     }
 
     fn fill_entire_layer(&mut self) {
+        let active_col = self.active_color();
         let Some(layer) = self.layers.get_mut(&self.active_layer_id) else { return; };
         let fill_color: [u16; 4] = [
-            (self.brush_color[0] * 32768.0) as u16,
-            (self.brush_color[1] * 32768.0) as u16,
-            (self.brush_color[2] * 32768.0) as u16,
+            (active_col[0] * 32768.0) as u16,
+            (active_col[1] * 32768.0) as u16,
+            (active_col[2] * 32768.0) as u16,
             32768,
         ];
 
         // If layer has no tiles, create one covering the canvas
         if layer.tiles.is_empty() {
-            let tw = (self.canvas_width + 63) / 64;
-            let th = (self.canvas_height + 63) / 64;
+            let tw = self.canvas_width.div_ceil(64);
+            let th = self.canvas_height.div_ceil(64);
             for ty in 0..th as i32 {
                 for tx in 0..tw as i32 {
                     let mut tile = crate::canvas::Tile::new();
@@ -2081,6 +2319,7 @@ impl PaintApp {
                 layer_id: layer.id,
                 coords: (tx, ty),
                 pixels: Some(pixels),
+                is_mask: false,
             });
         }
 
@@ -2094,7 +2333,7 @@ impl PaintApp {
         }
 
         if !snapshots.is_empty() {
-            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.history.push_command(HistoryCommand::TileEdit { snapshots });
             self.document_modified = true;
         }
     }
@@ -2246,12 +2485,14 @@ impl PaintApp {
                     layer_id: layer.id,
                     coords: (tx, ty),
                     pixels: Some(pixels),
+                    is_mask: false,
                 });
             } else {
                 snapshots.push(crate::history::TileSnapshot {
                     layer_id: layer.id,
                     coords: (tx, ty),
                     pixels: None,
+                    is_mask: false,
                 });
             }
         }
@@ -2280,7 +2521,7 @@ impl PaintApp {
 
         layer.thumbnail_dirty = true;
         if !snapshots.is_empty() {
-            self.history.push_command(crate::history::UndoCommand { snapshots });
+            self.history.push_command(HistoryCommand::TileEdit { snapshots });
             self.document_modified = true;
         }
 
@@ -2356,6 +2597,7 @@ impl PaintApp {
                     layer_id: layer.id,
                     coords,
                     pixels: Some(pixels),
+                    is_mask: false,
                 });
             }
             
@@ -2363,7 +2605,7 @@ impl PaintApp {
             layer.thumbnail_dirty = true;
             
             if !snapshots.is_empty() {
-                self.history.push_command(crate::history::UndoCommand { snapshots });
+                self.history.push_command(HistoryCommand::TileEdit { snapshots });
                 self.document_modified = true;
             }
         }
@@ -2472,6 +2714,17 @@ impl eframe::App for PaintApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.toggle_fullscreen_requested {
+            self.toggle_fullscreen_requested = false;
+            let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+        }
+
+        // Record frame time for the performance HUD
+        let frame_dt = ctx.input(|i| i.predicted_dt);
+        self.performance_hud.record_frame(frame_dt);
+        self.performance_hud.begin_frame();
+
         // Only flush slider values into Hokusai when something actually changed
         self.sync_brush_settings();
 
@@ -2509,6 +2762,21 @@ impl eframe::App for PaintApp {
                 250
             };
             ctx.request_repaint_after(std::time::Duration::from_millis(interval_ms));
+
+            if has_tablet_events {
+                let now = ctx.input(|i| i.time);
+                self.tablet_diagnostics.record_event(
+                    DeviceType::Pen,
+                    0.0,
+                    0.0,
+                    axis.pressure,
+                    axis.tilt_x,
+                    axis.tilt_y,
+                    axis.tip_down,
+                    axis.in_proximity,
+                    now as f32,
+                );
+            }
         }
 
         // 0. DIALOGS
@@ -2519,6 +2787,10 @@ impl eframe::App for PaintApp {
 
         // 2. QUICK BAR PANEL
         crate::ui::quick_bar::draw_quick_bar(self, ctx);
+
+        // 2b. DIAGNOSTICS OVERLAYS (HUD and tablet diagnostics)
+        crate::ui::diagnostics::draw_performance_hud(self, ctx);
+        crate::ui::diagnostics::draw_tablet_diagnostics(self, ctx);
 
         // Autosave check
         if self.autosave_enabled {
@@ -2556,6 +2828,16 @@ impl eframe::App for PaintApp {
                 // Track pressed keys
                 for event in &i.events {
                     if let egui::Event::Key { key, pressed: true, .. } = event {
+                        if !ctrl && !shift && !alt {
+                            if *key == egui::Key::X {
+                                std::mem::swap(&mut self.foreground_color, &mut self.background_color);
+                                self.brush_settings_dirty = true;
+                            } else if *key == egui::Key::D {
+                                self.foreground_color = [0.0, 0.0, 0.0];
+                                self.background_color = [1.0, 1.0, 1.0];
+                                self.brush_settings_dirty = true;
+                            }
+                        }
                         if let Some(cmd) = self.shortcuts.find_command(*key, ctrl, shift, alt) {
                             self.command(cmd);
                         }
@@ -2580,6 +2862,11 @@ impl eframe::App for PaintApp {
             if ctx.input(|i| i.key_pressed(egui::Key::CloseBracket)) {
                 self.brush_radius_log = (self.brush_radius_log + 0.15).min(5.0);
                 self.brush_settings_dirty = true;
+            }
+
+            // F12 toggles the performance HUD
+            if ctx.input(|i| i.key_pressed(egui::Key::F12)) {
+                self.performance_hud.enabled = !self.performance_hud.enabled;
             }
         }
 
@@ -2677,8 +2964,8 @@ impl eframe::App for PaintApp {
                 let mut pointer_clicked = response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
 
                 // Reference Image Dragging Interaction
-                if matches!(self.active_tool, ToolId::Move | ToolId::Reference) {
-                    if ui.input(|i| i.pointer.any_pressed()) {
+                if matches!(self.active_tool, ToolId::Move | ToolId::Reference)
+                    && ui.input(|i| i.pointer.any_pressed()) {
                         if let Some(ptr_pos) = ui.input(|i| i.pointer.press_origin()) {
                             if response.hovered() {
                                 // Hit test visible reference images from top of stack to bottom
@@ -2708,7 +2995,6 @@ impl eframe::App for PaintApp {
                             }
                         }
                     }
-                }
                 
                 if let Some(idx) = self.ref_image_dragging {
                     if idx < self.reference_images.len() {
@@ -2770,8 +3056,8 @@ impl eframe::App for PaintApp {
                                 egui::Pos2::new(ob.min.x, ob.max.y), // BL (6)
                                 egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
                             ];
-                            for i in 0..8 {
-                                let h_screen = self.world_to_screen(self.transform_point(orig_corners[i]), view_rect);
+                            for (i, &corner) in orig_corners.iter().enumerate() {
+                                let h_screen = self.world_to_screen(self.transform_point(corner), view_rect);
                                 if ptr_pos.distance(h_screen) <= handle_radius {
                                     hovered_handle = Some(i);
                                     break;
@@ -2885,13 +3171,12 @@ impl eframe::App for PaintApp {
                                         scale_x = scale_x.max(0.05);
                                         scale_y = scale_y.max(0.05);
                                         
-                                        if ui.input(|i| i.modifiers.shift) {
-                                            if h == 0 || h == 2 || h == 4 || h == 6 {
+                                        if ui.input(|i| i.modifiers.shift)
+                                            && (h == 0 || h == 2 || h == 4 || h == 6) {
                                                 let avg_scale = (scale_x + scale_y) * 0.5;
                                                 scale_x = avg_scale;
                                                 scale_y = avg_scale;
                                             }
-                                        }
                                         
                                         self.transform_scale = egui::Vec2::new(scale_x, scale_y);
                                     }
@@ -2955,10 +3240,11 @@ impl eframe::App for PaintApp {
                         let fx = world_pos.x as i32;
                         let fy = world_pos.y as i32;
                         if fx >= 0 && fx < self.canvas_width as i32 && fy >= 0 && fy < self.canvas_height as i32 {
+                            let active_col = self.active_color();
                             let fill_color: [u16; 4] = [
-                                (self.brush_color[0] * 32768.0) as u16,
-                                (self.brush_color[1] * 32768.0) as u16,
-                                (self.brush_color[2] * 32768.0) as u16,
+                                (active_col[0] * 32768.0) as u16,
+                                (active_col[1] * 32768.0) as u16,
+                                (active_col[2] * 32768.0) as u16,
                                 32768,
                             ];
                             let cloned_layers: Vec<Layer> = self.layers.values().cloned().collect();
@@ -2975,6 +3261,7 @@ impl eframe::App for PaintApp {
                                             layer_id: layer.id,
                                             coords: tk,
                                             pixels: Some(pixels),
+                                            is_mask: false,
                                         });
                                     }
                                 }
@@ -2997,12 +3284,13 @@ impl eframe::App for PaintApp {
                                             snapshots.push(crate::history::TileSnapshot {
                                                 layer_id: layer.id,
                                                 coords: tk,
-                                                pixels: None, // tile did not exist before
+                                                pixels: None,
+                                                is_mask: false,
                                             });
                                         }
                                     }
 
-                                    self.history.push_command(crate::history::UndoCommand { snapshots });
+                                    self.history.push_command(HistoryCommand::TileEdit { snapshots });
                                     self.document_modified = true;
                                     if let Some(r) = &mut self.renderer {
                                         r.clear_cache();
@@ -3050,20 +3338,21 @@ impl eframe::App for PaintApp {
                                 let all_layers: Vec<&Layer> = self.layer_order.iter().filter_map(|id| self.layers.get(id)).collect();
                                 let sampled = fill::sample_reference(&all_layers, active_layer, fill::FillReference::AllVisibleLayers, px, py);
                                 let a = sampled[3] as f32 / 32768.0;
+                                let mut col = [0.0; 3];
                                 if a > 0.0 {
-                                    self.brush_color[0] = (sampled[0] as f32 / 32768.0) / a;
-                                    self.brush_color[1] = (sampled[1] as f32 / 32768.0) / a;
-                                    self.brush_color[2] = (sampled[2] as f32 / 32768.0) / a;
+                                    col[0] = (sampled[0] as f32 / 32768.0) / a;
+                                    col[1] = (sampled[1] as f32 / 32768.0) / a;
+                                    col[2] = (sampled[2] as f32 / 32768.0) / a;
                                 } else {
-                                    self.brush_color[0] = sampled[0] as f32 / 32768.0;
-                                    self.brush_color[1] = sampled[1] as f32 / 32768.0;
-                                    self.brush_color[2] = sampled[2] as f32 / 32768.0;
+                                    col[0] = sampled[0] as f32 / 32768.0;
+                                    col[1] = sampled[1] as f32 / 32768.0;
+                                    col[2] = sampled[2] as f32 / 32768.0;
                                 }
-                                self.brush_color[0] = self.brush_color[0].clamp(0.0, 1.0);
-                                self.brush_color[1] = self.brush_color[1].clamp(0.0, 1.0);
-                                self.brush_color[2] = self.brush_color[2].clamp(0.0, 1.0);
-                                self.record_color(self.brush_color);
-                                self.brush_settings_dirty = true;
+                                col[0] = col[0].clamp(0.0, 1.0);
+                                col[1] = col[1].clamp(0.0, 1.0);
+                                col[2] = col[2].clamp(0.0, 1.0);
+                                self.set_active_color(col);
+                                self.record_color(col);
                             }
                         }
                     }
@@ -3123,8 +3412,21 @@ impl eframe::App for PaintApp {
                         };
 
                         // Stabilize position, pressure, and tilt together!
-                        let (sx, sy, smoothed_pressure, smoothed_tilt_x, smoothed_tilt_y) =
+                        let (sx_raw, sy_raw, smoothed_pressure, smoothed_tilt_x, smoothed_tilt_y) =
                             self.stabilizer.process(cx, cy, raw_pressure, raw_tilt_x, raw_tilt_y, dt as f32);
+
+                        // Shift-constrain angle snapping
+                        let shift_held = ctx.input(|i| i.modifiers.shift);
+                        let (sx, sy) = if self.shift_snap_enabled && shift_held {
+                            if self.stroke_start_pos.is_none() {
+                                self.stroke_start_pos = Some(egui::Pos2::new(sx_raw, sy_raw));
+                            }
+                            let start = self.stroke_start_pos.unwrap();
+                            Self::snap_to_angle(start.x, start.y, sx_raw, sy_raw)
+                        } else {
+                            self.stroke_start_pos = None;
+                            (sx_raw, sy_raw)
+                        };
 
                         // Remap pressure if it comes from real hardware
                         let pressure = if self.egui_touch_pressure.is_some() || self.input_manager.is_some() {
@@ -3132,6 +3434,7 @@ impl eframe::App for PaintApp {
                         } else {
                             smoothed_pressure
                         };
+                        let pressure = self.pressure_response.calibrate(pressure);
                         self.last_ptr_pressure = pressure;
 
                         let tilt_x = smoothed_tilt_x;
@@ -3167,7 +3470,7 @@ impl eframe::App for PaintApp {
                                 let p3 = &self.current_vector_points[k - 1];
 
                                 let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-                                let steps = ((dist / 2.0) as usize).max(2).min(100);
+                                let steps = ((dist / 2.0) as usize).clamp(2, 100);
 
                                 let start_i = if k == 3 { 0 } else { 1 };
 
@@ -3182,7 +3485,6 @@ impl eframe::App for PaintApp {
                                     } else {
                                         None
                                     };
-
                                     for i in start_i..=steps {
                                         let t = i as f32 / steps as f32;
                                         let pt = Self::catmull_rom(p0, p1, p2, p3, t);
@@ -3200,6 +3502,7 @@ impl eframe::App for PaintApp {
                                             brush_texture_width: 256,
                                             brush_texture_height: 256,
                                             brush_texture_scale: preset.texture_scale,
+                                            active_mask_editing: self.active_mask_editing,
                                         };
 
                                         active_brush.stroke_to(
@@ -3212,6 +3515,7 @@ impl eframe::App for PaintApp {
                                             pt.tilt_y,
                                             dt / steps as f64,
                                         );
+                                        self.performance_hud.note_stroke_point(ctx.input(|i| i.time) as f32);
                                     }
                                 }
                             }
@@ -3219,6 +3523,18 @@ impl eframe::App for PaintApp {
                             // Execute Hokusai Brush Stroke to the Layer!
                             self.sync_brush_settings();
                             let active_brush = &self.brushes[self.active_preset_index];
+
+                            // Compute symmetry mirror points BEFORE borrowing layers
+                            let stroke_points = self.compute_symmetry_points(sx, sy);
+                            let needs_symmetry = stroke_points.len() > 1;
+
+                            // Ensure we have enough parallel brush states for symmetry
+                            if needs_symmetry {
+                                while self.symmetry_brush_states.len() < stroke_points.len() - 1 {
+                                    self.symmetry_brush_states.push(self.brush_states[self.active_preset_index].clone());
+                                }
+                            }
+
                             let active_brush_state = &mut self.brush_states[self.active_preset_index];
 
                             if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
@@ -3243,20 +3559,57 @@ impl eframe::App for PaintApp {
                                     brush_texture_width: 256,
                                     brush_texture_height: 256,
                                     brush_texture_scale: preset.texture_scale,
+                                    active_mask_editing: self.active_mask_editing,
                                 };
 
                                 // Feed the stabilized stroke points to the Hokusai brush engine
                                 // with REAL pressure and tilt from the Bosto 16HD!
-                                active_brush.stroke_to(
-                                    active_brush_state,
-                                    &mut stroke_surface,
-                                    sx,
-                                    sy,
-                                    pressure,
-                                    tilt_x,
-                                    tilt_y,
-                                    dt,
-                                );
+                                if !needs_symmetry {
+                                    active_brush.stroke_to(
+                                        active_brush_state,
+                                        &mut stroke_surface,
+                                        sx,
+                                        sy,
+                                        pressure,
+                                        tilt_x,
+                                        tilt_y,
+                                        dt,
+                                    );
+                                    self.performance_hud.note_stroke_point(ctx.input(|i| i.time) as f32);
+                                } else {
+                                    // Draw each stroke point (main + mirrors)
+                                    active_brush.stroke_to(
+                                        active_brush_state,
+                                        &mut stroke_surface,
+                                        sx,
+                                        sy,
+                                        pressure,
+                                        tilt_x,
+                                        tilt_y,
+                                        dt,
+                                    );
+                                    self.performance_hud.note_stroke_point(ctx.input(|i| i.time) as f32);
+                                    for (idx, (mx, my)) in stroke_points.iter().enumerate().skip(1) {
+                                        if let Some(s) = self.symmetry_brush_states.get_mut(idx - 1) {
+                                            if !s.started {
+                                                *s = active_brush_state.clone();
+                                            }
+                                            active_brush.stroke_to(
+                                                s,
+                                                &mut stroke_surface,
+                                                *mx,
+                                                *my,
+                                                pressure,
+                                                tilt_x,
+                                                tilt_y,
+                                                dt,
+                                            );
+                                            self.performance_hud.note_stroke_point(ctx.input(|i| i.time) as f32);
+                                        }
+                                    }
+                                }
+                            } else {
+                                let _ = active_brush;
                             }
                         }
 
@@ -3308,13 +3661,16 @@ impl eframe::App for PaintApp {
                         self.show_selection_overlay = self.selection_mask.is_active;
                     }
 
-                    // Stroke ended! Save the UndoCommand and reset stabilizer
+                    // Stroke ended! Save the command and reset stabilizer
                     if self.stabilizer.is_drawing {
                         self.stabilizer.reset();
                         self.last_ptr_pos = None;
 
                         // Reset active brush state so the next stroke doesn't connect to the last one!
                         self.brush_states[self.active_preset_index].reset();
+                        for s in &mut self.symmetry_brush_states {
+                            s.reset();
+                        }
 
                         let is_vector = if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
                             active_layer.kind == crate::canvas::LayerType::Vector
@@ -3336,7 +3692,7 @@ impl eframe::App for PaintApp {
                             let p3 = &self.current_vector_points[len - 1];
 
                             let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-                            let steps = ((dist / 2.0) as usize).max(2).min(100);
+                            let steps = ((dist / 2.0) as usize).clamp(2, 100);
 
                             let start_i = if len == 2 { 0 } else { 1 };
 
@@ -3369,6 +3725,7 @@ impl eframe::App for PaintApp {
                                         brush_texture_width: 256,
                                         brush_texture_height: 256,
                                         brush_texture_scale: preset.texture_scale,
+                                        active_mask_editing: self.active_mask_editing,
                                     };
 
                                     active_brush.stroke_to(
@@ -3381,6 +3738,7 @@ impl eframe::App for PaintApp {
                                         pt.tilt_y,
                                         0.016 / steps as f64,
                                     );
+                                    self.performance_hud.note_stroke_point(ctx.input(|i| i.time) as f32);
                                 }
                             }
                         }
@@ -3409,7 +3767,7 @@ impl eframe::App for PaintApp {
                         // Push the stroke command to the HistoryManager
                         let snapshots = std::mem::take(&mut self.current_stroke_snapshots);
                         if !snapshots.is_empty() {
-                            self.history.push_command(UndoCommand { snapshots });
+                            self.history.push_command(HistoryCommand::TileEdit { snapshots });
                             self.document_modified = true;
                         }
                     }
@@ -3419,7 +3777,10 @@ impl eframe::App for PaintApp {
                 if let Some(renderer) = &mut self.renderer {
                     // Update GPU textures incrementally for dirty CPU tiles
                     let mut layer_refs: Vec<&mut Layer> = self.layers.values_mut().collect();
-                    renderer.update_textures(&mut layer_refs);
+                    let upload_count = renderer.update_textures(&mut layer_refs);
+                    for _ in 0..upload_count {
+                        self.performance_hud.note_upload();
+                    }
 
                     let transform_preview = if self.transform_active {
                         Some(crate::renderer::TransformPreviewParams {
@@ -3530,14 +3891,14 @@ impl eframe::App for PaintApp {
                                     );
                                 }
                                 // Draw a small square handle at each corner
-                                for i in 0..4 {
+                                for pos in &screen_pos {
                                     ui.painter().rect_filled(
-                                        egui::Rect::from_center_size(screen_pos[i], egui::vec2(6.0, 6.0)),
+                                        egui::Rect::from_center_size(*pos, egui::vec2(6.0, 6.0)),
                                         1.0,
                                         border_color,
                                     );
                                     ui.painter().rect_stroke(
-                                        egui::Rect::from_center_size(screen_pos[i], egui::vec2(6.0, 6.0)),
+                                        egui::Rect::from_center_size(*pos, egui::vec2(6.0, 6.0)),
                                         1.0,
                                         egui::Stroke::new(1.0, egui::Color32::WHITE),
                                     );
@@ -3598,6 +3959,55 @@ impl eframe::App for PaintApp {
                             egui::Stroke::new(0.5, Color32::from_black_alpha(40)),
                         );
                         gy += grid_size;
+                    }
+                }
+
+                // SYMMETRY AXIS GUIDES
+                if !matches!(self.symmetry_mode, SymmetryMode::None) {
+                    let canvas_top = 0.0;
+                    let canvas_bottom = self.canvas_height as f32;
+                    let canvas_left = 0.0;
+                    let canvas_right = self.canvas_width as f32;
+                    let top_sy = ((canvas_top - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                    let bot_sy = ((canvas_bottom - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                    let left_sx = ((canvas_left - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
+                    let right_sx = ((canvas_right - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
+
+                    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 100, 200, 160));
+
+                    match self.symmetry_mode {
+                        SymmetryMode::None => {}
+                        SymmetryMode::Horizontal => {
+                            let sx = ((self.symmetry_center.x - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
+                            ui.painter().line_segment(
+                                [egui::Pos2::new(sx, top_sy), egui::Pos2::new(sx, bot_sy)],
+                                stroke,
+                            );
+                        }
+                        SymmetryMode::Vertical => {
+                            let sy = ((self.symmetry_center.y - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                            ui.painter().line_segment(
+                                [egui::Pos2::new(left_sx, sy), egui::Pos2::new(right_sx, sy)],
+                                stroke,
+                            );
+                        }
+                        SymmetryMode::Radial => {
+                            let cx = ((self.symmetry_center.x - self.viewport_offset.x) * self.viewport_zoom) + rect.min.x;
+                            let cy = ((self.symmetry_center.y - self.viewport_offset.y) * self.viewport_zoom) + rect.min.y;
+                            let count = self.symmetry_radial_count.max(2);
+                            let step = 2.0 * std::f32::consts::PI / count as f32;
+                            // Draw radial lines from center
+                            for i in 0..count {
+                                let theta = step * i as f32;
+                                let max_r = ((canvas_right.max(canvas_bottom) - self.symmetry_center.x.max(self.symmetry_center.y)).abs() + 100.0) * self.viewport_zoom;
+                                let ex = cx + max_r * theta.cos();
+                                let ey = cy + max_r * theta.sin();
+                                ui.painter().line_segment(
+                                    [egui::Pos2::new(cx, cy), egui::Pos2::new(ex, ey)],
+                                    stroke,
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -3724,8 +4134,8 @@ impl eframe::App for PaintApp {
                         egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
                     ];
                     
-                    for i in 0..8 {
-                        let h_screen = self.world_to_screen(self.transform_point(orig_corners[i]), rect);
+                    for corner in &orig_corners {
+                        let h_screen = self.world_to_screen(self.transform_point(*corner), rect);
                         ui.painter().rect_filled(
                             egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)),
                             0.0,
@@ -3946,7 +4356,7 @@ pub fn point_in_quad(p: egui::Pos2, quad: &[egui::Pos2; 4]) -> bool {
 // Custom HSV Color Wheel Widget & Helpers
 // =========================================================================
 
-fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+pub(crate) fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g.max(b));
     let min = r.min(g.min(b));
     let d = max - min;
@@ -3965,7 +4375,7 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h, s, v)
 }
 
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+pub(crate) fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     let h = h * 360.0;
     let c = v * s;
     let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
@@ -4122,10 +4532,10 @@ pub(crate) fn draw_hsv_color_wheel(ui: &mut egui::Ui, color: &mut [f32; 3], drag
 fn generate_noise_texture() -> Vec<u8> {
     let mut data = vec![0u8; 256 * 256];
     let mut seed: u32 = 12345;
-    for i in 0..data.len() {
+    for val_ref in &mut data {
         seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
         let val = (seed >> 16) & 255;
-        data[i] = val as u8;
+        *val_ref = val as u8;
     }
     data
 }
@@ -4167,5 +4577,110 @@ mod tests {
         // Outside
         assert!(!point_in_quad(egui::pos2(-1.0, 5.0), &quad));
         assert!(!point_in_quad(egui::pos2(5.0, 11.0), &quad));
+    }
+
+    #[test]
+    fn test_snap_to_angle_horizontal() {
+        // Moving right should snap to 0 degrees (horizontal)
+        let (_x, y) = PaintApp::snap_to_angle(0.0, 0.0, 50.0, 1.0);
+        assert!((y - 0.0_f32).abs() < 1e-4, "Expected y~=0, got {}", y);
+    }
+
+    #[test]
+    fn test_snap_to_angle_vertical() {
+        // Moving down should snap to 90 degrees (vertical)
+        let (x, _y) = PaintApp::snap_to_angle(0.0, 0.0, 1.0, 50.0);
+        assert!((x - 0.0_f32).abs() < 1e-4, "Expected x~=0, got {}", x);
+    }
+
+    #[test]
+    fn test_snap_to_angle_45() {
+        let (x, y) = PaintApp::snap_to_angle(0.0, 0.0, 50.0, 50.0);
+        let dist = (x * x + y * y).sqrt();
+        assert!((dist - 50.0 * 2.0_f32.sqrt()).abs() < 0.1, "Distance should be ~70.7");
+    }
+
+    #[test]
+    fn test_snap_to_angle_no_movement() {
+        let (x, y) = PaintApp::snap_to_angle(0.0, 0.0, 0.1, 0.1);
+        assert!((x - 0.1_f32).abs() < 1e-3 && (y - 0.1_f32).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_symmetry_radial() {
+        // Test radial symmetry math directly without creating a full PaintApp
+        let center = egui::Pos2::new(100.0, 100.0);
+        let count = 4;
+        let sx = 120.0_f32;
+        let sy = 100.0_f32;
+        let mut points = vec![(sx, sy)];
+        let dx = sx - center.x;
+        let dy = sy - center.y;
+        let angle_step = 2.0 * std::f32::consts::PI / count as f32;
+        for i in 1..count {
+            let theta = angle_step * i as f32;
+            let rx = center.x + dx * theta.cos() - dy * theta.sin();
+            let ry = center.y + dx * theta.sin() + dy * theta.cos();
+            points.push((rx, ry));
+        }
+        assert_eq!(points.len(), 4);
+        assert!((points[0].0 - 120.0_f32).abs() < 1e-4);
+        for p in &points[1..] {
+            let dx = p.0 - 100.0_f32;
+            let dy = p.1 - 100.0_f32;
+            let dist = (dx * dx + dy * dy).sqrt();
+            assert!((dist - 20.0_f32).abs() < 1e-3, "Expected dist~=20, got {}", dist);
+        }
+    }
+
+    #[test]
+    fn test_symmetry_horizontal_math() {
+        let center = egui::Pos2::new(100.0, 100.0);
+        let sx = 120.0_f32;
+        let sy = 80.0_f32;
+        let rx = center.x * 2.0 - sx;
+        assert!((rx - 80.0_f32).abs() < 1e-4);
+        assert!((sy - 80.0_f32).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_selection_grow_via_app() {
+        use crate::canvas::SelectionMask;
+        use crate::tools::selection;
+
+        let mut mask = SelectionMask::new();
+        mask.is_active = true;
+        // Add a small selected region
+        for y in 95..106i32 {
+            for x in 95..106i32 {
+                let tx = x.div_euclid(64);
+                let ty = y.div_euclid(64);
+                let lx = x.rem_euclid(64) as usize;
+                let ly = y.rem_euclid(64) as usize;
+                let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+                tile[ly * 64 + lx] = 255;
+            }
+        }
+        let before: i32 = mask.tiles.values().map(|t| t.iter().filter(|&&v| v > 0).count() as i32).sum();
+        selection::grow_selection(&mut mask, 3, 200, 200);
+        let after: i32 = mask.tiles.values().map(|t| t.iter().filter(|&&v| v > 0).count() as i32).sum();
+        assert!(after > before, "Grow should expand selection ({} -> {})", before, after);
+    }
+
+    #[test]
+    fn test_parse_hex_color() {
+        // Valid 6-digit hex colors (with or without #)
+        assert_eq!(PaintApp::parse_hex_color("#ffffff"), Some([1.0, 1.0, 1.0]));
+        assert_eq!(PaintApp::parse_hex_color("000000"), Some([0.0, 0.0, 0.0]));
+        assert_eq!(PaintApp::parse_hex_color("#ff00ff"), Some([1.0, 0.0, 1.0]));
+
+        // Valid 3-digit hex colors
+        assert_eq!(PaintApp::parse_hex_color("#fff"), Some([1.0, 1.0, 1.0]));
+        assert_eq!(PaintApp::parse_hex_color("f00"), Some([1.0, 0.0, 0.0]));
+
+        // Invalid hex strings
+        assert_eq!(PaintApp::parse_hex_color("invalid"), None);
+        assert_eq!(PaintApp::parse_hex_color("#ff"), None);
+        assert_eq!(PaintApp::parse_hex_color("12345"), None);
     }
 }

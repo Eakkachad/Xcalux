@@ -54,13 +54,12 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                                             app.select_preset(pos);
                                                         }
                                                     }
-                                                } else if *tool_id == ToolId::Eraser {
-                                                    if !app.presets[app.active_preset_index].is_eraser {
+                                                } else if *tool_id == ToolId::Eraser
+                                                    && !app.presets[app.active_preset_index].is_eraser {
                                                         if let Some(pos) = app.presets.iter().position(|p| p.is_eraser) {
                                                             app.select_preset(pos);
                                                         }
                                                     }
-                                                }
                                                 ctx.request_repaint();
                                             }
                                             if i % 4 == 3 {
@@ -70,79 +69,125 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                     });
                                 ui.separator();
                                 ui.label("BRUSH PRESETS");
-                                egui::Grid::new("presets_grid")
-                                    .num_columns(4)
-                                    .spacing([4.0, 4.0])
-                                    .show(ui, |ui| {
-                                        let num_presets = app.presets.len();
-                                        for i in 0..16 {
-                                            if i < num_presets {
-                                                let preset_icon = app.presets[i].icon;
-                                                let preset_name = app.presets[i].name.clone();
-                                                let is_selected = app.active_preset_index == i && matches!(app.active_tool, ToolId::Brush | ToolId::Eraser);
-                                                
-                                                let type_tag = match preset_icon {
-                                                    PresetIcon::Pencil => "[P]",
-                                                    PresetIcon::InkPen => "[I]",
-                                                    PresetIcon::PaintBrush => "[B]",
-                                                    PresetIcon::Smudge => "[S]",
-                                                    PresetIcon::Eraser => "[E]",
-                                                    PresetIcon::AirBrush => "[A]",
-                                                    PresetIcon::Water => "[W]",
-                                                    PresetIcon::Marker => "[M]",
-                                                    PresetIcon::BinaryPen => "[1]",
-                                                };
-                                                
-                                                let label = format!("{}\n{}", type_tag, preset_name);
-                                                let btn = egui::Button::new(
-                                                    egui::RichText::new(&label)
-                                                        .size(8.0)
-                                                        .line_height(Some(10.0))
-                                                )
-                                                .selected(is_selected);
-                                                
-                                                let btn_response = ui.add_sized([32.0, 36.0], btn);
-                                                
-                                                // Border highlight if active (contrasting deep blue)
-                                                if is_selected {
-                                                    ui.painter().rect_stroke(
-                                                        btn_response.rect.expand(1.0),
-                                                        3.0,
-                                                        egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))
-                                                    );
-                                                }
-                                                
-                                                if btn_response.clicked() {
-                                                    app.select_preset(i);
-                                                }
-                                                
-                                                // Right click context menu
-                                                btn_response.context_menu(|ui| {
-                                                    if ui.button("Rename").clicked() {
-                                                        app.renaming_preset_index = Some(i);
-                                                        app.rename_input = preset_name.clone();
-                                                        ui.close_menu();
+                                ui.dnd_drop_zone::<usize, _>(egui::Frame::none(), |ui| {
+                                    egui::Grid::new("presets_grid")
+                                        .num_columns(4)
+                                        .spacing([4.0, 4.0])
+                                        .show(ui, |ui| {
+                                            let num_presets = app.presets.len();
+                                            for i in 0..16 {
+                                                if i < num_presets {
+                                                    let preset_icon = app.presets[i].icon;
+                                                    let preset_name = app.presets[i].name.clone();
+                                                    let is_selected = app.active_preset_index == i && matches!(app.active_tool, ToolId::Brush | ToolId::Eraser);
+                                                    
+                                                    let type_tag = match preset_icon {
+                                                        PresetIcon::Pencil => "[P]",
+                                                        PresetIcon::InkPen => "[I]",
+                                                        PresetIcon::PaintBrush => "[B]",
+                                                        PresetIcon::Smudge => "[S]",
+                                                        PresetIcon::Eraser => "[E]",
+                                                        PresetIcon::AirBrush => "[A]",
+                                                        PresetIcon::Water => "[W]",
+                                                        PresetIcon::Marker => "[M]",
+                                                        PresetIcon::BinaryPen => "[1]",
+                                                    };
+                                                    
+                                                    let stabilizer_tag = match app.presets[i].stabilizer_level {
+                                                        StabilizerLevel::Off => "Off".to_string(),
+                                                        StabilizerLevel::Level(val) => {
+                                                            match app.presets[i].stabilizer_mode {
+                                                                StabilizerMode::Ema => format!("EMA-{}", val),
+                                                                StabilizerMode::SpringMassDamper => format!("SP-{}", val),
+                                                            }
+                                                        }
+                                                        StabilizerLevel::SLevel(val) => format!("S-{}", val),
+                                                    };
+                                                    
+                                                    let label = format!("{}\n{}\n{}", type_tag, preset_name, stabilizer_tag);
+                                                    let btn = egui::Button::new(
+                                                        egui::RichText::new(&label)
+                                                            .size(8.0)
+                                                            .line_height(Some(9.0))
+                                                    )
+                                                    .selected(is_selected);
+                                                    
+                                                    let id = egui::Id::new("preset_dnd").with(i);
+                                                    let response = ui.dnd_drag_source(id, i, |ui| {
+                                                        let btn_response = ui.add_sized([32.0, 44.0], btn);
+                                                        
+                                                        // Border highlight if active (contrasting deep blue)
+                                                        if is_selected {
+                                                            ui.painter().rect_stroke(
+                                                                btn_response.rect.expand(1.0),
+                                                                3.0,
+                                                                egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))
+                                                            );
+                                                        }
+                                                        btn_response
+                                                    });
+                                                    
+                                                    if response.inner.clicked() {
+                                                        app.select_preset(i);
                                                     }
-                                                    if ui.button("Duplicate").clicked() {
-                                                        app.duplicate_preset(i);
-                                                        ui.close_menu();
+                                                    
+                                                    // Right click context menu
+                                                    response.inner.context_menu(|ui| {
+                                                        if ui.button("Rename").clicked() {
+                                                            app.renaming_preset_index = Some(i);
+                                                            app.rename_input = preset_name.clone();
+                                                            ui.close_menu();
+                                                        }
+                                                        if ui.button("Duplicate").clicked() {
+                                                            app.duplicate_preset(i);
+                                                            ui.close_menu();
+                                                        }
+                                                        ui.separator();
+                                                        let can_delete = num_presets > 1;
+                                                        if ui.add_enabled(can_delete, egui::Button::new("Delete")).clicked() {
+                                                            app.delete_preset(i);
+                                                            ui.close_menu();
+                                                        }
+                                                    });
+
+                                                    // DND Drop and Hover checking
+                                                    if let Some(source_idx) = response.response.dnd_hover_payload::<usize>() {
+                                                        let source_idx = *source_idx;
+                                                        if source_idx != i {
+                                                            let rect = response.response.rect;
+                                                            if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                                                let is_left = hover_pos.x < rect.center().x;
+                                                                let line_segment_x = if is_left { rect.left() } else { rect.right() };
+                                                                ui.painter().line_segment(
+                                                                    [egui::pos2(line_segment_x, rect.top()), egui::pos2(line_segment_x, rect.bottom())],
+                                                                    egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))
+                                                                );
+                                                            }
+                                                        }
                                                     }
-                                                    ui.separator();
-                                                    let can_delete = num_presets > 1;
-                                                    if ui.add_enabled(can_delete, egui::Button::new("Delete")).clicked() {
-                                                        app.delete_preset(i);
-                                                        ui.close_menu();
+
+                                                    if let Some(source_idx) = response.response.dnd_release_payload::<usize>() {
+                                                        let source_idx = *source_idx;
+                                                        if source_idx != i {
+                                                            if let Some(hover_pos) = response.response.interact_pointer_pos() {
+                                                                let is_left = hover_pos.x < response.response.rect.center().x;
+                                                                let mut target_idx = i;
+                                                                if !is_left {
+                                                                    target_idx += 1;
+                                                                }
+                                                                app.reorder_preset(source_idx, target_idx);
+                                                            }
+                                                        }
                                                     }
-                                                });
-                                            } else {
-                                                // Empty slot placeholder
-                                                let btn = egui::Button::new(
-                                                    egui::RichText::new("+")
-                                                        .size(16.0)
-                                                        .color(egui::Color32::GRAY)
-                                                )
-                                                .fill(egui::Color32::from_gray(245));
-                                                let btn_response = ui.add_sized([32.0, 36.0], btn);
+                                                } else {
+                                                    // Empty slot placeholder
+                                                    let btn = egui::Button::new(
+                                                        egui::RichText::new("+")
+                                                            .size(16.0)
+                                                            .color(egui::Color32::GRAY)
+                                                    )
+                                                    .fill(egui::Color32::from_gray(245));
+                                                    let btn_response = ui.add_sized([32.0, 44.0], btn);
                                                 
                                                 // Left click or right click context menu to create
                                                 let mut show_creation_menu = false;
@@ -273,6 +318,7 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                             }
                                         }
                                     });
+                                });
 
                                 // Inline renaming text box
                                 if let Some(idx) = app.renaming_preset_index {
@@ -369,6 +415,57 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         }
                                     });
                                 });
+                            });
+
+                            ui.add_space(5.0);
+
+                            // Symmetry configuration UI
+                            ui.group(|ui| {
+                                ui.label("SYMMETRY");
+                                ui.horizontal(|ui| {
+                                    ui.label("Mode:");
+                                    egui::ComboBox::from_id_source("symmetry_mode")
+                                        .selected_text(match app.symmetry_mode {
+                                            crate::app::SymmetryMode::None => "Off",
+                                            crate::app::SymmetryMode::Horizontal => "Horizontal",
+                                            crate::app::SymmetryMode::Vertical => "Vertical",
+                                            crate::app::SymmetryMode::Radial => "Radial",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            if ui.selectable_label(matches!(app.symmetry_mode, crate::app::SymmetryMode::None), "Off").clicked() {
+                                                app.symmetry_mode = crate::app::SymmetryMode::None;
+                                            }
+                                            if ui.selectable_label(matches!(app.symmetry_mode, crate::app::SymmetryMode::Horizontal), "Horizontal").clicked() {
+                                                app.symmetry_mode = crate::app::SymmetryMode::Horizontal;
+                                            }
+                                            if ui.selectable_label(matches!(app.symmetry_mode, crate::app::SymmetryMode::Vertical), "Vertical").clicked() {
+                                                app.symmetry_mode = crate::app::SymmetryMode::Vertical;
+                                            }
+                                            if ui.selectable_label(matches!(app.symmetry_mode, crate::app::SymmetryMode::Radial), "Radial").clicked() {
+                                                app.symmetry_mode = crate::app::SymmetryMode::Radial;
+                                            }
+                                        });
+                                });
+                                if matches!(app.symmetry_mode, crate::app::SymmetryMode::Radial) {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Segments:");
+                                        ui.add(egui::DragValue::new(&mut app.symmetry_radial_count).clamp_range(2..=16));
+                                    });
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label("Center X:");
+                                    ui.add(egui::DragValue::new(&mut app.symmetry_center.x).clamp_range(0.0..=4096.0));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Center Y:");
+                                    ui.add(egui::DragValue::new(&mut app.symmetry_center.y).clamp_range(0.0..=4096.0));
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.checkbox(&mut app.shift_snap_enabled, "Shift-snap (15°)");
+                                });
+                                if ui.button("Pressure Calibration...").clicked() {
+                                    app.show_pressure_calibration = true;
+                                }
                             });
 
                             ui.add_space(5.0);
@@ -584,9 +681,9 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                                     let r_i = 22.0 * (1.0 - t * (1.0 - h)); // radius from 22.0 down to 22.0 * h
                                                     let alpha_i = o * t; // alpha from 0.0 to o
                                                     let col = egui::Color32::from_rgba_unmultiplied(
-                                                        (app.brush_color[0] * 255.0) as u8,
-                                                        (app.brush_color[1] * 255.0) as u8,
-                                                        (app.brush_color[2] * 255.0) as u8,
+                                                        (app.foreground_color[0] * 255.0) as u8,
+                                                        (app.foreground_color[1] * 255.0) as u8,
+                                                        (app.foreground_color[2] * 255.0) as u8,
                                                         (alpha_i * 255.0) as u8,
                                                     );
                                                     painter.circle_filled(center, r_i, col);
@@ -791,9 +888,9 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                                     let ly = local_pos.y as i32;
                                                     let r = (app.brush_radius_log.exp() as i32).clamp(1, 15);
                                                     let color = egui::Color32::from_rgba_unmultiplied(
-                                                        (app.brush_color[0] * 255.0) as u8,
-                                                        (app.brush_color[1] * 255.0) as u8,
-                                                        (app.brush_color[2] * 255.0) as u8,
+                                                        (app.foreground_color[0] * 255.0) as u8,
+                                                        (app.foreground_color[1] * 255.0) as u8,
+                                                        (app.foreground_color[2] * 255.0) as u8,
                                                         (app.brush_opacity * 255.0) as u8,
                                                     );
                                                     

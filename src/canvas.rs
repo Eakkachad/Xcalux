@@ -70,6 +70,28 @@ pub struct VectorLayer {
     pub strokes: Vec<VectorStroke>,
 }
 
+pub type MaskTile = [u8; 4096]; // 64x64 single-channel alpha mask values
+
+#[derive(Clone)]
+pub struct LayerMask {
+    pub tiles: AHashMap<(i32, i32), Box<MaskTile>>,
+    pub enabled: bool,
+    /// When true, the mask transforms with the layer (e.g. move/rotate).
+    /// Reserved for future transform support.
+    #[allow(dead_code)]
+    pub linked: bool,
+}
+
+impl Default for LayerMask {
+    fn default() -> Self {
+        Self {
+            tiles: AHashMap::default(),
+            enabled: true,
+            linked: true,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Layer {
     pub id: u32,
@@ -84,6 +106,9 @@ pub struct Layer {
     pub tiles: TileMap,
     pub kind: LayerType,
     pub vector_data: Option<VectorLayer>,
+
+    pub mask: Option<LayerMask>,
+    pub temp_mask_tiles: TileMap,
 
     // History & dirty tracking fields
     pub in_atomic: bool,
@@ -107,9 +132,86 @@ impl Layer {
             tiles: TileMap::default(),
             kind: LayerType::Raster,
             vector_data: None,
+            mask: None,
+            temp_mask_tiles: TileMap::default(),
             in_atomic: false,
             dirty_tiles: HashSet::default(),
             thumbnail_dirty: true,
+        }
+    }
+
+    pub fn add_mask(&mut self) {
+        if self.mask.is_none() {
+            self.mask = Some(LayerMask::default());
+            self.thumbnail_dirty = true;
+        }
+    }
+
+    pub fn delete_mask(&mut self) {
+        if self.mask.is_some() {
+            self.mask = None;
+            self.temp_mask_tiles.clear();
+            self.thumbnail_dirty = true;
+        }
+    }
+
+    pub fn apply_mask(&mut self) {
+        if let Some(mask) = self.mask.take() {
+            if mask.enabled {
+                for (coords, tile) in &mut self.tiles {
+                    if let Some(mask_tile) = mask.tiles.get(coords) {
+                        for y in 0..64 {
+                            for x in 0..64 {
+                                let mask_val = mask_tile[y * 64 + x] as f32 / 255.0;
+                                tile.pixels[y][x][3] = (tile.pixels[y][x][3] as f32 * mask_val) as u16;
+                            }
+                        }
+                        tile.is_dirty = true;
+                    }
+                }
+            }
+            self.temp_mask_tiles.clear();
+            self.thumbnail_dirty = true;
+        }
+    }
+
+    pub fn invert_mask(&mut self) {
+        if let Some(ref mut mask) = self.mask {
+            for mask_tile in mask.tiles.values_mut() {
+                for val in mask_tile.iter_mut() {
+                    *val = 255 - *val;
+                }
+            }
+            // Also sync the inverted mask values to temp_mask_tiles if they exist
+            for (coords, temp_tile) in &mut self.temp_mask_tiles {
+                if let Some(mask_tile) = mask.tiles.get(coords) {
+                    for y in 0..64 {
+                        for x in 0..64 {
+                            let v = mask_tile[y * 64 + x];
+                            let pixel_val = (v as u32 * 32768 / 255) as u16;
+                            temp_tile.pixels[y][x] = [pixel_val, pixel_val, pixel_val, pixel_val];
+                        }
+                    }
+                    temp_tile.is_dirty = true;
+                }
+            }
+            self.thumbnail_dirty = true;
+        }
+    }
+
+    pub fn sync_mask_tile_from_temp(&mut self, coords: (i32, i32)) {
+        if let Some(ref mut mask) = self.mask {
+            if let Some(temp_tile) = self.temp_mask_tiles.get(&coords) {
+                let mask_tile = mask.tiles.entry(coords).or_insert_with(|| Box::new([255; 4096]));
+                for y in 0..64 {
+                    for x in 0..64 {
+                        let val = temp_tile.pixels[y][x][3];
+                        mask_tile[y * 64 + x] = ((val as u32 * 255 + 16384) / 32768) as u8;
+                    }
+                }
+            } else {
+                mask.tiles.remove(&coords);
+            }
         }
     }
 
@@ -165,12 +267,12 @@ impl TiledSurface for Layer {
             self.dirty_tiles.insert((tx, ty));
         }
 
-        let tile = self.tiles.entry((tx, ty)).or_insert_with(Tile::new);
+        let tile = self.tiles.entry((tx, ty)).or_default();
         tile.is_dirty = true;
 
         // If lock_alpha is enabled and we are starting a dab, we will pass the lock_alpha
         // parameter down to the brush state, which is handled natively by Hokusai's blend mode.
-        &mut *tile.pixels
+        &mut tile.pixels
     }
 
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
@@ -189,6 +291,13 @@ impl TiledSurface for Layer {
         let tiles: Vec<(i32, i32)> = self.dirty_tiles.drain().collect();
         if !tiles.is_empty() {
             self.thumbnail_dirty = true;
+            if self.mask.is_some() {
+                for &coords in &tiles {
+                    if self.temp_mask_tiles.contains_key(&coords) {
+                        self.sync_mask_tile_from_temp(coords);
+                    }
+                }
+            }
         }
         tiles
     }
@@ -196,6 +305,7 @@ impl TiledSurface for Layer {
 
 pub type SelectionTile = [u8; 4096];
 
+#[derive(Clone)]
 pub struct SelectionMask {
     pub tiles: ahash::AHashMap<(i32, i32), Box<SelectionTile>>,
     pub is_active: bool,
@@ -226,5 +336,81 @@ impl SelectionMask {
 
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_delete_mask() {
+        let mut layer = Layer::new(1, "Test".to_string());
+        assert!(layer.mask.is_none());
+
+        layer.add_mask();
+        assert!(layer.mask.is_some());
+        let mask = layer.mask.as_ref().unwrap();
+        assert!(mask.enabled);
+        assert!(mask.linked);
+        assert!(mask.tiles.is_empty());
+
+        layer.delete_mask();
+        assert!(layer.mask.is_none());
+    }
+
+    #[test]
+    fn test_invert_mask() {
+        let mut layer = Layer::new(1, "Test".to_string());
+        layer.add_mask();
+        let mask = layer.mask.as_mut().unwrap();
+
+        // Insert a tile with known values
+        let mut tile = Box::new([0u8; 4096]);
+        tile[0] = 0;
+        tile[1] = 128;
+        tile[2] = 255;
+        mask.tiles.insert((0, 0), tile);
+
+        let _ = mask;
+        layer.invert_mask();
+
+        let mask = layer.mask.as_ref().unwrap();
+        let inverted = mask.tiles.get(&(0, 0)).unwrap();
+        assert_eq!(inverted[0], 255);
+        assert_eq!(inverted[1], 127);
+        assert_eq!(inverted[2], 0);
+    }
+
+    #[test]
+    fn test_apply_mask_multiplies_alpha() {
+        let mut layer = Layer::new(1, "Test".to_string());
+        layer.add_mask();
+
+        // Create a color tile with full alpha
+        let mut color_tile = Tile::new();
+        for y in 0..64 {
+            for x in 0..64 {
+                color_tile.pixels[y][x] = [32768, 0, 0, 32768]; // full red, full alpha
+            }
+        }
+        color_tile.is_dirty = true;
+        layer.tiles.insert((0, 0), color_tile);
+
+        // Create a mask tile with 50% opacity
+        let mut mask_tile = Box::new([0u8; 4096]);
+        for i in 0..4096 {
+            mask_tile[i] = 128; // ~50%
+        }
+        layer.mask.as_mut().unwrap().tiles.insert((0, 0), mask_tile);
+
+        layer.apply_mask();
+
+        // After apply, mask should be None
+        assert!(layer.mask.is_none());
+
+        // Alpha should be ~50% of original (32768 * 128/255 ≈ 16449)
+        let tile = layer.tiles.get(&(0, 0)).unwrap();
+        assert!((tile.pixels[0][3][3] as f32 - 16449.0).abs() < 10.0);
     }
 }

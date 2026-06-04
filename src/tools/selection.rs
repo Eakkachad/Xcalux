@@ -103,10 +103,10 @@ pub fn apply_rect_selection(
                             tile[idx] = val;
                         }
                         SelectionMode::Add => {
-                            tile[idx] = tile[idx].saturating_add(val).min(255);
+                            tile[idx] = tile[idx].saturating_add(val);
                         }
                         SelectionMode::Subtract => {
-                            tile[idx] = if val > tile[idx] { 0 } else { tile[idx] - val };
+                            tile[idx] = tile[idx].saturating_sub(val);
                         }
                         SelectionMode::Intersect => {
                             tile[idx] = tile[idx].min(val);
@@ -200,10 +200,10 @@ pub fn apply_ellipse_selection(
                             tile[idx] = val;
                         }
                         SelectionMode::Add => {
-                            tile[idx] = tile[idx].saturating_add(val).min(255);
+                            tile[idx] = tile[idx].saturating_add(val);
                         }
                         SelectionMode::Subtract => {
-                            tile[idx] = if val > tile[idx] { 0 } else { tile[idx] - val };
+                            tile[idx] = tile[idx].saturating_sub(val);
                         }
                         SelectionMode::Intersect => {
                             tile[idx] = tile[idx].min(val);
@@ -269,10 +269,10 @@ pub fn apply_lasso_selection(
                             tile[idx] = val;
                         }
                         SelectionMode::Add => {
-                            tile[idx] = tile[idx].saturating_add(val).min(255);
+                            tile[idx] = tile[idx].saturating_add(val);
                         }
                         SelectionMode::Subtract => {
-                            tile[idx] = if val > tile[idx] { 0 } else { tile[idx] - val };
+                            tile[idx] = tile[idx].saturating_sub(val);
                         }
                         SelectionMode::Intersect => {
                             tile[idx] = tile[idx].min(val);
@@ -300,6 +300,7 @@ fn point_in_polygon(px: f32, py: f32, polygon: &[(f32, f32)]) -> bool {
     inside
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn magic_wand_select(
     mask: &mut SelectionMask,
     layers: &[&Layer],
@@ -380,11 +381,10 @@ pub fn magic_wand_select(
             for &ny in &[cy - 1, cy + 1] {
                 if ny < 0 || ny >= canvas_height { continue; }
                 if visited_local.contains(&(cx, ny)) { continue; }
-                if crate::tools::fill::is_fillable(layers, active_layer, cx, ny, target_color, options).is_some() {
-                    if visited_local.insert((cx, ny)) {
+                if crate::tools::fill::is_fillable(layers, active_layer, cx, ny, target_color, options).is_some()
+                    && visited_local.insert((cx, ny)) {
                         queue.push_back((cx, ny));
                     }
-                }
             }
         }
     } else {
@@ -398,8 +398,8 @@ pub fn magic_wand_select(
             for tx in tx0..=tx1 {
                 for ly in 0..64 {
                     for lx in 0..64 {
-                        let wx = tx * 64 + lx as i32;
-                        let wy = ty * 64 + ly as i32;
+                        let wx = tx * 64 + lx;
+                        let wy = ty * 64 + ly;
                         if wx < 0 || wx >= canvas_width || wy < 0 || wy >= canvas_height {
                             continue;
                         }
@@ -464,7 +464,7 @@ pub fn magic_wand_select(
                     tile[idx] = val;
                 }
                 SelectionMode::Add => {
-                    tile[idx] = tile[idx].saturating_add(val).min(255);
+                    tile[idx] = tile[idx].saturating_add(val);
                 }
                 SelectionMode::Subtract => {
                     tile[idx] = tile[idx].saturating_sub(val);
@@ -663,5 +663,87 @@ pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i3
         let ly = y.rem_euclid(64) as usize;
         let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
         tile[ly * 64 + lx] = val;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canvas::SelectionMask;
+
+    fn make_pixel_mask(center_x: i32, center_y: i32, radius: i32, canvas_w: i32, canvas_h: i32) -> SelectionMask {
+        let mut mask = SelectionMask::new();
+        mask.is_active = true;
+        for y in 0..canvas_h {
+            for x in 0..canvas_w {
+                let dx = x - center_x;
+                let dy = y - center_y;
+                if dx * dx + dy * dy <= radius * radius {
+                    let tx = x.div_euclid(64);
+                    let ty = y.div_euclid(64);
+                    let lx = x.rem_euclid(64) as usize;
+                    let ly = y.rem_euclid(64) as usize;
+                    let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+                    tile[ly * 64 + lx] = 255;
+                }
+            }
+        }
+        mask
+    }
+
+    fn count_selected(mask: &SelectionMask) -> i32 {
+        let mut count = 0;
+        for tile in mask.tiles.values() {
+            for &v in tile.iter() {
+                if v > 0 { count += 1; }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn test_grow_selection_expands() {
+        let mut mask = make_pixel_mask(100, 100, 10, 200, 200);
+        let before = count_selected(&mask);
+        grow_selection(&mut mask, 3, 200, 200);
+        let after = count_selected(&mask);
+        assert!(after > before, "Grow should increase selected pixels ({} -> {})", before, after);
+    }
+
+    #[test]
+    fn test_shrink_selection_contracts() {
+        let mut mask = make_pixel_mask(100, 100, 20, 200, 200);
+        let before = count_selected(&mask);
+        shrink_selection(&mut mask, 3, 200, 200);
+        let after = count_selected(&mask);
+        assert!(after < before, "Shrink should decrease selected pixels ({} -> {})", before, after);
+    }
+
+    #[test]
+    fn test_grow_then_shrink_roundtrip() {
+        let mut mask = make_pixel_mask(100, 100, 10, 200, 200);
+        let original = count_selected(&mask);
+        grow_selection(&mut mask, 5, 200, 200);
+        shrink_selection(&mut mask, 5, 200, 200);
+        let after = count_selected(&mask);
+        let diff = (after - original).abs();
+        assert!(diff < 50, "Round-trip should approximately restore ({} -> {})", original, after);
+    }
+
+    #[test]
+    fn test_inactive_mask_grow() {
+        let mut mask = SelectionMask::new();
+        grow_selection(&mut mask, 5, 200, 200);
+        assert_eq!(count_selected(&mask), 0);
+    }
+
+    #[test]
+    fn test_grow_shrink_basic() {
+        let mut mask = make_pixel_mask(100, 100, 10, 200, 200);
+        let before = count_selected(&mask);
+        assert!(before > 0, "Initial mask should have pixels");
+        grow_selection(&mut mask, 2, 200, 200);
+        let grown = count_selected(&mask);
+        assert!(grown > before, "Grow should expand");
     }
 }

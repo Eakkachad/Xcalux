@@ -1,5 +1,6 @@
 use crate::app::PaintApp;
 use crate::canvas::Layer;
+use crate::history::HistoryCommand;
 use crate::tools::selection;
 
 pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
@@ -193,7 +194,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     egui::ComboBox::from_id_source("export_bg")
                         .selected_text(if bg_val == 0 { "Transparent" } else { "White" })
                         .show_ui(ui, |ui| {
-                            if ui.selectable_value(&mut bg_val, 0, "Transparent").changed() { }
+                            ui.selectable_value(&mut bg_val, 0, "Transparent").changed();
                             if ui.selectable_value(&mut bg_val, 1, "White").changed() { }
                         });
                     app.export_png_options.background = if bg_val == 0 {
@@ -229,6 +230,101 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
         }
         if close {
             app.show_export_png_dialog = false;
+        }
+    }
+
+    // 2b. EXPORT ORA DIALOG
+    if app.show_export_ora_dialog {
+        let mut close = false;
+        let mut do_export = false;
+        egui::Window::new("Export OpenRaster")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Export Canvas as OpenRaster").strong());
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("File path:");
+                    ui.text_edit_singleline(&mut app.export_ora_path);
+                });
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("ORA preserves layers, opacity, blend modes, and visibility.").weak().small());
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Export").clicked() { do_export = true; }
+                    if ui.button("Cancel").clicked() { close = true; }
+                });
+            });
+        if do_export {
+            let path = std::path::Path::new(&app.export_ora_path).to_path_buf();
+            let layers = app.layers.clone();
+            let layer_order = app.layer_order.clone();
+            let w = app.canvas_width;
+            let h = app.canvas_height;
+            std::thread::spawn(move || {
+                match crate::export::ora::export_ora(&path, &layers, &layer_order, w, h) {
+                    Ok(()) => log::info!("Exported ORA to {:?}", path),
+                    Err(e) => log::error!("ORA export failed: {:?}", e),
+                }
+            });
+            app.show_export_ora_dialog = false;
+        }
+        if close {
+            app.show_export_ora_dialog = false;
+        }
+    }
+
+    // 2c. IMPORT ORA DIALOG
+    if app.show_import_ora_dialog {
+        let mut close = false;
+        let mut do_import = false;
+        egui::Window::new("Import OpenRaster")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Import OpenRaster File").strong());
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("File path:");
+                    ui.text_edit_singleline(&mut app.import_ora_path);
+                });
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Warning: Importing will replace all existing layers.").weak().small());
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Import").clicked() { do_import = true; }
+                    if ui.button("Cancel").clicked() { close = true; }
+                });
+            });
+        if do_import {
+            let path = std::path::Path::new(&app.import_ora_path).to_path_buf();
+            match crate::export::ora::import_ora(&path) {
+                Ok(imported) => {
+                    app.canvas_width = imported.width;
+                    app.canvas_height = imported.height;
+                    crate::export::ora::apply_imported_canvas(
+                        imported,
+                        &mut app.layers,
+                        &mut app.layer_order,
+                        &mut app.layer_id_counter,
+                        &mut app.active_layer_id,
+                    );
+                    log::info!("Imported ORA from {:?}", path);
+                }
+                Err(e) => {
+                    log::error!("ORA import failed: {:?}", e);
+                }
+            }
+            app.show_import_ora_dialog = false;
+        }
+        if close {
+            app.show_import_ora_dialog = false;
         }
     }
 
@@ -352,6 +448,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
     // 4. GROW SELECTION DIALOG
     if app.show_grow_dialog {
         let mut close = false;
+        let mut grow_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Grow Selection")
             .collapsible(false)
             .resizable(false)
@@ -364,9 +461,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Grow").clicked() {
+                        let old_mask = Box::new(app.selection_mask.clone());
                         let grow_px = app.grow_pixels;
                         selection::grow_selection(&mut app.selection_mask, grow_px, app.canvas_width as i32, app.canvas_height as i32);
                         app.show_selection_overlay = app.selection_mask.is_active;
+                        let new_mask = Box::new(app.selection_mask.clone());
+                        grow_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
                         close = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -374,6 +474,9 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     }
                 });
             });
+        if let Some(cmd) = grow_cmd {
+            app.history.push_command(cmd);
+        }
         if close {
             app.show_grow_dialog = false;
         }
@@ -382,6 +485,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
     // 5. SHRINK SELECTION DIALOG
     if app.show_shrink_dialog {
         let mut close = false;
+        let mut shrink_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Shrink Selection")
             .collapsible(false)
             .resizable(false)
@@ -394,9 +498,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Shrink").clicked() {
+                        let old_mask = Box::new(app.selection_mask.clone());
                         let shrink_px = app.shrink_pixels;
                         selection::shrink_selection(&mut app.selection_mask, shrink_px, app.canvas_width as i32, app.canvas_height as i32);
                         app.show_selection_overlay = app.selection_mask.is_active;
+                        let new_mask = Box::new(app.selection_mask.clone());
+                        shrink_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
                         close = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -404,6 +511,9 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     }
                 });
             });
+        if let Some(cmd) = shrink_cmd {
+            app.history.push_command(cmd);
+        }
         if close {
             app.show_shrink_dialog = false;
         }
@@ -412,6 +522,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
     // 6. FEATHER SELECTION DIALOG
     if app.show_feather_dialog {
         let mut close = false;
+        let mut feather_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Feather Selection")
             .collapsible(false)
             .resizable(false)
@@ -424,9 +535,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Feather").clicked() {
+                        let old_mask = Box::new(app.selection_mask.clone());
                         let feather_px = app.feather_pixels;
                         selection::feather_selection(&mut app.selection_mask, feather_px, app.canvas_width as i32, app.canvas_height as i32);
                         app.show_selection_overlay = app.selection_mask.is_active;
+                        let new_mask = Box::new(app.selection_mask.clone());
+                        feather_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
                         close = true;
                     }
                     if ui.button("Cancel").clicked() {
@@ -434,8 +548,112 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     }
                 });
             });
+        if let Some(cmd) = feather_cmd {
+            app.history.push_command(cmd);
+        }
         if close {
             app.show_feather_dialog = false;
+        }
+    }
+
+    // 6.5 PRESSURE CALIBRATION DIALOG
+    if app.show_pressure_calibration {
+        let mut close = false;
+        egui::Window::new("Pressure Calibration")
+            .collapsible(false)
+            .resizable(true)
+            .default_size([400.0, 300.0])
+            .show(ctx, |ui| {
+                ui.label("Adjust the curve to map raw pressure (X) to calibrated pressure (Y).");
+                ui.add_space(8.0);
+
+                let plot_size = egui::Vec2::splat(200.0);
+                let (plot_rect, plot_response) = ui.allocate_exact_size(plot_size, egui::Sense::click_and_drag());
+
+                ui.painter().rect_filled(plot_rect, 0.0, egui::Color32::from_gray(40));
+                ui.painter().rect_stroke(plot_rect, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(100)));
+
+                // Draw grid
+                for i in 1..4 {
+                    let x = plot_rect.left() + plot_rect.width() * (i as f32 / 4.0);
+                    ui.painter().line_segment(
+                        [egui::Pos2::new(x, plot_rect.top()), egui::Pos2::new(x, plot_rect.bottom())],
+                        egui::Stroke::new(0.5, egui::Color32::from_gray(80)),
+                    );
+                    let y = plot_rect.top() + plot_rect.height() * (i as f32 / 4.0);
+                    ui.painter().line_segment(
+                        [egui::Pos2::new(plot_rect.left(), y), egui::Pos2::new(plot_rect.right(), y)],
+                        egui::Stroke::new(0.5, egui::Color32::from_gray(80)),
+                    );
+                }
+
+                // Draw curve
+                let mut sorted = app.pressure_response.points.clone();
+                sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+                for window in sorted.windows(2) {
+                    let p0 = egui::Pos2::new(
+                        plot_rect.left() + window[0].0 * plot_rect.width(),
+                        plot_rect.bottom() - window[0].1 * plot_rect.height(),
+                    );
+                    let p1 = egui::Pos2::new(
+                        plot_rect.left() + window[1].0 * plot_rect.width(),
+                        plot_rect.bottom() - window[1].1 * plot_rect.height(),
+                    );
+                    ui.painter().line_segment([p0, p1], egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255)));
+                }
+
+                // Draw and handle control points
+                let mut points = app.pressure_response.points.clone();
+                for i in 0..points.len() {
+                    let screen_pos = egui::Pos2::new(
+                        plot_rect.left() + points[i].0 * plot_rect.width(),
+                        plot_rect.bottom() - points[i].1 * plot_rect.height(),
+                    );
+                    let handle_size = 8.0;
+                    let handle_rect = egui::Rect::from_center_size(screen_pos, egui::Vec2::splat(handle_size));
+                    let handle_resp = ui.allocate_rect(handle_rect, egui::Sense::drag());
+
+                    let color = if i == 0 || i == points.len() - 1 {
+                        egui::Color32::from_rgb(255, 200, 100)
+                    } else {
+                        egui::Color32::from_rgb(100, 255, 100)
+                    };
+                    ui.painter().circle_filled(screen_pos, handle_size * 0.5, color);
+                    ui.painter().circle_stroke(screen_pos, handle_size * 0.5, egui::Stroke::new(1.0, egui::Color32::WHITE));
+
+                    if handle_resp.dragged() {
+                        if let Some(pos) = plot_response.interact_pointer_pos() {
+                            let nx = ((pos.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
+                            let ny = 1.0 - ((pos.y - plot_rect.top()) / plot_rect.height()).clamp(0.0, 1.0);
+                            points[i] = (nx, ny);
+                            if i == 0 { points[i].0 = 0.0; }
+                            if i == points.len() - 1 { points[i].0 = 1.0; }
+                        }
+                    }
+                }
+                app.pressure_response.points = points;
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Linear").clicked() {
+                        app.pressure_response = crate::pressure::PressureCurve::new_linear();
+                    }
+                    if ui.button("Steep").clicked() {
+                        app.pressure_response = crate::pressure::PressureCurve::new_steep();
+                    }
+                    if ui.button("Ease-in").clicked() {
+                        app.pressure_response = crate::pressure::PressureCurve::new_ease_in();
+                    }
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Close").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            app.show_pressure_calibration = false;
         }
     }
 
@@ -597,7 +815,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
                 
                 thread_local! {
-                    static DIAG_POINTS: std::cell::RefCell<Vec<egui::Pos2>> = std::cell::RefCell::new(Vec::new());
+                    static DIAG_POINTS: std::cell::RefCell<Vec<egui::Pos2>> = const { std::cell::RefCell::new(Vec::new()) };
                 }
                 
                 if pad_resp.dragged_by(egui::PointerButton::Primary) {

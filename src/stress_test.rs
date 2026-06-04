@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::canvas::Layer;
-use crate::history::{HistoryManager, TileSnapshot, UndoCommand};
+use crate::history::{HistoryManager, TileSnapshot, HistoryCommand};
 use crate::input::StrokeStabilizer;
 
 use hokusai::mapping::SettingValue;
@@ -171,6 +171,9 @@ fn test_history_recycler() {
 
     let mut history = HistoryManager::new(5); // Small depth for quick truncation triggers
     let mut layers = ahash::AHashMap::default();
+    let mut layer_order = vec![1u32];
+    let mut sel = crate::canvas::SelectionMask::new();
+    let mut active_id = 1u32;
 
     let mut layer = Layer::new(1, "History Layer".to_string());
     // Pre-create 3 tiles to have snapshots
@@ -206,15 +209,16 @@ fn test_history_recycler() {
             layer_id: 1,
             coords: (tx, 0),
             pixels: Some(recycled_pixels),
+            is_mask: false,
         });
     }
-    history.push_command(UndoCommand {
+    history.push_command(HistoryCommand::TileEdit {
         snapshots: cmd1_snapshots,
     });
 
     // Truncate Redo/Undo and ensure recycling to pool is zero allocation once pool is warm
-    history.undo(&mut layers);
-    history.redo(&mut layers);
+    history.undo(&mut layers, &mut layer_order, &mut sel, &mut active_id);
+    history.redo(&mut layers, &mut layer_order, &mut sel, &mut active_id);
 
     TRACKING.store(false, Ordering::Relaxed);
 

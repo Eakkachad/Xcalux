@@ -27,6 +27,7 @@ flate2 = "1.0"
 png = "0.17"
 image = { version = "0.24", default-features = false, features = ["png"] }
 toml_edit = { version = "0.25", default-features = false, features = ["parse"] }
+crc32fast = "1.4"
 
 # Aggressive Release Profiling for Maximum Hardware Throughput
 [profile.release]

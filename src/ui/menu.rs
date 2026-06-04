@@ -39,6 +39,17 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                         app.show_export_png_dialog = true;
                         ui.close_menu();
                     }
+                    if ui.button("Export OpenRaster (.ora)...").clicked() {
+                        app.show_export_ora_dialog = true;
+                        ui.close_menu();
+                    }
+                });
+                ui.separator();
+                ui.menu_button("Import", |ui| {
+                    if ui.button("Import OpenRaster (.ora)...").clicked() {
+                        app.show_import_ora_dialog = true;
+                        ui.close_menu();
+                    }
                 });
                 ui.separator();
                 if ui.button("Exit").clicked() {
@@ -54,7 +65,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     )
                     .clicked()
                 {
-                    app.history.undo(&mut app.layers);
+                    app.history.undo(&mut app.layers, &mut app.layer_order, &mut app.selection_mask, &mut app.active_layer_id);
                     ui.close_menu();
                 }
                 if ui
@@ -64,7 +75,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     )
                     .clicked()
                 {
-                    app.history.redo(&mut app.layers);
+                    app.history.redo(&mut app.layers, &mut app.layer_order, &mut app.selection_mask, &mut app.active_layer_id);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -134,6 +145,30 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     app.command(CommandId::FlattenImage);
                     ui.close_menu();
                 }
+                ui.separator();
+                ui.menu_button("Layer Mask", |ui| {
+                    let has_mask = app.layers.get(&app.active_layer_id).is_some_and(|l| l.mask.is_some());
+                    if ui.add_enabled(!has_mask, egui::Button::new("Add Mask")).clicked() {
+                        app.command(CommandId::AddLayerMask);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_mask, egui::Button::new("Delete Mask")).clicked() {
+                        app.command(CommandId::DeleteLayerMask);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_mask, egui::Button::new("Apply Mask")).clicked() {
+                        app.command(CommandId::ApplyLayerMask);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_mask, egui::Button::new("Invert Mask")).clicked() {
+                        app.command(CommandId::InvertLayerMask);
+                        ui.close_menu();
+                    }
+                    if ui.add_enabled(has_mask, egui::Button::new("Toggle Mask")).clicked() {
+                        app.command(CommandId::ToggleLayerMask);
+                        ui.close_menu();
+                    }
+                });
             });
 
             ui.menu_button("Canvas", |ui| {
@@ -234,6 +269,19 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     app.command(CommandId::InvertSelection);
                     ui.close_menu();
                 }
+                ui.separator();
+                if ui.button("Grow Selection...").clicked() {
+                    app.command(CommandId::SelectionGrow);
+                    ui.close_menu();
+                }
+                if ui.button("Shrink Selection...").clicked() {
+                    app.command(CommandId::SelectionShrink);
+                    ui.close_menu();
+                }
+                if ui.button("Feather Selection...").clicked() {
+                    app.command(CommandId::SelectionFeather);
+                    ui.close_menu();
+                }
             });
 
             ui.menu_button("View", |ui| {
@@ -245,11 +293,24 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     app.show_minimal_ui = !app.show_minimal_ui;
                     ui.close_menu();
                 }
+                if ui.button("Toggle Fullscreen (F11)").clicked() {
+                    app.command(CommandId::Fullscreen);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Performance HUD (F12)").clicked() {
+                    app.performance_hud.enabled = !app.performance_hud.enabled;
+                    ui.close_menu();
+                }
             });
 
             ui.menu_button("Help", |ui| {
                 if ui.button("Keyboard Shortcuts").clicked() {
                     app.show_shortcut_editor = true;
+                    ui.close_menu();
+                }
+                if ui.button("Tablet Diagnostics").clicked() {
+                    app.tablet_diagnostics.enabled = !app.tablet_diagnostics.enabled;
                     ui.close_menu();
                 }
             });
