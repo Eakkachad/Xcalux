@@ -1,6 +1,7 @@
 use crate::app::PaintApp;
 use crate::commands::CommandId;
 use crate::input::{StabilizerLevel, StabilizerMode};
+use crate::ui::layout::{PanelKind, PanelLocation};
 
 pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
     egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -339,18 +340,71 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
             });
 
             ui.menu_button("Window", |ui| {
-                ui.checkbox(&mut app.show_navigator, "Navigator");
-                ui.checkbox(&mut app.show_color_wheel, "Color Wheel");
-                ui.checkbox(&mut app.show_rgb_sliders, "RGB Sliders");
-                ui.checkbox(&mut app.show_hsv_sliders, "HSV Sliders");
-                ui.checkbox(&mut app.show_color_palette, "Color Palette");
-                ui.checkbox(&mut app.show_color_history, "Color History");
-                ui.checkbox(&mut app.show_layers_manager, "Layers Manager");
-                ui.checkbox(&mut app.show_reference_panel, "Reference Panel");
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::Navigator);
+                    if ui.checkbox(&mut v, "Navigator").changed() {
+                        app.workspace_layout.toggle_panel_visibility(PanelKind::Navigator);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::ColorWheel);
+                    if ui.checkbox(&mut v, "Color Wheel").changed() {
+                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorWheel);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::ColorSliders);
+                    if ui.checkbox(&mut v, "Color Sliders").changed() {
+                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorSliders);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::ColorPalette);
+                    if ui.checkbox(&mut v, "Color Palette").changed() {
+                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorPalette);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::ColorHistory);
+                    if ui.checkbox(&mut v, "Color History").changed() {
+                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorHistory);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::LayersManager);
+                    if ui.checkbox(&mut v, "Layers Manager").changed() {
+                        app.workspace_layout.toggle_panel_visibility(PanelKind::LayersManager);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::Reference);
+                    if ui.checkbox(&mut v, "Reference Panel").changed() {
+                        app.workspace_layout.toggle_panel_visibility(PanelKind::Reference);
+                    }
+                }
                 ui.checkbox(&mut app.show_symmetry_panel, "Symmetry Panel");
                 ui.checkbox(&mut app.show_tool_options, "Tool Options");
                 ui.separator();
                 ui.checkbox(&mut app.layer_panel_on_left, "Layer Panel on Left Side");
+                ui.separator();
+                if ui.button("Dock All Panels").clicked() {
+                    for panel in &mut app.workspace_layout.panels {
+                        match panel.kind {
+                            PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => {
+                                panel.location = PanelLocation::Left;
+                            }
+                            _ => {
+                                panel.location = PanelLocation::Right;
+                            }
+                        }
+                        panel.visible = true;
+                    }
+                    ui.close_menu();
+                }
+                if ui.button("Panel Layout...").clicked() {
+                    app.show_panel_layout_settings = true;
+                    ui.close_menu();
+                }
             });
 
             ui.menu_button("Help", |ui| {

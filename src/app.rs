@@ -239,15 +239,6 @@ pub struct PaintApp {
     pub show_symmetry: bool,
     pub quick_bar_visible: bool,
 
-    // Panel visibility flags (SAI style)
-    pub show_navigator: bool,
-    pub show_color_wheel: bool,
-    pub show_rgb_sliders: bool,
-    pub show_hsv_sliders: bool,
-    pub show_color_palette: bool,
-    pub show_color_history: bool,
-    pub show_layers_manager: bool,
-    pub show_reference_panel: bool,
     pub show_symmetry_panel: bool,
     pub show_tool_options: bool,
     pub layer_panel_on_left: bool,
@@ -288,6 +279,7 @@ pub struct PaintApp {
 
     // Shortcut editor state
     pub show_shortcut_editor: bool,
+    pub show_panel_layout_settings: bool,
     pub shortcut_search: String,
     pub shortcut_edit_idx: Option<usize>,
     pub shortcut_listen_idx: Option<usize>,
@@ -937,14 +929,6 @@ impl PaintApp {
             show_grid: false,
             show_symmetry: false,
             quick_bar_visible: true,
-            show_navigator: true,
-            show_color_wheel: true,
-            show_rgb_sliders: false,
-            show_hsv_sliders: false,
-            show_color_palette: false,
-            show_color_history: true,
-            show_layers_manager: true,
-            show_reference_panel: true,
             show_symmetry_panel: true,
             show_tool_options: true,
             layer_panel_on_left: false,
@@ -968,6 +952,7 @@ impl PaintApp {
             color_wheel_drag_zone: None,
             show_layer_properties: false,
             show_shortcut_editor: false,
+            show_panel_layout_settings: false,
             shortcut_search: String::new(),
             shortcut_edit_idx: None,
             shortcut_listen_idx: None,
@@ -3388,6 +3373,7 @@ impl eframe::App for PaintApp {
         self.regenerate_dirty_thumbnails();
         crate::ui::left_panel::draw_left_panel(self, ctx);
         crate::ui::right_panel::draw_right_panel(self, ctx);
+        crate::ui::render_floating_panels(self, ctx);
         crate::ui::status_bar::draw_status_bar(self, ctx);
 
         // 3. CENTRAL PANEL (DRAWING AREA)
@@ -5956,14 +5942,6 @@ mod tests {
             show_grid: false,
             show_symmetry: false,
             quick_bar_visible: false,
-            show_navigator: true,
-            show_color_wheel: true,
-            show_rgb_sliders: false,
-            show_hsv_sliders: false,
-            show_color_palette: false,
-            show_color_history: true,
-            show_layers_manager: true,
-            show_reference_panel: true,
             show_symmetry_panel: true,
             show_tool_options: true,
             layer_panel_on_left: false,
@@ -5986,6 +5964,7 @@ mod tests {
             color_wheel_drag_zone: None,
             show_layer_properties: false,
             show_shortcut_editor: false,
+            show_panel_layout_settings: false,
             shortcut_search: String::new(),
             shortcut_edit_idx: None,
             shortcut_listen_idx: None,
@@ -6192,14 +6171,6 @@ mod tests {
             show_grid: false,
             show_symmetry: false,
             quick_bar_visible: false,
-            show_navigator: true,
-            show_color_wheel: true,
-            show_rgb_sliders: false,
-            show_hsv_sliders: false,
-            show_color_palette: false,
-            show_color_history: true,
-            show_layers_manager: true,
-            show_reference_panel: true,
             show_symmetry_panel: true,
             show_tool_options: true,
             layer_panel_on_left: false,
@@ -6222,6 +6193,7 @@ mod tests {
             color_wheel_drag_zone: None,
             show_layer_properties: false,
             show_shortcut_editor: false,
+            show_panel_layout_settings: false,
             shortcut_search: String::new(),
             shortcut_edit_idx: None,
             shortcut_listen_idx: None,

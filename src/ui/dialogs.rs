@@ -4,6 +4,10 @@ use crate::history::HistoryCommand;
 use crate::tools::selection;
 
 pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
+    // Panel Layout Settings
+    if app.show_panel_layout_settings {
+        draw_panel_layout_settings(app, ctx);
+    }
     // 0. AUTOSAVE RECOVERY DIALOG
     if app.show_recovery_dialog && !app.recovery_files.is_empty() {
         let mut close = false;
@@ -876,5 +880,113 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
         if close {
             app.show_tablet_diagnostics = false;
         }
+    }
+}
+
+fn draw_panel_layout_settings(app: &mut PaintApp, ctx: &egui::Context) {
+    use crate::ui::layout::{PanelKind, PanelLocation};
+    let mut close = false;
+    egui::Window::new("Panel Layout Settings")
+        .resizable(true)
+        .default_size([360.0, 480.0])
+        .vscroll(true)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Dock All").clicked() {
+                    for panel in &mut app.workspace_layout.panels {
+                        match panel.kind {
+                            PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => {
+                                panel.location = PanelLocation::Left;
+                            }
+                            _ => {
+                                panel.location = PanelLocation::Right;
+                            }
+                        }
+                        panel.visible = true;
+                    }
+                }
+                if ui.button("Float All").clicked() {
+                    for panel in &mut app.workspace_layout.panels {
+                        panel.location = PanelLocation::Floating;
+                        panel.visible = true;
+                    }
+                }
+                if ui.button("Reset Defaults").clicked() {
+                    app.workspace_layout = Default::default();
+                }
+            });
+            ui.separator();
+            egui::Grid::new("panel_layout_grid")
+                .striped(true)
+                .min_col_width(80.0)
+                .show(ui, |ui| {
+                    ui.label("Panel");
+                    ui.label("Float");
+                    ui.label("Side");
+                    ui.label("Visible");
+                    ui.end_row();
+
+                    let panels = app.workspace_layout.panels.clone();
+                    for panel in &panels {
+                        let kind = panel.kind;
+                        let title = &panel.title;
+                        let p = app.workspace_layout.find_panel_mut(kind).unwrap();
+
+                        ui.label(title);
+                        let mut is_float = p.location == PanelLocation::Floating;
+                        if ui.checkbox(&mut is_float, "").changed() {
+                            if is_float {
+                                p.location = PanelLocation::Floating;
+                                p.visible = true;
+                            } else {
+                                p.location = match kind {
+                                    PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => PanelLocation::Left,
+                                    _ => PanelLocation::Right,
+                                };
+                            }
+                        }
+                        let side_label = match p.location {
+                            PanelLocation::Left => "Left",
+                            PanelLocation::Right => "Right",
+                            PanelLocation::Floating => "—",
+                            PanelLocation::Hidden => "—",
+                        };
+                        if p.location == PanelLocation::Left || p.location == PanelLocation::Right {
+                            let mut side_idx = if p.location == PanelLocation::Left { 0 } else { 1 };
+                            egui::ComboBox::from_id_source(egui::Id::new("panel_side").with(kind))
+                                .selected_text(side_label)
+                                .width(60.0)
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(side_idx == 0, "Left").clicked() {
+                                        side_idx = 0;
+                                        p.location = PanelLocation::Left;
+                                        p.visible = true;
+                                    }
+                                    if ui.selectable_label(side_idx == 1, "Right").clicked() {
+                                        side_idx = 1;
+                                        p.location = PanelLocation::Right;
+                                        p.visible = true;
+                                    }
+                                });
+                        } else {
+                            ui.label(side_label);
+                        }
+                        let mut vis = p.visible;
+                        if ui.checkbox(&mut vis, "").changed() {
+                            p.visible = vis;
+                            if !vis {
+                                p.location = PanelLocation::Hidden;
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+            ui.separator();
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+        });
+    if close {
+        app.show_panel_layout_settings = false;
     }
 }
