@@ -34,7 +34,7 @@ pub fn draw_quick_bar(app: &mut PaintApp, ctx: &egui::Context) {
 
                 // Group 5: Zoom Controls
                 ui.label("Zoom:");
-                if ui.button("-").clicked() {
+                if ui.button("-").on_hover_text("Zoom out").clicked() {
                     app.viewport_zoom = (app.viewport_zoom - 0.25).max(0.1);
                 }
                 let current_zoom = app.viewport_zoom;
@@ -58,7 +58,7 @@ pub fn draw_quick_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 if zoom_changed {
                     ctx.request_repaint();
                 }
-                if ui.button("+").clicked() {
+                if ui.button("+").on_hover_text("Zoom in").clicked() {
                     app.viewport_zoom = (app.viewport_zoom + 0.25).min(10.0);
                 }
                 ui.separator();

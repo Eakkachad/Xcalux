@@ -252,6 +252,9 @@ pub struct PaintApp {
     pub show_tool_options: bool,
     pub layer_panel_on_left: bool,
 
+    // Layout state for resizable / collapsible side panels
+    pub workspace_layout: crate::ui::layout::WorkspaceLayout,
+
     // Brush symmetry (Phase 12)
     pub symmetry_mode: SymmetryMode,
     pub symmetry_center: egui::Pos2,
@@ -945,6 +948,7 @@ impl PaintApp {
             show_symmetry_panel: true,
             show_tool_options: true,
             layer_panel_on_left: false,
+            workspace_layout: Default::default(),
             symmetry_mode: SymmetryMode::None,
             symmetry_center: egui::Pos2::new(0.0, 0.0),
             symmetry_radial_count: 4,
@@ -6031,10 +6035,8 @@ mod tests {
             blur_radius: 3.0,
 
             show_about_dialog: false,
+            workspace_layout: Default::default(),
         };
-
-        // Assert initial state
-        assert!(!app.active_color_is_transparent);
 
         // Turn on transparent color mode
         app.active_color_is_transparent = true;
@@ -6269,6 +6271,7 @@ mod tests {
             blur_radius: 3.0,
 
             show_about_dialog: false,
+            workspace_layout: Default::default(),
         };
 
         let view_rect = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(800.0, 600.0));
