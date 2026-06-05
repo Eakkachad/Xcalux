@@ -2,6 +2,38 @@ use crate::app::{PaintApp, PresetIcon, ToolId};
 use crate::input::{StabilizerLevel, StabilizerMode};
 use hokusai::{Brush, BrushSetting, BrushState};
 
+fn draw_dashed_line(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, stroke: egui::Stroke) {
+    let dist = p1.distance(p2);
+    if dist < 0.1 { return; }
+    let dash_len = 2.0;
+    let gap_len = 2.0;
+    let step = dash_len + gap_len;
+    let dir = (p2 - p1) / dist;
+    let mut t = 0.0;
+    while t < dist {
+        let start = p1 + dir * t;
+        let end = p1 + dir * (t + dash_len).min(dist);
+        painter.line_segment([start, end], stroke);
+        t += step;
+    }
+}
+
+fn draw_dashed_circle(painter: &egui::Painter, center: egui::Pos2, radius: f32, stroke: egui::Stroke) {
+    let circumference = 2.0 * std::f32::consts::PI * radius;
+    if circumference < 0.1 { return; }
+    let dash_len = 2.0;
+    let gap_len = 2.0;
+    let step = dash_len + gap_len;
+    let num_steps = (circumference / step).round() as i32;
+    for i in 0..num_steps {
+        let angle1 = (i as f32 / num_steps as f32) * 2.0 * std::f32::consts::PI;
+        let angle2 = ((i as f32 + 0.5) / num_steps as f32) * 2.0 * std::f32::consts::PI;
+        let start = center + egui::vec2(angle1.cos(), angle1.sin()) * radius;
+        let end = center + egui::vec2(angle2.cos(), angle2.sin()) * radius;
+        painter.line_segment([start, end], stroke);
+    }
+}
+
 pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
     if !app.show_minimal_ui {
         egui::SidePanel::left("left_sidebar")
@@ -17,352 +49,632 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                             ui.group(|ui| {
                                 ui.label("TOOLS / BRUSH PRESETS");
 
-                                egui::Grid::new("tools_grid")
-                                    .num_columns(4)
-                                    .spacing([4.0, 4.0])
-                                    .show(ui, |ui| {
-                                        let tools: [(ToolId, &str, &str); 18] = [
-                                            (ToolId::RectSelect, "▢", "Rect Selection [Ctrl+A/D/I]"),
-                                            (ToolId::EllipseSelect, "⭘", "Oval Selection"),
-                                            (ToolId::Lasso, "➰", "Lasso Selection"),
-                                            (ToolId::PolygonLasso, "⬠", "Polygon Lasso [Shift+L]"),
-                                            (ToolId::MagicWand, "🪄", "Magic Wand Selection"),
-                                            (ToolId::Move, "✥", "Move Tool"),
-                                            (ToolId::Transform, "⛶", "Transform Tool [Ctrl+T]"),
-                                            (ToolId::ColorPicker, "🧪", "Color Picker (Eyedropper) [Alt/I]"),
-                                            (ToolId::Hand, "✋", "Hand Panning Tool [Space]"),
-                                            (ToolId::Zoom, "🔍", "Zoom Canvas"),
-                                            (ToolId::RotateView, "⟳", "Rotate View [R]"),
-                                            (ToolId::Brush, "🖌", "Paint Brush [B]"),
-                                            (ToolId::Eraser, "🧼", "Eraser [E]"),
-                                            (ToolId::Fill, "🪣", "Fill Bucket [Alt+Backspace]"),
-                                            (ToolId::Gradient, "◑", "Gradient Tool [Shift+G]"),
-                                            (ToolId::Line, "╱", "Straight Line Tool [Shift]"),
-                                            (ToolId::Shape, "⬡", "Shape Tool"),
-                                            (ToolId::Reference, "◎", "Reference Layer Toggle"),
-                                        ];
-                                        for (i, (tool_id, label, tooltip)) in tools.iter().enumerate() {
-                                            let is_active = app.active_tool == *tool_id;
-                                            let btn = egui::Button::new(
-                                                egui::RichText::new(*label).size(12.0)
-                                            )
-                                            .selected(is_active);
-                                            let r = ui.add_sized([32.0, 28.0], btn).on_hover_text(*tooltip);
-                                            if r.clicked() {
-                                                app.active_tool = *tool_id;
-                                                if *tool_id == ToolId::Brush {
-                                                    if app.presets[app.active_preset_index].is_eraser {
-                                                        if let Some(pos) = app.presets.iter().position(|p| !p.is_eraser) {
-                                                            app.select_preset(pos);
-                                                        }
-                                                    }
-                                                } else if *tool_id == ToolId::Eraser
-                                                    && !app.presets[app.active_preset_index].is_eraser {
-                                                        if let Some(pos) = app.presets.iter().position(|p| p.is_eraser) {
-                                                            app.select_preset(pos);
-                                                        }
-                                                    }
-                                                ctx.request_repaint();
-                                            }
-                                            if i % 4 == 3 {
-                                                ui.end_row();
-                                            }
-                                        }
-                                    });
-                                ui.separator();
-                                ui.label("VECTOR TOOLS");
-                                egui::Grid::new("vector_tools_grid")
-                                    .num_columns(3)
-                                    .spacing([4.0, 4.0])
-                                    .show(ui, |ui| {
-                                        let vec_tools: [(ToolId, &str, &str); 3] = [
-                                            (ToolId::VectorPen, "✎", "Vector Pen — draw smooth vector strokes"),
-                                            (ToolId::Curve, "〰", "Curve — place 4 control points for a bezier curve"),
-                                            (ToolId::EditCP, "⬩", "Edit CP — select and drag control points"),
-                                        ];
-                                        for &(tool_id, label, tooltip) in &vec_tools {
-                                            let is_active = app.active_tool == tool_id;
-                                            let btn = egui::Button::new(
-                                                egui::RichText::new(label).size(12.0)
-                                            )
-                                            .selected(is_active);
-                                            let r = ui.add_sized([32.0, 28.0], btn).on_hover_text(tooltip);
-                                            if r.clicked() {
-                                                app.active_tool = tool_id;
-                                                if tool_id == ToolId::VectorPen {
-                                                    // If current layer is not vector, create one
-                                                    let is_vector = app.layers.get(&app.active_layer_id)
-                                                        .map(|l| l.kind == crate::canvas::LayerType::Vector)
-                                                        .unwrap_or(false);
-                                                    if !is_vector {
-                                                        app.create_vector_layer();
-                                                    }
-                                                }
-                                                ctx.request_repaint();
-                                            }
-                                        }
-                                    });
-                                ui.separator();
-                                ui.label("BRUSH PRESETS");
-                                ui.dnd_drop_zone::<usize, _>(egui::Frame::none(), |ui| {
-                                    egui::Grid::new("presets_grid")
-                                        .num_columns(4)
-                                        .spacing([4.0, 4.0])
-                                        .show(ui, |ui| {
-                                            let num_presets = app.presets.len();
-                                            for i in 0..16 {
-                                                if i < num_presets {
-                                                    let preset_icon = app.presets[i].icon;
-                                                    let preset_name = app.presets[i].name.clone();
-                                                    let is_selected = app.active_preset_index == i && matches!(app.active_tool, ToolId::Brush | ToolId::Eraser);
-                                                    
-                                                    let type_tag = match preset_icon {
-                                                        PresetIcon::Pencil => "[P]",
-                                                        PresetIcon::InkPen => "[I]",
-                                                        PresetIcon::PaintBrush => "[B]",
-                                                        PresetIcon::Smudge => "[S]",
-                                                        PresetIcon::Eraser => "[E]",
-                                                        PresetIcon::AirBrush => "[A]",
-                                                        PresetIcon::Water => "[W]",
-                                                        PresetIcon::Marker => "[M]",
-                                                        PresetIcon::BinaryPen => "[1]",
-                                                    };
-                                                    
-                                                    let stabilizer_tag = match app.presets[i].stabilizer_level {
-                                                        StabilizerLevel::Off => "Off".to_string(),
-                                                        StabilizerLevel::Level(val) => {
-                                                            match app.presets[i].stabilizer_mode {
-                                                                StabilizerMode::Ema => format!("EMA-{}", val),
-                                                                StabilizerMode::SpringMassDamper => format!("SP-{}", val),
-                                                            }
-                                                        }
-                                                        StabilizerLevel::SLevel(val) => format!("S-{}", val),
-                                                    };
-                                                    
-                                                    let label = format!("{}\n{}\n{}", type_tag, preset_name, stabilizer_tag);
-                                                    let btn = egui::Button::new(
-                                                        egui::RichText::new(&label)
-                                                            .size(8.0)
-                                                            .line_height(Some(9.0))
-                                                    )
-                                                    .selected(is_selected);
-                                                    
-                                                    let id = egui::Id::new("preset_dnd").with(i);
-                                                    let response = ui.dnd_drag_source(id, i, |ui| {
-                                                        let btn_response = ui.add_sized([32.0, 44.0], btn);
-                                                        
-                                                        // Border highlight if active (contrasting deep blue)
-                                                        if is_selected {
-                                                            ui.painter().rect_stroke(
-                                                                btn_response.rect.expand(1.0),
-                                                                3.0,
-                                                                egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))
-                                                            );
-                                                        }
-                                                        btn_response
-                                                    });
-                                                    
-                                                    if response.inner.clicked() {
-                                                        app.select_preset(i);
-                                                    }
-                                                    
-                                                    // Right click context menu
-                                                    response.inner.context_menu(|ui| {
-                                                        if ui.button("Rename").clicked() {
-                                                            app.renaming_preset_index = Some(i);
-                                                            app.rename_input = preset_name.clone();
-                                                            ui.close_menu();
-                                                        }
-                                                        if ui.button("Duplicate").clicked() {
-                                                            app.duplicate_preset(i);
-                                                            ui.close_menu();
-                                                        }
-                                                        ui.separator();
-                                                        let can_delete = num_presets > 1;
-                                                        if ui.add_enabled(can_delete, egui::Button::new("Delete")).clicked() {
-                                                            app.delete_preset(i);
-                                                            ui.close_menu();
-                                                        }
-                                                    });
+                                 egui::Grid::new("tools_grid")
+                                     .num_columns(5)
+                                     .spacing([4.0, 4.0])
+                                     .show(ui, |ui| {
+                                          // ROW 1
+                                          // 1. Rect Select (with right-click to Ellipse Select)
+                                          let active_shape_tool = if app.active_tool == ToolId::EllipseSelect {
+                                              ToolId::EllipseSelect
+                                          } else {
+                                              ToolId::RectSelect
+                                          };
+                                          let is_active = app.active_tool == ToolId::RectSelect || app.active_tool == ToolId::EllipseSelect;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let stroke = egui::Stroke::new(1.0, icon_color);
+                                          if active_shape_tool == ToolId::RectSelect {
+                                              let r = btn_resp.rect.shrink(6.0);
+                                              let w = r.width();
+                                              let h = r.height();
+                                              draw_dashed_line(ui.painter(), r.min, r.min + egui::vec2(w, 0.0), stroke);
+                                              draw_dashed_line(ui.painter(), r.min + egui::vec2(0.0, h), r.max, stroke);
+                                              draw_dashed_line(ui.painter(), r.min, r.min + egui::vec2(0.0, h), stroke);
+                                              draw_dashed_line(ui.painter(), r.min + egui::vec2(w, 0.0), r.max, stroke);
+                                          } else {
+                                              let center = btn_resp.rect.center();
+                                              draw_dashed_circle(ui.painter(), center, 7.0, stroke);
+                                          }
+                                          if btn_resp.clicked() {
+                                              app.active_tool = active_shape_tool;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.context_menu(|ui| {
+                                              if ui.selectable_label(app.active_tool == ToolId::RectSelect, "Rectangle Selection").clicked() {
+                                                  app.active_tool = ToolId::RectSelect;
+                                                  ui.close_menu();
+                                              }
+                                              if ui.selectable_label(app.active_tool == ToolId::EllipseSelect, "Ellipse Selection").clicked() {
+                                                  app.active_tool = ToolId::EllipseSelect;
+                                                  ui.close_menu();
+                                              }
+                                          });
+                                          btn_resp.on_hover_text("Selection Tool [Ctrl+A/D/I] (Right-click to change shape)");
 
-                                                    // DND Drop and Hover checking
-                                                    if let Some(source_idx) = response.response.dnd_hover_payload::<usize>() {
-                                                        let source_idx = *source_idx;
-                                                        if source_idx != i {
-                                                            let rect = response.response.rect;
-                                                            if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                                                let is_left = hover_pos.x < rect.center().x;
-                                                                let line_segment_x = if is_left { rect.left() } else { rect.right() };
-                                                                ui.painter().line_segment(
-                                                                    [egui::pos2(line_segment_x, rect.top()), egui::pos2(line_segment_x, rect.bottom())],
-                                                                    egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))
-                                                                );
-                                                            }
-                                                        }
-                                                    }
+                                          // 2. Lasso Select (with right-click to Polygon Lasso)
+                                          let active_lasso_tool = if app.active_tool == ToolId::PolygonLasso {
+                                              ToolId::PolygonLasso
+                                          } else {
+                                              ToolId::Lasso
+                                          };
+                                          let is_active = app.active_tool == ToolId::Lasso || app.active_tool == ToolId::PolygonLasso;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let stroke = egui::Stroke::new(1.0, icon_color);
+                                          let center = btn_resp.rect.center();
+                                          let points = [
+                                              center + egui::vec2(-6.0, -2.0),
+                                              center + egui::vec2(-4.0, -6.0),
+                                              center + egui::vec2(2.0, -6.0),
+                                              center + egui::vec2(6.0, -1.0),
+                                              center + egui::vec2(4.0, 5.0),
+                                              center + egui::vec2(-1.0, 6.0),
+                                              center + egui::vec2(-5.0, 3.0),
+                                          ];
+                                          if active_lasso_tool == ToolId::Lasso {
+                                              for idx in 0..points.len() {
+                                                  let p1 = points[idx];
+                                                  let p2 = points[(idx + 1) % points.len()];
+                                                  draw_dashed_line(ui.painter(), p1, p2, stroke);
+                                              }
+                                          } else {
+                                              for idx in 0..points.len() {
+                                                  let p1 = points[idx];
+                                                  let p2 = points[(idx + 1) % points.len()];
+                                                  draw_dashed_line(ui.painter(), p1, p2, stroke);
+                                                  ui.painter().rect_filled(egui::Rect::from_center_size(p1, egui::vec2(2.0, 2.0)), 0.0, icon_color);
+                                              }
+                                          }
+                                          if btn_resp.clicked() {
+                                              app.active_tool = active_lasso_tool;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.context_menu(|ui| {
+                                              if ui.selectable_label(app.active_tool == ToolId::Lasso, "Free Lasso Selection").clicked() {
+                                                  app.active_tool = ToolId::Lasso;
+                                                  ui.close_menu();
+                                              }
+                                              if ui.selectable_label(app.active_tool == ToolId::PolygonLasso, "Polygon Lasso Selection [Shift+L]").clicked() {
+                                                  app.active_tool = ToolId::PolygonLasso;
+                                                  ui.close_menu();
+                                              }
+                                          });
+                                          btn_resp.on_hover_text("Lasso Tool (Right-click to switch to Polygon)");
 
-                                                    if let Some(source_idx) = response.response.dnd_release_payload::<usize>() {
-                                                        let source_idx = *source_idx;
-                                                        if source_idx != i {
-                                                            if let Some(hover_pos) = response.response.interact_pointer_pos() {
-                                                                let is_left = hover_pos.x < response.response.rect.center().x;
-                                                                let mut target_idx = i;
-                                                                if !is_left {
-                                                                    target_idx += 1;
-                                                                }
-                                                                app.reorder_preset(source_idx, target_idx);
-                                                            }
-                                                        }
-                                                    }
-                                                } else {
-                                                    // Empty slot placeholder
-                                                    let btn = egui::Button::new(
-                                                        egui::RichText::new("+")
-                                                            .size(16.0)
-                                                            .color(egui::Color32::GRAY)
-                                                    )
-                                                    .fill(egui::Color32::from_gray(245));
-                                                    let btn_response = ui.add_sized([32.0, 44.0], btn);
-                                                
-                                                // Left click or right click context menu to create
-                                                let mut show_creation_menu = false;
-                                                if btn_response.clicked() {
-                                                    show_creation_menu = true;
-                                                }
-                                                btn_response.context_menu(|ui| {
-                                                    ui.label("Create New Brush:");
-                                                    if ui.button("Pencil").clicked() {
-                                                        app.create_preset(PresetIcon::Pencil);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Ink Pen").clicked() {
-                                                        app.create_preset(PresetIcon::InkPen);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Paint Brush").clicked() {
-                                                        app.create_preset(PresetIcon::PaintBrush);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Smudge").clicked() {
-                                                        app.create_preset(PresetIcon::Smudge);
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("Eraser").clicked() {
-                                                        app.create_preset(PresetIcon::Eraser);
-                                                        ui.close_menu();
-                                                    }
-                                                    ui.separator();
-                                                    ui.label("Import Brush Preset:");
-                                                    ui.horizontal(|ui| {
-                                                        ui.label("Path:");
-                                                        ui.text_edit_singleline(&mut app.brush_import_path);
-                                                    });
-                                                    if ui.button("Load .artybrush").clicked() {
-                                                        let path = std::path::Path::new(&app.brush_import_path);
-                                                        match crate::brush_io::load_artybrush(path, &mut app.brush_textures) {
-                                                            Ok(mut new_preset) => {
-                                                                app.preset_id_counter += 1;
-                                                                new_preset.id = app.preset_id_counter;
+                                          // 3. Magic Wand
+                                          let is_active = app.active_tool == ToolId::MagicWand;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let center = btn_resp.rect.center();
+                                          let stroke_wand = egui::Stroke::new(1.8, icon_color);
+                                          ui.painter().line_segment([center + egui::vec2(-6.0, 6.0), center + egui::vec2(1.0, -1.0)], stroke_wand);
+                                          ui.painter().circle_filled(center + egui::vec2(1.0, -1.0), 1.5, icon_color);
+                                          let tip = center + egui::vec2(1.0, -1.0);
+                                          let sparkle_stroke = egui::Stroke::new(1.0, icon_color);
+                                          ui.painter().line_segment([tip + egui::vec2(4.0, -4.0), tip + egui::vec2(6.0, -6.0)], sparkle_stroke);
+                                          ui.painter().line_segment([tip + egui::vec2(0.0, -5.0), tip + egui::vec2(0.0, -7.0)], sparkle_stroke);
+                                          ui.painter().line_segment([tip + egui::vec2(5.0, 0.0), tip + egui::vec2(7.0, 0.0)], sparkle_stroke);
+                                          if btn_resp.clicked() {
+                                              app.active_tool = ToolId::MagicWand;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.on_hover_text("Magic Wand Selection");
 
-                                                                let mut brush = Brush::new();
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::Radius, new_preset.radius_log);
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::Opaque, new_preset.opacity);
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::Hardness, new_preset.hardness);
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::Smudge, new_preset.color_blending);
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::SmudgeLength, new_preset.dilution);
-                                                                if new_preset.is_eraser {
-                                                                    PaintApp::set_constant(&mut brush, BrushSetting::Eraser, 1.0);
-                                                                }
+                                          // 4. Transform (Selection Move/Transform)
+                                          let is_active = app.active_tool == ToolId::Transform;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let r = btn_resp.rect.shrink(6.0);
+                                          let stroke = egui::Stroke::new(1.0, icon_color);
+                                          ui.painter().rect_stroke(r, 0.0, stroke);
+                                          let h_size = egui::vec2(2.5, 2.5);
+                                          let corners = [
+                                              r.left_top(),
+                                              r.right_top(),
+                                              r.left_bottom(),
+                                              r.right_bottom(),
+                                              r.center_top(),
+                                              r.center_bottom(),
+                                              r.left_center(),
+                                              r.right_center(),
+                                          ];
+                                          for &c in &corners {
+                                              ui.painter().rect_filled(egui::Rect::from_center_size(c, h_size), 0.0, icon_color);
+                                          }
+                                          if btn_resp.clicked() {
+                                              app.active_tool = ToolId::Transform;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.on_hover_text("Transform Tool [Ctrl+T]");
 
-                                                                app.presets.push(new_preset);
-                                                                app.brushes.push(brush);
-                                                                app.brush_states.push(BrushState::default());
+                                          // 5. Text (Dummy)
+                                          let btn = egui::Button::new("").selected(false);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = ui.style().visuals.widgets.noninteractive.text_color();
+                                          let center = btn_resp.rect.center();
+                                          ui.painter().text(
+                                              center,
+                                              egui::Align2::CENTER_CENTER,
+                                              "T",
+                                              egui::FontId::new(14.0, egui::FontFamily::Proportional),
+                                              icon_color,
+                                          );
+                                          btn_resp.on_hover_text("Text Tool (Not implemented)");
+                                          ui.end_row();
 
-                                                                let new_idx = app.presets.len() - 1;
-                                                                app.select_preset(new_idx);
-                                                                log::info!("Imported .artybrush successfully!");
-                                                            }
-                                                            Err(e) => {
-                                                                log::error!("Failed to import .artybrush: {:?}", e);
-                                                            }
-                                                        }
-                                                        ui.close_menu();
-                                                    }
-                                                    if ui.button("⚡ Extract & Import .sut").clicked() {
-                                                        let path = std::path::Path::new(&app.brush_import_path);
-                                                        match crate::brush_io::extract_sut_texture(path) {
-                                                            Ok((gray_bytes, w, h)) => {
-                                                                let mut final_bytes = vec![255u8; 256 * 256];
-                                                                for y in 0..h.min(256) {
-                                                                    for x in 0..w.min(256) {
-                                                                        final_bytes[(y * 256 + x) as usize] = gray_bytes[(y * w + x) as usize];
-                                                                    }
-                                                                }
-                                                                let name = path.file_stem()
-                                                                    .and_then(|s| s.to_str())
-                                                                    .unwrap_or("SUT Brush")
-                                                                    .to_string();
-                                                                app.brush_textures.push(crate::app::BrushTexture {
-                                                                    name: format!("[sut] {}", name),
-                                                                    width: 256,
-                                                                    height: 256,
-                                                                    pixels: final_bytes,
-                                                                });
-                                                                let texture_id = (app.brush_textures.len() - 1) as u32;
+                                          // ROW 2
+                                          // 6. Move Layer
+                                          let is_active = app.active_tool == ToolId::Move;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let center = btn_resp.rect.center();
+                                          let stroke = egui::Stroke::new(1.5, icon_color);
+                                          ui.painter().line_segment([center - egui::vec2(7.0, 0.0), center + egui::vec2(7.0, 0.0)], stroke);
+                                          ui.painter().line_segment([center - egui::vec2(0.0, 7.0), center + egui::vec2(0.0, 7.0)], stroke);
+                                          // Arrowheads
+                                          ui.painter().line_segment([center - egui::vec2(7.0, 0.0), center - egui::vec2(4.0, -3.0)], stroke);
+                                          ui.painter().line_segment([center - egui::vec2(7.0, 0.0), center - egui::vec2(4.0, 3.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(7.0, 0.0), center + egui::vec2(4.0, -3.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(7.0, 0.0), center + egui::vec2(4.0, 3.0)], stroke);
+                                          ui.painter().line_segment([center - egui::vec2(0.0, 7.0), center - egui::vec2(-3.0, 4.0)], stroke);
+                                          ui.painter().line_segment([center - egui::vec2(0.0, 7.0), center - egui::vec2(3.0, 4.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(0.0, 7.0), center + egui::vec2(-3.0, 4.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(0.0, 7.0), center + egui::vec2(3.0, 4.0)], stroke);
+                                          if btn_resp.clicked() {
+                                              app.active_tool = ToolId::Move;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.on_hover_text("Move Layer Tool");
 
-                                                                app.preset_id_counter += 1;
-                                                                let new_preset = crate::app::BrushPreset {
-                                                                    id: app.preset_id_counter,
-                                                                    name: path.file_stem().and_then(|s| s.to_str()).unwrap_or("SUT Brush").to_string(),
-                                                                    icon: PresetIcon::PaintBrush,
-                                                                    radius_log: 2.0,
-                                                                    opacity: 1.0,
-                                                                    hardness: 0.8,
-                                                                    min_size_fraction: 0.2,
-                                                                    color_blending: 0.0,
-                                                                    dilution: 0.0,
-                                                                    is_eraser: false,
-                                                                    texture_id,
-                                                                    texture_scale: 1.0,
-                                                                    bristle_id: 0,
-                                                                    stabilizer_level: StabilizerLevel::default(),
-                                                                    stabilizer_mode: StabilizerMode::SpringMassDamper,
-                                                                    spacing: 2.0,
-                                                                    density: 1.0,
-                                                                };
+                                          // 7. Zoom View
+                                          let is_active = app.active_tool == ToolId::Zoom;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let center = btn_resp.rect.center();
+                                          let stroke = egui::Stroke::new(1.5, icon_color);
+                                          let lens_center = center + egui::vec2(-2.0, -2.0);
+                                          ui.painter().circle_stroke(lens_center, 4.0, stroke);
+                                          ui.painter().line_segment([lens_center + egui::vec2(2.8, 2.8), center + egui::vec2(6.0, 6.0)], egui::Stroke::new(2.5, icon_color));
+                                          if btn_resp.clicked() {
+                                              app.active_tool = ToolId::Zoom;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.on_hover_text("Zoom Canvas");
 
-                                                                let mut brush = Brush::new();
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::Radius, new_preset.radius_log);
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::Opaque, new_preset.opacity);
-                                                                PaintApp::set_constant(&mut brush, BrushSetting::Hardness, new_preset.hardness);
+                                          // 8. Rotate View
+                                          let is_active = app.active_tool == ToolId::RotateView;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let center = btn_resp.rect.center();
+                                          let stroke = egui::Stroke::new(1.5, icon_color);
+                                          let radius = 5.5;
+                                          let tip = center + egui::vec2(0.0, -radius);
+                                          let steps = 12;
+                                          for i in 0..steps {
+                                              let a1 = -std::f32::consts::FRAC_PI_2 + (i as f32 / steps as f32) * (1.5 * std::f32::consts::PI);
+                                              let a2 = -std::f32::consts::FRAC_PI_2 + ((i + 1) as f32 / steps as f32) * (1.5 * std::f32::consts::PI);
+                                              let p1 = center + egui::vec2(a1.cos(), a1.sin()) * radius;
+                                              let p2 = center + egui::vec2(a2.cos(), a2.sin()) * radius;
+                                              ui.painter().line_segment([p1, p2], stroke);
+                                          }
+                                          ui.painter().line_segment([tip, tip + egui::vec2(-3.0, -3.0)], stroke);
+                                          ui.painter().line_segment([tip, tip + egui::vec2(-3.0, 3.0)], stroke);
+                                          if btn_resp.clicked() {
+                                              app.active_tool = ToolId::RotateView;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.on_hover_text("Rotate View [R]");
 
-                                                                app.presets.push(new_preset);
-                                                                app.brushes.push(brush);
-                                                                app.brush_states.push(BrushState::default());
+                                          // 9. Hand Panning
+                                          let is_active = app.active_tool == ToolId::Hand;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let center = btn_resp.rect.center();
+                                          let stroke = egui::Stroke::new(1.2, icon_color);
+                                          let p_base = center + egui::vec2(0.0, 3.0);
+                                          ui.painter().line_segment([p_base - egui::vec2(4.0, 0.0), p_base + egui::vec2(4.0, 0.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(-3.0, 3.0), center + egui::vec2(-3.0, -4.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(-1.0, 3.0), center + egui::vec2(-1.0, -6.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(1.0, 3.0), center + egui::vec2(1.0, -5.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(3.0, 3.0), center + egui::vec2(3.0, -3.0)], stroke);
+                                          ui.painter().line_segment([center + egui::vec2(-3.0, 1.0), center + egui::vec2(-5.0, -1.0)], stroke);
+                                          if btn_resp.clicked() {
+                                              app.active_tool = ToolId::Hand;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.on_hover_text("Hand Panning Tool [Space]");
 
-                                                                let new_idx = app.presets.len() - 1;
-                                                                app.select_preset(new_idx);
-                                                                log::info!("Extracted and imported SUT brush successfully!");
-                                                            }
-                                                            Err(e) => {
-                                                                log::error!("Failed to extract SUT: {:?}", e);
-                                                            }
-                                                        }
-                                                        ui.close_menu();
-                                                    }
-                                                });
-                                                
-                                                if show_creation_menu {
-                                                    ui.ctx().memory_mut(|mem| mem.open_popup(btn_response.id.with("context_menu")));
-                                                }
-                                            }
-                                            
-                                            if i % 4 == 3 {
-                                                ui.end_row();
-                                            }
-                                        }
-                                    });
-                                });
+                                          // 10. Color Picker (Eyedropper)
+                                          let is_active = app.active_tool == ToolId::ColorPicker;
+                                          let btn = egui::Button::new("").selected(is_active);
+                                          let btn_resp = ui.add_sized([26.0, 26.0], btn);
+                                          let icon_color = if is_active {
+                                              egui::Color32::from_rgb(0, 120, 215)
+                                          } else {
+                                              ui.style().visuals.widgets.inactive.text_color()
+                                          };
+                                          let center = btn_resp.rect.center();
+                                          let stroke = egui::Stroke::new(1.5, icon_color);
+                                          ui.painter().line_segment([center + egui::vec2(5.0, -5.0), center + egui::vec2(-1.0, 1.0)], stroke);
+                                          ui.painter().circle_filled(center + egui::vec2(5.0, -5.0), 2.5, icon_color);
+                                          ui.painter().line_segment([center + egui::vec2(-1.0, 1.0), center + egui::vec2(-4.0, 4.0)], stroke);
+                                          if btn_resp.clicked() {
+                                              app.active_tool = ToolId::ColorPicker;
+                                              ctx.request_repaint();
+                                          }
+                                          btn_resp.on_hover_text("Color Picker (Eyedropper) [Alt/I]");
+                                          ui.end_row();
+                                     });
+                                 ui.separator();
+                                 ui.label("VECTOR TOOLS");
+                                 egui::Grid::new("vector_tools_grid")
+                                     .num_columns(3)
+                                     .spacing([4.0, 4.0])
+                                     .show(ui, |ui| {
+                                         let vec_tools: [(ToolId, &str, &str); 3] = [
+                                             (ToolId::VectorPen, "✎", "Vector Pen — draw smooth vector strokes"),
+                                             (ToolId::Curve, "〰", "Curve — place 4 control points for a bezier curve"),
+                                             (ToolId::EditCP, "⬩", "Edit CP — select and drag control points"),
+                                         ];
+                                         for &(tool_id, label, tooltip) in &vec_tools {
+                                             let is_active = app.active_tool == tool_id;
+                                             let btn = egui::Button::new(
+                                                 egui::RichText::new(label).size(12.0)
+                                             )
+                                             .selected(is_active);
+                                             let r = ui.add_sized([26.0, 26.0], btn).on_hover_text(tooltip);
+                                             if r.clicked() {
+                                                 app.active_tool = tool_id;
+                                                 if tool_id == ToolId::VectorPen {
+                                                     let is_vector = app.layers.get(&app.active_layer_id)
+                                                         .map(|l| l.kind == crate::canvas::LayerType::Vector)
+                                                         .unwrap_or(false);
+                                                     if !is_vector {
+                                                         app.create_vector_layer();
+                                                     }
+                                                 }
+                                                 ctx.request_repaint();
+                                             }
+                                         }
+                                     });
+                                 ui.separator();
+                                 ui.label("BRUSH PRESETS");
+                                 ui.dnd_drop_zone::<usize, _>(egui::Frame::none(), |ui| {
+                                     egui::Grid::new("presets_grid")
+                                         .num_columns(4)
+                                         .spacing([4.0, 4.0])
+                                         .show(ui, |ui| {
+                                             let num_presets = app.presets.len();
+                                             for i in 0..16 {
+                                                 if i < num_presets {
+                                                     let preset_icon = app.presets[i].icon;
+                                                     let preset_name = app.presets[i].name.clone();
+                                                     let is_selected = app.active_preset_index == i && matches!(app.active_tool, ToolId::Brush | ToolId::Eraser);
+                                                     
+                                                     let type_tag = match preset_icon {
+                                                         PresetIcon::Pencil => "P",
+                                                         PresetIcon::InkPen => "I",
+                                                         PresetIcon::PaintBrush => "B",
+                                                         PresetIcon::Smudge => "S",
+                                                         PresetIcon::Eraser => "E",
+                                                         PresetIcon::AirBrush => "A",
+                                                         PresetIcon::Water => "W",
+                                                         PresetIcon::Marker => "M",
+                                                         PresetIcon::BinaryPen => "1",
+                                                     };
+                                                     
+                                                     let id = egui::Id::new("preset_dnd").with(i);
+                                                     let response = ui.dnd_drag_source(id, i, |ui| {
+                                                         let (rect, btn_response) = ui.allocate_exact_size(egui::vec2(34.0, 30.0), egui::Sense::click());
+                                                         
+                                                         let (bg_color, stroke_color, text_color) = if is_selected {
+                                                             (
+                                                                 egui::Color32::from_rgb(215, 225, 255),
+                                                                 egui::Color32::from_rgb(120, 150, 255),
+                                                                 egui::Color32::from_rgb(0, 50, 150),
+                                                             )
+                                                         } else if btn_response.hovered() {
+                                                             (
+                                                                 egui::Color32::from_gray(245),
+                                                                 egui::Color32::from_gray(200),
+                                                                 egui::Color32::BLACK,
+                                                             )
+                                                         } else {
+                                                             (
+                                                                 egui::Color32::WHITE,
+                                                                 egui::Color32::from_gray(225),
+                                                                 egui::Color32::from_gray(60),
+                                                             )
+                                                         };
+
+                                                         ui.painter().rect_filled(rect, 2.0, bg_color);
+                                                         ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, stroke_color));
+
+                                                         let name_len = preset_name.len();
+                                                         let font_size = if name_len > 8 {
+                                                             5.5
+                                                         } else if name_len > 6 {
+                                                             6.5
+                                                         } else {
+                                                             8.0
+                                                         };
+                                                         let name_font = egui::FontId::proportional(font_size);
+                                                         
+                                                         let display_name = if name_len > 9 {
+                                                             format!("{}..", &preset_name[0..7])
+                                                         } else {
+                                                             preset_name.clone()
+                                                         };
+                                                         
+                                                         let name_pos = rect.min + egui::vec2(3.0, 9.0);
+                                                         ui.painter().text(
+                                                             name_pos,
+                                                             egui::Align2::LEFT_BOTTOM,
+                                                             display_name,
+                                                             name_font,
+                                                             text_color,
+                                                         );
+
+                                                         let icon_font = egui::FontId::proportional(8.0);
+                                                         let icon_pos = rect.max - egui::vec2(3.0, 3.0);
+                                                         ui.painter().text(
+                                                             icon_pos,
+                                                             egui::Align2::RIGHT_BOTTOM,
+                                                             type_tag,
+                                                             icon_font,
+                                                             text_color,
+                                                         );
+
+                                                         btn_response
+                                                     });
+                                                     
+                                                     if response.inner.clicked() {
+                                                         app.select_preset(i);
+                                                     }
+                                                     
+                                                     response.inner.context_menu(|ui| {
+                                                         if ui.button("Rename").clicked() {
+                                                             app.renaming_preset_index = Some(i);
+                                                             app.rename_input = preset_name.clone();
+                                                             ui.close_menu();
+                                                         }
+                                                         if ui.button("Duplicate").clicked() {
+                                                             app.duplicate_preset(i);
+                                                             ui.close_menu();
+                                                         }
+                                                         ui.separator();
+                                                         let can_delete = num_presets > 1;
+                                                         if ui.add_enabled(can_delete, egui::Button::new("Delete")).clicked() {
+                                                             app.delete_preset(i);
+                                                             ui.close_menu();
+                                                         }
+                                                     });
+ 
+                                                     if let Some(source_idx) = response.response.dnd_hover_payload::<usize>() {
+                                                         let source_idx = *source_idx;
+                                                         if source_idx != i {
+                                                             let rect = response.response.rect;
+                                                             if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                                                                 let is_left = hover_pos.x < rect.center().x;
+                                                                 let line_segment_x = if is_left { rect.left() } else { rect.right() };
+                                                                 ui.painter().line_segment(
+                                                                     [egui::pos2(line_segment_x, rect.top()), egui::pos2(line_segment_x, rect.bottom())],
+                                                                     egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))
+                                                                 );
+                                                             }
+                                                         }
+                                                     }
+ 
+                                                     if let Some(source_idx) = response.response.dnd_release_payload::<usize>() {
+                                                         let source_idx = *source_idx;
+                                                         if source_idx != i {
+                                                             if let Some(hover_pos) = response.response.interact_pointer_pos() {
+                                                                 let is_left = hover_pos.x < response.response.rect.center().x;
+                                                                 let mut target_idx = i;
+                                                                 if !is_left {
+                                                                     target_idx += 1;
+                                                                 }
+                                                                 app.reorder_preset(source_idx, target_idx);
+                                                             }
+                                                         }
+                                                     }
+                                                 } else {
+                                                     let (rect, btn_response) = ui.allocate_exact_size(egui::vec2(34.0, 30.0), egui::Sense::click());
+                                                     let bg_color = if btn_response.hovered() {
+                                                         egui::Color32::from_gray(245)
+                                                     } else {
+                                                         egui::Color32::WHITE
+                                                     };
+                                                     ui.painter().rect_filled(rect, 2.0, bg_color);
+                                                     ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(225)));
+
+                                                     ui.painter().text(
+                                                         rect.center(),
+                                                         egui::Align2::CENTER_CENTER,
+                                                         "+",
+                                                         egui::FontId::proportional(14.0),
+                                                         egui::Color32::GRAY,
+                                                     );
+                                                 
+                                                     let mut show_creation_menu = false;
+                                                     if btn_response.clicked() {
+                                                         show_creation_menu = true;
+                                                     }
+                                                     btn_response.context_menu(|ui| {
+                                                         ui.label("Create New Brush:");
+                                                         if ui.button("Pencil").clicked() {
+                                                             app.create_preset(PresetIcon::Pencil);
+                                                             ui.close_menu();
+                                                         }
+                                                         if ui.button("Ink Pen").clicked() {
+                                                             app.create_preset(PresetIcon::InkPen);
+                                                             ui.close_menu();
+                                                         }
+                                                         if ui.button("Paint Brush").clicked() {
+                                                             app.create_preset(PresetIcon::PaintBrush);
+                                                             ui.close_menu();
+                                                         }
+                                                         if ui.button("Smudge").clicked() {
+                                                             app.create_preset(PresetIcon::Smudge);
+                                                             ui.close_menu();
+                                                         }
+                                                         if ui.button("Eraser").clicked() {
+                                                             app.create_preset(PresetIcon::Eraser);
+                                                             ui.close_menu();
+                                                         }
+                                                         ui.separator();
+                                                         ui.label("Import Brush Preset:");
+                                                         ui.horizontal(|ui| {
+                                                             ui.label("Path:");
+                                                             ui.text_edit_singleline(&mut app.brush_import_path);
+                                                         });
+                                                         if ui.button("Load .artybrush").clicked() {
+                                                             let path = std::path::Path::new(&app.brush_import_path);
+                                                             match crate::brush_io::load_artybrush(path, &mut app.brush_textures) {
+                                                                 Ok(mut new_preset) => {
+                                                                     app.preset_id_counter += 1;
+                                                                     new_preset.id = app.preset_id_counter;
+ 
+                                                                     let mut brush = Brush::new();
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::Radius, new_preset.radius_log);
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::Opaque, new_preset.opacity);
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::Hardness, new_preset.hardness);
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::Smudge, new_preset.color_blending);
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::SmudgeLength, new_preset.dilution);
+                                                                     if new_preset.is_eraser {
+                                                                         PaintApp::set_constant(&mut brush, BrushSetting::Eraser, 1.0);
+                                                                     }
+ 
+                                                                     app.presets.push(new_preset);
+                                                                     app.brushes.push(brush);
+                                                                     app.brush_states.push(BrushState::default());
+ 
+                                                                     let new_idx = app.presets.len() - 1;
+                                                                     app.select_preset(new_idx);
+                                                                     log::info!("Imported .artybrush successfully!");
+                                                                 }
+                                                                 Err(e) => {
+                                                                     log::error!("Failed to import .artybrush: {:?}", e);
+                                                                 }
+                                                             }
+                                                             ui.close_menu();
+                                                         }
+                                                         if ui.button("⚡ Extract & Import .sut").clicked() {
+                                                             let path = std::path::Path::new(&app.brush_import_path);
+                                                             match crate::brush_io::extract_sut_texture(path) {
+                                                                 Ok((gray_bytes, w, h)) => {
+                                                                     let mut final_bytes = vec![255u8; 256 * 256];
+                                                                     for y in 0..h.min(256) {
+                                                                         for x in 0..w.min(256) {
+                                                                             final_bytes[(y * 256 + x) as usize] = gray_bytes[(y * w + x) as usize];
+                                                                         }
+                                                                     }
+                                                                     let name = path.file_stem()
+                                                                         .and_then(|s| s.to_str())
+                                                                         .unwrap_or("SUT Brush")
+                                                                         .to_string();
+                                                                     app.brush_textures.push(crate::app::BrushTexture {
+                                                                         name: format!("[sut] {}", name),
+                                                                         width: 256,
+                                                                         height: 256,
+                                                                         pixels: final_bytes,
+                                                                         });
+                                                                     let texture_id = (app.brush_textures.len() - 1) as u32;
+ 
+                                                                     app.preset_id_counter += 1;
+                                                                     let new_preset = crate::app::BrushPreset {
+                                                                         id: app.preset_id_counter,
+                                                                         name: path.file_stem().and_then(|s| s.to_str()).unwrap_or("SUT Brush").to_string(),
+                                                                         icon: PresetIcon::PaintBrush,
+                                                                         radius_log: 2.0,
+                                                                         opacity: 1.0,
+                                                                         hardness: 0.8,
+                                                                         min_size_fraction: 0.2,
+                                                                         color_blending: 0.0,
+                                                                         dilution: 0.0,
+                                                                         is_eraser: false,
+                                                                         texture_id,
+                                                                         texture_scale: 1.0,
+                                                                         bristle_id: 0,
+                                                                         stabilizer_level: StabilizerLevel::default(),
+                                                                         stabilizer_mode: StabilizerMode::SpringMassDamper,
+                                                                         spacing: 2.0,
+                                                                         density: 1.0,
+                                                                     };
+ 
+                                                                     let mut brush = Brush::new();
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::Radius, new_preset.radius_log);
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::Opaque, new_preset.opacity);
+                                                                     PaintApp::set_constant(&mut brush, BrushSetting::Hardness, new_preset.hardness);
+ 
+                                                                     app.presets.push(new_preset);
+                                                                     app.brushes.push(brush);
+                                                                     app.brush_states.push(BrushState::default());
+ 
+                                                                     let new_idx = app.presets.len() - 1;
+                                                                     app.select_preset(new_idx);
+                                                                     log::info!("Extracted and imported SUT brush successfully!");
+                                                                 }
+                                                                 Err(e) => {
+                                                                     log::error!("Failed to extract SUT: {:?}", e);
+                                                                 }
+                                                             }
+                                                             ui.close_menu();
+                                                         }
+                                                     });
+                                                     
+                                                     if show_creation_menu {
+                                                         ui.ctx().memory_mut(|mem| mem.open_popup(btn_response.id.with("context_menu")));
+                                                     }
+                                                 }
+                                                 
+                                                 if i % 4 == 3 {
+                                                     ui.end_row();
+                                                 }
+                                             }
+                                         });
+                                     });
 
                                 // Inline renaming text box
                                 if let Some(idx) = app.renaming_preset_index {
@@ -929,87 +1241,6 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                                 );
                                                 painter.rect_filled(filled, 2.0, egui::Color32::from_rgb(100, 180, 255));
                                             });
-
-                                            // Brush Test Pad
-                                            ui.add_space(8.0);
-                                            ui.label("BRUSH TEST PAD:");
-                                            let pad_size = egui::Vec2::new(120.0, 60.0);
-                                            let (pad_rect, pad_response) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
-                                            
-                                            let test_pad_img = app.test_pad_image.clone();
-                                            let tex = app.test_pad_texture.get_or_insert_with(|| {
-                                                ui.ctx().load_texture(
-                                                    "brush_test_pad",
-                                                    test_pad_img,
-                                                    egui::TextureOptions::default()
-                                                )
-                                            });
-                                            
-                                            ui.painter().rect_filled(pad_rect, 4.0, egui::Color32::WHITE);
-                                            ui.painter().image(
-                                                tex.id(),
-                                                pad_rect,
-                                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                                                egui::Color32::WHITE,
-                                            );
-                                            ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
-                                            
-                                            if pad_response.dragged_by(egui::PointerButton::Primary) {
-                                                if let Some(hover_pos) = pad_response.hover_pos() {
-                                                    let local_pos = hover_pos - pad_rect.min;
-                                                    let lx = local_pos.x as i32;
-                                                    let ly = local_pos.y as i32;
-                                                    let r = (app.brush_radius_log.exp() as i32).clamp(1, 15);
-                                                    let color = egui::Color32::from_rgba_unmultiplied(
-                                                        (app.foreground_color[0] * 255.0) as u8,
-                                                        (app.foreground_color[1] * 255.0) as u8,
-                                                        (app.foreground_color[2] * 255.0) as u8,
-                                                        (app.brush_opacity * 255.0) as u8,
-                                                    );
-                                                    
-                                                    let w = app.test_pad_image.width() as i32;
-                                                    let h = app.test_pad_image.height() as i32;
-                                                    
-                                                     for dy in -r..=r {
-                                                         for dx in -r..=r {
-                                                             if dx * dx + dy * dy <= r * r {
-                                                                 let px = lx + dx;
-                                                                 let py = ly + dy;
-                                                                 if px >= 0 && px < w && py >= 0 && py < h {
-                                                                     let idx = (py * w + px) as usize;
-                                                                     let d = (dx * dx + dy * dy) as f32 / (r * r) as f32;
-                                                                     let factor = (1.0 - d).max(0.0) * app.brush_density;
-                                                                     
-                                                                     let current_color = app.test_pad_image.pixels[idx];
-                                                                     let src_a = (color.a() as f32 * factor) / 255.0;
-                                                                     let dst_a = current_color.a() as f32 / 255.0;
-                                                                     
-                                                                     let out_a = src_a + dst_a * (1.0 - src_a);
-                                                                     if out_a > 0.0 {
-                                                                         let r_out = ((color.r() as f32 * src_a + current_color.r() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                                                                         let g_out = ((color.g() as f32 * src_a + current_color.g() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                                                                         let b_out = ((color.b() as f32 * src_a + current_color.b() as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                                                                         app.test_pad_image.pixels[idx] = egui::Color32::from_rgba_unmultiplied(r_out, g_out, b_out, (out_a * 255.0) as u8);
-                                                                     }
-                                                                 }
-                                                             }
-                                                         }
-                                                     }
-                                                     if let Some(tex) = &mut app.test_pad_texture {
-                                                         tex.set(app.test_pad_image.clone(), egui::TextureOptions::default());
-                                                     }
-                                                 }
-                                             }
-                                             
-                                             ui.add_space(2.0);
-                                             ui.horizontal(|ui| {
-                                                 if ui.button("Clear Pad").clicked() {
-                                                     app.test_pad_image = egui::ColorImage::new([120, 60], egui::Color32::WHITE);
-                                                     if let Some(tex) = &mut app.test_pad_texture {
-                                                         tex.set(app.test_pad_image.clone(), egui::TextureOptions::default());
-                                                     }
-                                                 }
-                                             });
                                         } else {
                                             ui.label("No options for this tool");
                                         }

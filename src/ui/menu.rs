@@ -338,6 +338,21 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 }
             });
 
+            ui.menu_button("Window", |ui| {
+                ui.checkbox(&mut app.show_navigator, "Navigator");
+                ui.checkbox(&mut app.show_color_wheel, "Color Wheel");
+                ui.checkbox(&mut app.show_rgb_sliders, "RGB Sliders");
+                ui.checkbox(&mut app.show_hsv_sliders, "HSV Sliders");
+                ui.checkbox(&mut app.show_color_palette, "Color Palette");
+                ui.checkbox(&mut app.show_color_history, "Color History");
+                ui.checkbox(&mut app.show_layers_manager, "Layers Manager");
+                ui.checkbox(&mut app.show_reference_panel, "Reference Panel");
+                ui.checkbox(&mut app.show_symmetry_panel, "Symmetry Panel");
+                ui.checkbox(&mut app.show_tool_options, "Tool Options");
+                ui.separator();
+                ui.checkbox(&mut app.layer_panel_on_left, "Layer Panel on Left Side");
+            });
+
             ui.menu_button("Help", |ui| {
                 if ui.button("Keyboard Shortcuts").clicked() {
                     app.show_shortcut_editor = true;

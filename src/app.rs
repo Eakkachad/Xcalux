@@ -239,6 +239,19 @@ pub struct PaintApp {
     pub show_symmetry: bool,
     pub quick_bar_visible: bool,
 
+    // Panel visibility flags (SAI style)
+    pub show_navigator: bool,
+    pub show_color_wheel: bool,
+    pub show_rgb_sliders: bool,
+    pub show_hsv_sliders: bool,
+    pub show_color_palette: bool,
+    pub show_color_history: bool,
+    pub show_layers_manager: bool,
+    pub show_reference_panel: bool,
+    pub show_symmetry_panel: bool,
+    pub show_tool_options: bool,
+    pub layer_panel_on_left: bool,
+
     // Brush symmetry (Phase 12)
     pub symmetry_mode: SymmetryMode,
     pub symmetry_center: egui::Pos2,
@@ -306,9 +319,6 @@ pub struct PaintApp {
     pub transform_drag_start_scale: egui::Vec2,
     pub transform_drag_start_rotation: f32,
 
-    // Brush test pad
-    pub test_pad_image: egui::ColorImage,
-    pub test_pad_texture: Option<egui::TextureHandle>,
 
     // Preferences
     pub show_preferences_dialog: bool,
@@ -924,6 +934,17 @@ impl PaintApp {
             show_grid: false,
             show_symmetry: false,
             quick_bar_visible: true,
+            show_navigator: true,
+            show_color_wheel: true,
+            show_rgb_sliders: false,
+            show_hsv_sliders: false,
+            show_color_palette: false,
+            show_color_history: true,
+            show_layers_manager: true,
+            show_reference_panel: true,
+            show_symmetry_panel: true,
+            show_tool_options: true,
+            layer_panel_on_left: false,
             symmetry_mode: SymmetryMode::None,
             symmetry_center: egui::Pos2::new(0.0, 0.0),
             symmetry_radial_count: 4,
@@ -969,8 +990,6 @@ impl PaintApp {
             transform_drag_start_scale: egui::Vec2::new(1.0, 1.0),
             transform_drag_start_rotation: 0.0,
 
-            test_pad_image: egui::ColorImage::new([120, 60], egui::Color32::WHITE),
-            test_pad_texture: None,
 
             show_preferences_dialog: false,
             pref_theme: "Gray".to_string(),
@@ -1710,26 +1729,360 @@ impl PaintApp {
             CommandId::NewDocument => {
                 self.show_new_canvas_dialog = true;
             }
+            CommandId::Open => {
+                let path = std::path::PathBuf::from(&self.document_path);
+                match crate::save::load_document(&path) {
+                    Ok(loaded_doc) => {
+                        self.load_from_document(loaded_doc);
+                        log::info!("Loaded document successfully from {:?}", path);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load document: {:?}", e);
+                    }
+                }
+            }
             CommandId::Save => {
                 self.save_canvas(std::path::Path::new(&self.document_path));
                 self.document_modified = false;
                 self.cleanup_autosave();
             }
             CommandId::SaveAs => {
-                // Would open save dialog; for now just save
                 self.save_canvas(std::path::Path::new(&self.document_path));
                 self.document_modified = false;
                 self.cleanup_autosave();
             }
             CommandId::ExportPng => self.show_export_png_dialog = true,
+            CommandId::ExportJpeg => {}
+            CommandId::ExportOra => self.show_export_ora_dialog = true,
+            CommandId::ImportImageAsLayer => {}
+            CommandId::ImportReferenceImage => {}
+            CommandId::ImportBrushPreset => {}
             CommandId::DocumentInfo => {}
             CommandId::Preferences => self.show_preferences_dialog = true,
-            CommandId::About => self.show_about_dialog = true,
+            CommandId::Exit => {}
+
+            // Edit
+            CommandId::Undo => {
+                self.history.undo(&mut self.layers, &mut self.layer_order, &mut self.selection_mask, &mut self.active_layer_id);
+                self.brush_settings_dirty = true;
+            }
+            CommandId::Redo => {
+                self.history.redo(&mut self.layers, &mut self.layer_order, &mut self.selection_mask, &mut self.active_layer_id);
+                self.brush_settings_dirty = true;
+            }
+            CommandId::Cut => {
+                self.cut_selection();
+            }
+            CommandId::Copy => {
+                self.copy_selection(false);
+            }
+            CommandId::CopyMerged => {
+                self.copy_selection(true);
+            }
+            CommandId::Paste => {
+                self.paste_selection(false);
+            }
+            CommandId::PasteAsNewLayer => {
+                self.paste_selection(true);
+            }
+            CommandId::Clear => {
+                self.clear_selected_area();
+            }
+            CommandId::Fill => {
+                self.fill_selected_area();
+            }
+
+            // Canvas
+            CommandId::ResizeCanvas => {}
+            CommandId::ResizeImage => {}
+            CommandId::CropToSelection => {
+                self.crop_to_selection();
+            }
+            CommandId::TrimTransparent => {
+                self.trim_transparent();
+            }
+            CommandId::RotateCanvasViewLeft => {
+                self.rotation_angle -= 15.0_f32.to_radians();
+            }
+            CommandId::RotateCanvasViewRight => {
+                self.rotation_angle += 15.0_f32.to_radians();
+            }
+            CommandId::ResetRotation => {
+                self.rotation_angle = 0.0;
+            }
+            CommandId::FlipViewHorizontal => {
+                self.mirror_horizontal = !self.mirror_horizontal;
+            }
+            CommandId::FlipCanvasHorizontal => {
+                self.flip_canvas(true);
+            }
+            CommandId::FlipCanvasVertical => {
+                self.flip_canvas(false);
+            }
+            CommandId::FitToScreen => {
+                self.fit_to_screen();
+            }
+            CommandId::ActualSize => {
+                self.viewport_zoom = 1.0;
+                let vp_w = self.last_viewport_size.x;
+                let vp_h = self.last_viewport_size.y;
+                if vp_w > 0.0 && vp_h > 0.0 {
+                    self.viewport_offset = Vec2::new(
+                        (self.canvas_width as f32 - vp_w) * 0.5,
+                        (self.canvas_height as f32 - vp_h) * 0.5,
+                    );
+                } else {
+                    self.viewport_offset = Vec2::ZERO;
+                }
+            }
+            CommandId::ResetView => {
+                self.viewport_zoom = 1.0;
+                self.viewport_offset = Vec2::ZERO;
+                self.rotation_angle = 0.0;
+                self.mirror_horizontal = false;
+            }
+
+            // Layer
+            CommandId::NewRasterLayer => {
+                self.create_raster_layer();
+            }
+            CommandId::NewFolder => {
+                self.create_folder_layer();
+            }
+            CommandId::NewVectorLayer => {
+                self.create_vector_layer();
+            }
+            CommandId::DuplicateLayer => {
+                self.duplicate_active_layer();
+            }
+            CommandId::DeleteLayer => {
+                self.delete_active_layer();
+            }
+            CommandId::RenameLayer => {}
+            CommandId::MergeDown => {
+                self.merge_down();
+            }
+            CommandId::MergeVisible => {
+                self.merge_visible();
+            }
+            CommandId::FlattenImage => {
+                self.flatten_image();
+            }
+            CommandId::ClearLayer => {
+                self.clear_entire_layer();
+            }
+            CommandId::FillLayer => {
+                self.fill_entire_layer();
+            }
+            CommandId::LayerProperties => {}
+            CommandId::AddLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.add_mask();
+                }
+            }
+            CommandId::DeleteLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.delete_mask();
+                }
+                if let Some(r) = &mut self.renderer {
+                    r.clear_cache();
+                }
+            }
+            CommandId::ApplyLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.apply_mask();
+                }
+                if let Some(r) = &mut self.renderer {
+                    r.clear_cache();
+                }
+            }
+            CommandId::ToggleLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    if let Some(mask) = &mut layer.mask {
+                        mask.enabled = !mask.enabled;
+                        layer.thumbnail_dirty = true;
+                    }
+                }
+                if let Some(r) = &mut self.renderer {
+                    r.clear_cache();
+                }
+            }
+            CommandId::InvertLayerMask => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    layer.invert_mask();
+                }
+                if let Some(r) = &mut self.renderer {
+                    r.clear_cache();
+                }
+            }
+            CommandId::ToggleLockAlpha => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    let old = layer.lock_alpha;
+                    let new = !old;
+                    layer.lock_alpha = new;
+                    self.history.push_command(HistoryCommand::LayerProperty {
+                        layer_id: self.active_layer_id,
+                        property: crate::history::LayerPropertyChange::LockAlpha { old, new },
+                    });
+                }
+            }
+            CommandId::ToggleClipping => {
+                if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+                    let old = layer.is_clipping;
+                    let new = !old;
+                    layer.is_clipping = new;
+                    self.history.push_command(HistoryCommand::LayerProperty {
+                        layer_id: self.active_layer_id,
+                        property: crate::history::LayerPropertyChange::Clipping { old, new },
+                    });
+                }
+            }
+            CommandId::ConvertToRaster => {
+                self.convert_active_vector_to_raster();
+            }
+            CommandId::TransformLayer => {}
+
+            // Selection
+            CommandId::SelectAll => {
+                let old_mask = Box::new(self.selection_mask.clone());
+                self.selection_mask.is_active = true;
+                let tx_max = (self.canvas_width as i32 + 63) / 64;
+                let ty_max = (self.canvas_height as i32 + 63) / 64;
+                for ty in 0..ty_max {
+                    for tx in 0..tx_max {
+                        let mut tile_mask = Box::new([255u8; 4096]);
+                        for ly in 0..64 {
+                            let wy = ty * 64 + ly;
+                            for lx in 0..64 {
+                                let wx = tx * 64 + lx;
+                                if wx >= self.canvas_width as i32 || wy >= self.canvas_height as i32 {
+                                    tile_mask[(ly * 64 + lx) as usize] = 0;
+                                }
+                            }
+                        }
+                        self.selection_mask.tiles.insert((tx, ty), tile_mask);
+                    }
+                }
+                self.show_selection_overlay = true;
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
+            }
+            CommandId::Deselect => {
+                let old_mask = Box::new(self.selection_mask.clone());
+                self.selection_mask.is_active = false;
+                self.selection_mask.tiles.clear();
+                self.show_selection_overlay = false;
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
+            }
+            CommandId::Reselect => {}
+            CommandId::InvertSelection => {
+                let old_mask = Box::new(self.selection_mask.clone());
+                crate::tools::selection::invert_selection(&mut self.selection_mask, self.canvas_width, self.canvas_height);
+                self.show_selection_overlay = self.selection_mask.is_active;
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
+            }
+            CommandId::SelectionGrow => {
+                let old_mask = Box::new(self.selection_mask.clone());
+                crate::tools::selection::grow_selection(&mut self.selection_mask, self.grow_pixels, self.canvas_width as i32, self.canvas_height as i32);
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
+            }
+            CommandId::SelectionShrink => {
+                let old_mask = Box::new(self.selection_mask.clone());
+                crate::tools::selection::shrink_selection(&mut self.selection_mask, self.shrink_pixels, self.canvas_width as i32, self.canvas_height as i32);
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
+            }
+            CommandId::SelectionFeather => {
+                let old_mask = Box::new(self.selection_mask.clone());
+                crate::tools::selection::feather_selection(&mut self.selection_mask, self.feather_pixels as i32, self.canvas_width as i32, self.canvas_height as i32);
+                let new_mask = Box::new(self.selection_mask.clone());
+                self.history.push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
+            }
+            CommandId::SelectionSmooth => {}
+            CommandId::SelectionBorder => {}
+            CommandId::TransformSelection => {
+                self.active_tool = ToolId::Transform;
+                self.start_transform();
+            }
+            CommandId::ToggleSelectionOverlay => {
+                self.show_selection_overlay = !self.show_selection_overlay;
+            }
+
+            // View
+            CommandId::ShowNavigator => {}
+            CommandId::ShowColorPanel => {}
+            CommandId::ShowLayers => {}
+            CommandId::ShowBrushPresets => {}
+            CommandId::ShowToolOptions => {}
+            CommandId::ShowReferenceImages => {}
+            CommandId::ShowStatusBar => {}
+            CommandId::ShowGrid => {
+                self.show_grid = !self.show_grid;
+            }
+            CommandId::ShowSymmetry => {
+                self.show_symmetry = !self.show_symmetry;
+            }
+            CommandId::Fullscreen => {
+                self.toggle_fullscreen_requested = true;
+            }
+            CommandId::MinimalUi => {
+                self.show_minimal_ui = !self.show_minimal_ui;
+            }
+            CommandId::ResetWorkspace => {}
+            CommandId::ToggleMirrorView => {
+                self.mirror_horizontal = !self.mirror_horizontal;
+            }
+
+            // Window
+            CommandId::WorkspaceDefault => {}
+            CommandId::WorkspaceCompact => {}
+            CommandId::WorkspacePainting => {}
+            CommandId::WorkspaceInking => {}
+            CommandId::UiScale80 => {}
+            CommandId::UiScale100 => {}
+            CommandId::UiScale125 => {}
+            CommandId::UiScale150 => {}
+            CommandId::ThemeLight => {}
+            CommandId::ThemeGray => {}
+            CommandId::ThemeDark => {}
+
+            // Help
+            CommandId::QuickStart => {}
             CommandId::KeyboardShortcuts => self.show_shortcut_editor = true,
             CommandId::TabletDiagnostics => self.show_tablet_diagnostics = true,
             CommandId::PerformanceHud => self.show_performance_hud = true,
+            CommandId::About => self.show_about_dialog = true,
+            CommandId::OpenConfigFolder => {}
 
-            _ => {}
+            // Filters & Adjustments
+            CommandId::AdjustBrightnessContrast => self.show_brightness_contrast = true,
+            CommandId::AdjustHueSaturation => self.show_hue_saturation = true,
+            CommandId::FilterGaussianBlur => self.show_gaussian_blur = true,
+
+            // Tools
+            CommandId::ToolBrush => self.active_tool = ToolId::Brush,
+            CommandId::ToolEraser => self.active_tool = ToolId::Eraser,
+            CommandId::ToolFill => self.active_tool = ToolId::Fill,
+            CommandId::ToolGradient => self.active_tool = ToolId::Gradient,
+            CommandId::ToolRectSelect => self.active_tool = ToolId::RectSelect,
+            CommandId::ToolEllipseSelect => self.active_tool = ToolId::EllipseSelect,
+            CommandId::ToolLasso => self.active_tool = ToolId::Lasso,
+            CommandId::ToolPolygonLasso => self.active_tool = ToolId::PolygonLasso,
+            CommandId::ToolMagicWand => self.active_tool = ToolId::MagicWand,
+            CommandId::ToolMove => self.active_tool = ToolId::Move,
+            CommandId::ToolTransform => {
+                self.active_tool = ToolId::Transform;
+                self.start_transform();
+            }
+            CommandId::ToolColorPicker => self.active_tool = ToolId::ColorPicker,
+            CommandId::ToolHand => self.active_tool = ToolId::Hand,
+            CommandId::ToolZoom => self.active_tool = ToolId::Zoom,
+            CommandId::ToolRotateView => self.active_tool = ToolId::RotateView,
+            CommandId::ToolLine => self.active_tool = ToolId::Line,
+            CommandId::ToolShape => self.active_tool = ToolId::Shape,
         }
     }
 
@@ -2686,7 +3039,7 @@ impl PaintApp {
         }
     }
 
-    fn start_transform(&mut self) {
+    pub(crate) fn start_transform(&mut self) {
         if self.transform_active { return; }
         
         let mut min_tx = i32::MAX;
@@ -4564,6 +4917,13 @@ impl eframe::App for PaintApp {
                             if tx < tx_min || tx > tx_max || ty < ty_min || ty > ty_max {
                                 continue;
                             }
+                            
+                            // Pre-fetch neighbor tiles once per tile to avoid hot hash map lookups
+                            let right_tile = self.selection_mask.tiles.get(&(tx + 1, ty)).map(|t| &**t);
+                            let left_tile = self.selection_mask.tiles.get(&(tx - 1, ty)).map(|t| &**t);
+                            let top_tile = self.selection_mask.tiles.get(&(tx, ty - 1)).map(|t| &**t);
+                            let bottom_tile = self.selection_mask.tiles.get(&(tx, ty + 1)).map(|t| &**t);
+
                             for ly in 0..64 {
                                 for lx in 0..64 {
                                     let val = tile[ly * 64 + lx];
@@ -4572,31 +4932,50 @@ impl eframe::App for PaintApp {
                                         let wy = ty * 64 + ly as i32;
                                         
                                         // Check right neighbor
-                                        let r_val = self.selection_mask.get_value(wx + 1, wy);
+                                        let r_val = if lx < 63 {
+                                            tile[ly * 64 + lx + 1]
+                                        } else {
+                                            right_tile.map(|t| t[ly * 64]).unwrap_or(0)
+                                        };
                                         if r_val <= 127 {
                                             let p0 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32), rect);
                                             let p1 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32 + 1.0), rect);
                                             ui.painter().line_segment([p0, p1], egui::Stroke::new(1.0, egui::Color32::BLACK));
                                             Self::draw_dashed_line(ui.painter(), p0, p1, time);
                                         }
+
                                         // Check bottom neighbor
-                                        let b_val = self.selection_mask.get_value(wx, wy + 1);
+                                        let b_val = if ly < 63 {
+                                            tile[(ly + 1) * 64 + lx]
+                                        } else {
+                                            bottom_tile.map(|t| t[lx]).unwrap_or(0)
+                                        };
                                         if b_val <= 127 {
                                             let p0 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32 + 1.0), rect);
                                             let p1 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32 + 1.0), rect);
                                             ui.painter().line_segment([p0, p1], egui::Stroke::new(1.0, egui::Color32::BLACK));
                                             Self::draw_dashed_line(ui.painter(), p0, p1, time);
                                         }
+
                                         // Check left neighbor
-                                        let l_val = self.selection_mask.get_value(wx - 1, wy);
+                                        let l_val = if lx > 0 {
+                                            tile[ly * 64 + lx - 1]
+                                        } else {
+                                            left_tile.map(|t| t[ly * 64 + 63]).unwrap_or(0)
+                                        };
                                         if l_val <= 127 {
                                             let p0 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32), rect);
                                             let p1 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32 + 1.0), rect);
                                             ui.painter().line_segment([p0, p1], egui::Stroke::new(1.0, egui::Color32::BLACK));
                                             Self::draw_dashed_line(ui.painter(), p0, p1, time);
                                         }
+
                                         // Check top neighbor
-                                        let t_val = self.selection_mask.get_value(wx, wy - 1);
+                                        let t_val = if ly > 0 {
+                                            tile[(ly - 1) * 64 + lx]
+                                        } else {
+                                            top_tile.map(|t| t[63 * 64 + lx]).unwrap_or(0)
+                                        };
                                         if t_val <= 127 {
                                             let p0 = self.world_to_screen(egui::Pos2::new(wx as f32, wy as f32), rect);
                                             let p1 = self.world_to_screen(egui::Pos2::new(wx as f32 + 1.0, wy as f32), rect);
@@ -5573,6 +5952,17 @@ mod tests {
             show_grid: false,
             show_symmetry: false,
             quick_bar_visible: false,
+            show_navigator: true,
+            show_color_wheel: true,
+            show_rgb_sliders: false,
+            show_hsv_sliders: false,
+            show_color_palette: false,
+            show_color_history: true,
+            show_layers_manager: true,
+            show_reference_panel: true,
+            show_symmetry_panel: true,
+            show_tool_options: true,
+            layer_panel_on_left: false,
             symmetry_mode: SymmetryMode::None,
             symmetry_center: Pos2::ZERO,
             symmetry_radial_count: 2,
@@ -5615,8 +6005,6 @@ mod tests {
             transform_drag_start_translation: Vec2::ZERO,
             transform_drag_start_scale: Vec2::splat(1.0),
             transform_drag_start_rotation: 0.0,
-            test_pad_image: egui::ColorImage::new([10, 10], Color32::WHITE),
-            test_pad_texture: None,
             show_preferences_dialog: false,
             pref_theme: String::new(),
             pref_ui_scale: 1.0,
@@ -5802,6 +6190,17 @@ mod tests {
             show_grid: false,
             show_symmetry: false,
             quick_bar_visible: false,
+            show_navigator: true,
+            show_color_wheel: true,
+            show_rgb_sliders: false,
+            show_hsv_sliders: false,
+            show_color_palette: false,
+            show_color_history: true,
+            show_layers_manager: true,
+            show_reference_panel: true,
+            show_symmetry_panel: true,
+            show_tool_options: true,
+            layer_panel_on_left: false,
             symmetry_mode: SymmetryMode::None,
             symmetry_center: Pos2::ZERO,
             symmetry_radial_count: 2,
@@ -5844,8 +6243,6 @@ mod tests {
             transform_drag_start_translation: Vec2::ZERO,
             transform_drag_start_scale: Vec2::splat(1.0),
             transform_drag_start_rotation: 0.0,
-            test_pad_image: egui::ColorImage::new([10, 10], Color32::WHITE),
-            test_pad_texture: None,
             show_preferences_dialog: false,
             pref_theme: String::new(),
             pref_ui_scale: 1.0,
