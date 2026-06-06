@@ -35,15 +35,50 @@ pub fn draw_performance_hud(app: &mut PaintApp, ctx: &egui::Context) {
         .resizable(false)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new("Performance HUD").strong().color(egui::Color32::WHITE));
+                ui.label(
+                    egui::RichText::new("Performance HUD")
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                );
                 ui.separator();
-                ui.colored_label(egui::Color32::WHITE, format!("FPS: {:.1} ({:.2} ms)", fps, avg_ms));
-                ui.colored_label(egui::Color32::WHITE, format!("VRAM Slots: {} / {}", cache_used, cache_max));
-                ui.colored_label(egui::Color32::WHITE, format!("VRAM Uploads: {}", app.performance_hud.dirty_uploads_this_frame));
-                ui.colored_label(egui::Color32::WHITE, format!("Brush Dabs: {:.0} dabs/sec", app.performance_hud.dab_rate));
-                ui.colored_label(egui::Color32::WHITE, format!("Tile Cache: {:.2} MB", tile_cache_mb));
-                ui.colored_label(egui::Color32::WHITE, format!("Undo Stack: {:.2} MB ({} entries)", undo_mb, app.history.undo_stack.len()));
-                ui.colored_label(egui::Color32::WHITE, format!("Active Canvas: {:.2} MB ({} tiles)", active_canvas_mb, active_tile_count));
+                ui.colored_label(
+                    egui::Color32::WHITE,
+                    format!("FPS: {:.1} ({:.2} ms)", fps, avg_ms),
+                );
+                ui.colored_label(
+                    egui::Color32::WHITE,
+                    format!("VRAM Slots: {} / {}", cache_used, cache_max),
+                );
+                ui.colored_label(
+                    egui::Color32::WHITE,
+                    format!(
+                        "VRAM Uploads: {}",
+                        app.performance_hud.dirty_uploads_this_frame
+                    ),
+                );
+                ui.colored_label(
+                    egui::Color32::WHITE,
+                    format!("Brush Dabs: {:.0} dabs/sec", app.performance_hud.dab_rate),
+                );
+                ui.colored_label(
+                    egui::Color32::WHITE,
+                    format!("Tile Cache: {:.2} MB", tile_cache_mb),
+                );
+                ui.colored_label(
+                    egui::Color32::WHITE,
+                    format!(
+                        "Undo Stack: {:.2} MB ({} entries)",
+                        undo_mb,
+                        app.history.undo_stack.len()
+                    ),
+                );
+                ui.colored_label(
+                    egui::Color32::WHITE,
+                    format!(
+                        "Active Canvas: {:.2} MB ({} tiles)",
+                        active_canvas_mb, active_tile_count
+                    ),
+                );
             });
         });
 }
@@ -67,7 +102,10 @@ pub fn draw_tablet_diagnostics(app: &mut PaintApp, ctx: &egui::Context) {
                 DeviceType::Touch => "Touch",
             };
             ui.label(format!("Device Type: {}", device_str));
-            ui.label(format!("Coordinates: X={:.2}, Y={:.2}", app.tablet_diagnostics.raw_x, app.tablet_diagnostics.raw_y));
+            ui.label(format!(
+                "Coordinates: X={:.2}, Y={:.2}",
+                app.tablet_diagnostics.raw_x, app.tablet_diagnostics.raw_y
+            ));
 
             ui.horizontal(|ui| {
                 ui.label("Pressure:");
@@ -78,9 +116,18 @@ pub fn draw_tablet_diagnostics(app: &mut PaintApp, ctx: &egui::Context) {
                 );
             });
 
-            ui.label(format!("Tilt: X={:.1}°, Y={:.1}°", app.tablet_diagnostics.tilt_x_deg, app.tablet_diagnostics.tilt_y_deg));
-            ui.label(format!("Tip: {}, Proximity: {}", app.tablet_diagnostics.tip_down, app.tablet_diagnostics.in_proximity));
-            ui.label(format!("Packet Rate: {} Hz", app.tablet_diagnostics.packet_rate));
+            ui.label(format!(
+                "Tilt: X={:.1}°, Y={:.1}°",
+                app.tablet_diagnostics.tilt_x_deg, app.tablet_diagnostics.tilt_y_deg
+            ));
+            ui.label(format!(
+                "Tip: {}, Proximity: {}",
+                app.tablet_diagnostics.tip_down, app.tablet_diagnostics.in_proximity
+            ));
+            ui.label(format!(
+                "Packet Rate: {} Hz",
+                app.tablet_diagnostics.packet_rate
+            ));
 
             ui.add_space(4.0);
             ui.label("Pressure History:");

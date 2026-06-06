@@ -1,6 +1,6 @@
 use crate::canvas::{Layer, SelectionMask};
-use std::collections::VecDeque;
 use crate::tools::fill::FillOptions;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
@@ -63,23 +63,30 @@ pub fn apply_rect_selection(
 
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| {
-                Box::new([0u8; 4096])
-            });
+            let tile = mask
+                .tiles
+                .entry((tx, ty))
+                .or_insert_with(|| Box::new([0u8; 4096]));
 
             for ly in 0..64 {
                 for lx in 0..64 {
                     let wx = tx * 64 + lx;
                     let wy = ty * 64 + ly;
-                    let inside = wx >= r.x0 as i32 && wx < r.x1 as i32
-                        && wy >= r.y0 as i32 && wy < r.y1 as i32;
+                    let inside = wx >= r.x0 as i32
+                        && wx < r.x1 as i32
+                        && wy >= r.y0 as i32
+                        && wy < r.y1 as i32;
 
                     let mut val = if inside {
                         if feather_radius > 0.0 {
                             let dx = (wx as f32 - r.x0).min(r.x1 - wx as f32).min(feather_radius);
                             let dy = (wy as f32 - r.y0).min(r.y1 - wy as f32).min(feather_radius);
                             let d = dx.min(dy);
-                            if d <= 0.0 { 255 } else { (255.0 * (1.0 - d / feather_radius)) as u8 }
+                            if d <= 0.0 {
+                                255
+                            } else {
+                                (255.0 * (1.0 - d / feather_radius)) as u8
+                            }
                         } else {
                             255u8
                         }
@@ -155,19 +162,20 @@ pub fn apply_ellipse_selection(
 
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| {
-                Box::new([0u8; 4096])
-            });
+            let tile = mask
+                .tiles
+                .entry((tx, ty))
+                .or_insert_with(|| Box::new([0u8; 4096]));
 
             for ly in 0..64 {
                 for lx in 0..64 {
                     let wx = tx * 64 + lx;
                     let wy = ty * 64 + ly;
-                    
+
                     let dx = (wx as f32 - center_x) / rx;
                     let dy = (wy as f32 - center_y) / ry;
                     let dist_sq = dx * dx + dy * dy;
-                    
+
                     let inside = dist_sq <= 1.0;
 
                     let mut val = if inside {
@@ -215,7 +223,6 @@ pub fn apply_ellipse_selection(
     }
 }
 
-
 pub fn apply_lasso_selection(
     mask: &mut SelectionMask,
     lasso: &LassoPoints,
@@ -239,10 +246,34 @@ pub fn apply_lasso_selection(
         }
     }
 
-    let min_x = lasso.points.iter().map(|p| p.0).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 - 64;
-    let min_y = lasso.points.iter().map(|p| p.1).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 - 64;
-    let max_x = lasso.points.iter().map(|p| p.0).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 + 64;
-    let max_y = lasso.points.iter().map(|p| p.1).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 + 64;
+    let min_x = lasso
+        .points
+        .iter()
+        .map(|p| p.0)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        - 64;
+    let min_y = lasso
+        .points
+        .iter()
+        .map(|p| p.1)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        - 64;
+    let max_x = lasso
+        .points
+        .iter()
+        .map(|p| p.0)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        + 64;
+    let max_y = lasso
+        .points
+        .iter()
+        .map(|p| p.1)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        + 64;
 
     let tx0 = min_x.div_euclid(64);
     let ty0 = min_y.div_euclid(64);
@@ -251,9 +282,10 @@ pub fn apply_lasso_selection(
 
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| {
-                Box::new([0u8; 4096])
-            });
+            let tile = mask
+                .tiles
+                .entry((tx, ty))
+                .or_insert_with(|| Box::new([0u8; 4096]));
 
             for ly in 0..64 {
                 for lx in 0..64 {
@@ -307,10 +339,30 @@ pub fn apply_polygon_lasso_selection(
         }
     }
 
-    let min_x = points.iter().map(|p| p.0).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 - 64;
-    let min_y = points.iter().map(|p| p.1).min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 - 64;
-    let max_x = points.iter().map(|p| p.0).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 + 64;
-    let max_y = points.iter().map(|p| p.1).max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0) as i32 + 64;
+    let min_x = points
+        .iter()
+        .map(|p| p.0)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        - 64;
+    let min_y = points
+        .iter()
+        .map(|p| p.1)
+        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        - 64;
+    let max_x = points
+        .iter()
+        .map(|p| p.0)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        + 64;
+    let max_y = points
+        .iter()
+        .map(|p| p.1)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0) as i32
+        + 64;
 
     let tx0 = min_x.div_euclid(64);
     let ty0 = min_y.div_euclid(64);
@@ -319,9 +371,10 @@ pub fn apply_polygon_lasso_selection(
 
     for ty in ty0..=ty1 {
         for tx in tx0..=tx1 {
-            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| {
-                Box::new([0u8; 4096])
-            });
+            let tile = mask
+                .tiles
+                .entry((tx, ty))
+                .or_insert_with(|| Box::new([0u8; 4096]));
 
             for ly in 0..64 {
                 for lx in 0..64 {
@@ -384,7 +437,13 @@ pub fn magic_wand_select(
         return;
     }
 
-    let target_color = crate::tools::fill::sample_reference(layers, active_layer, options.reference, start_x, start_y);
+    let target_color = crate::tools::fill::sample_reference(
+        layers,
+        active_layer,
+        options.reference,
+        start_x,
+        start_y,
+    );
 
     match mode {
         SelectionMode::Replace => {
@@ -408,7 +467,14 @@ pub fn magic_wand_select(
         visited_local.insert((start_x, start_y));
 
         while let Some((cx, cy)) = queue.pop_front() {
-            let factor = match crate::tools::fill::is_fillable(layers, active_layer, cx, cy, target_color, options) {
+            let factor = match crate::tools::fill::is_fillable(
+                layers,
+                active_layer,
+                cx,
+                cy,
+                target_color,
+                options,
+            ) {
                 Some(f) => f,
                 None => continue,
             };
@@ -419,7 +485,16 @@ pub fn magic_wand_select(
             let mut scan_x = cx - 1;
             while scan_x >= 0 && scan_x < canvas_width {
                 if visited_local.insert((scan_x, cy)) {
-                    if crate::tools::fill::is_fillable(layers, active_layer, scan_x, cy, target_color, options).is_some() {
+                    if crate::tools::fill::is_fillable(
+                        layers,
+                        active_layer,
+                        scan_x,
+                        cy,
+                        target_color,
+                        options,
+                    )
+                    .is_some()
+                    {
                         queue.push_back((scan_x, cy));
                     } else {
                         break;
@@ -434,7 +509,16 @@ pub fn magic_wand_select(
             let mut scan_x = cx + 1;
             while scan_x < canvas_width {
                 if visited_local.insert((scan_x, cy)) {
-                    if crate::tools::fill::is_fillable(layers, active_layer, scan_x, cy, target_color, options).is_some() {
+                    if crate::tools::fill::is_fillable(
+                        layers,
+                        active_layer,
+                        scan_x,
+                        cy,
+                        target_color,
+                        options,
+                    )
+                    .is_some()
+                    {
                         queue.push_back((scan_x, cy));
                     } else {
                         break;
@@ -447,12 +531,25 @@ pub fn magic_wand_select(
 
             // Check rows above and below
             for &ny in &[cy - 1, cy + 1] {
-                if ny < 0 || ny >= canvas_height { continue; }
-                if visited_local.contains(&(cx, ny)) { continue; }
-                if crate::tools::fill::is_fillable(layers, active_layer, cx, ny, target_color, options).is_some()
-                    && visited_local.insert((cx, ny)) {
-                        queue.push_back((cx, ny));
-                    }
+                if ny < 0 || ny >= canvas_height {
+                    continue;
+                }
+                if visited_local.contains(&(cx, ny)) {
+                    continue;
+                }
+                if crate::tools::fill::is_fillable(
+                    layers,
+                    active_layer,
+                    cx,
+                    ny,
+                    target_color,
+                    options,
+                )
+                .is_some()
+                    && visited_local.insert((cx, ny))
+                {
+                    queue.push_back((cx, ny));
+                }
             }
         }
     } else {
@@ -471,7 +568,14 @@ pub fn magic_wand_select(
                         if wx < 0 || wx >= canvas_width || wy < 0 || wy >= canvas_height {
                             continue;
                         }
-                        if let Some(f) = crate::tools::fill::is_fillable(layers, active_layer, wx, wy, target_color, options) {
+                        if let Some(f) = crate::tools::fill::is_fillable(
+                            layers,
+                            active_layer,
+                            wx,
+                            wy,
+                            target_color,
+                            options,
+                        ) {
                             selected_pixels.insert((wx, wy), f);
                         }
                     }
@@ -524,7 +628,10 @@ pub fn magic_wand_select(
             let ty = y.div_euclid(64);
             let lx = x.rem_euclid(64) as usize;
             let ly = y.rem_euclid(64) as usize;
-            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+            let tile = mask
+                .tiles
+                .entry((tx, ty))
+                .or_insert_with(|| Box::new([0u8; 4096]));
             let idx = ly * 64 + lx;
             let val = (255.0 * f) as u8;
             match mode {
@@ -557,7 +664,10 @@ pub fn invert_selection(mask: &mut SelectionMask, canvas_w: u32, canvas_h: u32) 
         let ty1 = (canvas_h as i32).div_euclid(64);
         for ty in ty0..=ty1 {
             for tx in tx0..=tx1 {
-                let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+                let tile = mask
+                    .tiles
+                    .entry((tx, ty))
+                    .or_insert_with(|| Box::new([0u8; 4096]));
                 for ly in 0..64 {
                     for lx in 0..64 {
                         let idx = (ly * 64 + lx) as usize;
@@ -576,7 +686,9 @@ pub fn invert_selection(mask: &mut SelectionMask, canvas_w: u32, canvas_h: u32) 
 }
 
 pub fn grow_selection(mask: &mut SelectionMask, grow_px: i32, canvas_w: i32, canvas_h: i32) {
-    if !mask.is_active || grow_px <= 0 { return; }
+    if !mask.is_active || grow_px <= 0 {
+        return;
+    }
     let mut original = ahash::AHashMap::default();
     for (&(tx, ty), tile) in &mask.tiles {
         for ly in 0..64 {
@@ -588,7 +700,7 @@ pub fn grow_selection(mask: &mut SelectionMask, grow_px: i32, canvas_w: i32, can
             }
         }
     }
-    
+
     let mut new_pixels = original.clone();
     for (&(x, y), &val) in &original {
         for dy in -grow_px..=grow_px {
@@ -606,7 +718,7 @@ pub fn grow_selection(mask: &mut SelectionMask, grow_px: i32, canvas_w: i32, can
             }
         }
     }
-    
+
     mask.tiles.clear();
     for ((x, y), val) in new_pixels {
         if val > 0 {
@@ -614,14 +726,19 @@ pub fn grow_selection(mask: &mut SelectionMask, grow_px: i32, canvas_w: i32, can
             let ty = y.div_euclid(64);
             let lx = x.rem_euclid(64) as usize;
             let ly = y.rem_euclid(64) as usize;
-            let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+            let tile = mask
+                .tiles
+                .entry((tx, ty))
+                .or_insert_with(|| Box::new([0u8; 4096]));
             tile[ly * 64 + lx] = val;
         }
     }
 }
 
 pub fn shrink_selection(mask: &mut SelectionMask, shrink_px: i32, canvas_w: i32, canvas_h: i32) {
-    if !mask.is_active || shrink_px <= 0 { return; }
+    if !mask.is_active || shrink_px <= 0 {
+        return;
+    }
     let mut original = ahash::AHashMap::default();
     for (&(tx, ty), tile) in &mask.tiles {
         for ly in 0..64 {
@@ -633,7 +750,7 @@ pub fn shrink_selection(mask: &mut SelectionMask, shrink_px: i32, canvas_w: i32,
             }
         }
     }
-    
+
     let mut new_pixels = ahash::AHashMap::default();
     for (&(x, y), &val) in &original {
         let mut min_val = val;
@@ -653,26 +770,33 @@ pub fn shrink_selection(mask: &mut SelectionMask, shrink_px: i32, canvas_w: i32,
                     }
                 }
             }
-            if min_val == 0 { break; }
+            if min_val == 0 {
+                break;
+            }
         }
         if min_val > 0 {
             new_pixels.insert((x, y), min_val);
         }
     }
-    
+
     mask.tiles.clear();
     for ((x, y), val) in new_pixels {
         let tx = x.div_euclid(64);
         let ty = y.div_euclid(64);
         let lx = x.rem_euclid(64) as usize;
         let ly = y.rem_euclid(64) as usize;
-        let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+        let tile = mask
+            .tiles
+            .entry((tx, ty))
+            .or_insert_with(|| Box::new([0u8; 4096]));
         tile[ly * 64 + lx] = val;
     }
 }
 
 pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i32, canvas_h: i32) {
-    if !mask.is_active || feather_px <= 0 { return; }
+    if !mask.is_active || feather_px <= 0 {
+        return;
+    }
     let mut original = ahash::AHashMap::default();
     for (&(tx, ty), tile) in &mask.tiles {
         for ly in 0..64 {
@@ -684,7 +808,7 @@ pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i3
             }
         }
     }
-    
+
     let mut roi = ahash::AHashSet::default();
     for &(x, y) in original.keys() {
         for dy in -feather_px..=feather_px {
@@ -699,7 +823,7 @@ pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i3
             }
         }
     }
-    
+
     let mut new_pixels = ahash::AHashMap::default();
     for (x, y) in roi {
         let mut sum = 0u32;
@@ -722,14 +846,17 @@ pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i3
             new_pixels.insert((x, y), avg);
         }
     }
-    
+
     mask.tiles.clear();
     for ((x, y), val) in new_pixels {
         let tx = x.div_euclid(64);
         let ty = y.div_euclid(64);
         let lx = x.rem_euclid(64) as usize;
         let ly = y.rem_euclid(64) as usize;
-        let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+        let tile = mask
+            .tiles
+            .entry((tx, ty))
+            .or_insert_with(|| Box::new([0u8; 4096]));
         tile[ly * 64 + lx] = val;
     }
 }
@@ -739,7 +866,13 @@ mod tests {
     use super::*;
     use crate::canvas::SelectionMask;
 
-    fn make_pixel_mask(center_x: i32, center_y: i32, radius: i32, canvas_w: i32, canvas_h: i32) -> SelectionMask {
+    fn make_pixel_mask(
+        center_x: i32,
+        center_y: i32,
+        radius: i32,
+        canvas_w: i32,
+        canvas_h: i32,
+    ) -> SelectionMask {
         let mut mask = SelectionMask::new();
         mask.is_active = true;
         for y in 0..canvas_h {
@@ -751,7 +884,10 @@ mod tests {
                     let ty = y.div_euclid(64);
                     let lx = x.rem_euclid(64) as usize;
                     let ly = y.rem_euclid(64) as usize;
-                    let tile = mask.tiles.entry((tx, ty)).or_insert_with(|| Box::new([0u8; 4096]));
+                    let tile = mask
+                        .tiles
+                        .entry((tx, ty))
+                        .or_insert_with(|| Box::new([0u8; 4096]));
                     tile[ly * 64 + lx] = 255;
                 }
             }
@@ -763,7 +899,9 @@ mod tests {
         let mut count = 0;
         for tile in mask.tiles.values() {
             for &v in tile.iter() {
-                if v > 0 { count += 1; }
+                if v > 0 {
+                    count += 1;
+                }
             }
         }
         count
@@ -775,7 +913,12 @@ mod tests {
         let before = count_selected(&mask);
         grow_selection(&mut mask, 3, 200, 200);
         let after = count_selected(&mask);
-        assert!(after > before, "Grow should increase selected pixels ({} -> {})", before, after);
+        assert!(
+            after > before,
+            "Grow should increase selected pixels ({} -> {})",
+            before,
+            after
+        );
     }
 
     #[test]
@@ -784,7 +927,12 @@ mod tests {
         let before = count_selected(&mask);
         shrink_selection(&mut mask, 3, 200, 200);
         let after = count_selected(&mask);
-        assert!(after < before, "Shrink should decrease selected pixels ({} -> {})", before, after);
+        assert!(
+            after < before,
+            "Shrink should decrease selected pixels ({} -> {})",
+            before,
+            after
+        );
     }
 
     #[test]
@@ -795,7 +943,12 @@ mod tests {
         shrink_selection(&mut mask, 5, 200, 200);
         let after = count_selected(&mask);
         let diff = (after - original).abs();
-        assert!(diff < 50, "Round-trip should approximately restore ({} -> {})", original, after);
+        assert!(
+            diff < 50,
+            "Round-trip should approximately restore ({} -> {})",
+            original,
+            after
+        );
     }
 
     #[test]

@@ -184,7 +184,8 @@ impl WgpuRenderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let blank_mask_view = blank_mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let blank_mask_view =
+            blank_mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Fill blank mask texture with 255s
         queue.write_texture(
@@ -406,7 +407,8 @@ impl WgpuRenderer {
                 | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let navigator_swap_view = navigator_swap_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let navigator_swap_view =
+            navigator_swap_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Register the navigator texture with Egui
         let mut egui_renderer = state.renderer.write();
@@ -522,7 +524,8 @@ impl WgpuRenderer {
             Self::create_canvas_texture(&self.device, width, height),
             Self::create_canvas_texture(&self.device, width, height),
         ];
-        self.folder_views = self.folder_textures
+        self.folder_views = self
+            .folder_textures
             .iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
@@ -619,12 +622,7 @@ impl WgpuRenderer {
 
     /// Retrieve or allocate a slot for a tile in the GPU LRU cache.
     /// Returns the slot index; the caller must call `upload_tile` to fill it.
-    fn get_slot(
-        &mut self,
-        layer_id: u32,
-        tx: i32,
-        ty: i32,
-    ) -> usize {
+    fn get_slot(&mut self, layer_id: u32, tx: i32, ty: i32) -> usize {
         let key = (layer_id, tx, ty);
         if let Some(&slot) = self.lru_cache.get(&key) {
             // Update usage order
@@ -636,7 +634,6 @@ impl WgpuRenderer {
         }
 
         // Cache miss: Allocate a new slot
-        
 
         if self.lru_cache.len() < MAX_TILE_SLOTS {
             let new_slot = self.lru_cache.len();
@@ -660,7 +657,11 @@ impl WgpuRenderer {
         for layer in layers.iter_mut() {
             for (&coords, temp_tile) in layer.temp_mask_tiles.iter_mut() {
                 if temp_tile.is_dirty {
-                    layer.tiles.entry(coords).or_insert_with(crate::canvas::Tile::new).is_dirty = true;
+                    layer
+                        .tiles
+                        .entry(coords)
+                        .or_insert_with(crate::canvas::Tile::new)
+                        .is_dirty = true;
                     temp_tile.is_dirty = false;
                 }
             }
@@ -672,8 +673,12 @@ impl WgpuRenderer {
             let layer_id = layer.id;
             // Temporarily take mask to avoid borrow conflicts with tiles
             let temp_mask = layer.mask.take();
-            let coords_to_upload: Vec<(i32, i32)> = layer.tiles.iter()
-                .filter(|(&coords, tile)| tile.is_dirty || !self.lru_cache.contains_key(&(layer_id, coords.0, coords.1)))
+            let coords_to_upload: Vec<(i32, i32)> = layer
+                .tiles
+                .iter()
+                .filter(|(&coords, tile)| {
+                    tile.is_dirty || !self.lru_cache.contains_key(&(layer_id, coords.0, coords.1))
+                })
                 .map(|(&coords, _)| coords)
                 .collect();
 
@@ -805,7 +810,11 @@ impl WgpuRenderer {
                 continue;
             }
 
-            let next_idx = if active_idx == acc_idx { swap_idx } else { acc_idx };
+            let next_idx = if active_idx == acc_idx {
+                swap_idx
+            } else {
+                acc_idx
+            };
 
             // Copy active accumulator to next buffer to preserve background
             encoder.copy_texture_to_texture(
@@ -867,7 +876,8 @@ impl WgpuRenderer {
                 crate::canvas::LayerType::Raster | crate::canvas::LayerType::Vector => {
                     // Draw each tile
                     let mut all_vertices: Vec<Vertex> = Vec::with_capacity(layer.tiles.len() * 6);
-                    let mut tile_bind_groups: Vec<wgpu::BindGroup> = Vec::with_capacity(layer.tiles.len());
+                    let mut tile_bind_groups: Vec<wgpu::BindGroup> =
+                        Vec::with_capacity(layer.tiles.len());
 
                     for (&coords, _tile) in layer.tiles.iter() {
                         let key = (layer.id, coords.0, coords.1);
@@ -877,34 +887,36 @@ impl WgpuRenderer {
                             (&self.blank_view, &self.blank_mask_view)
                         };
 
-                        tile_bind_groups.push(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("Tile Compositing Bind Group"),
-                            layout: &self.bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry {
-                                    binding: 0,
-                                    resource: wgpu::BindingResource::TextureView(
-                                        &self.folder_views[active_idx],
-                                    ),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 1,
-                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 2,
-                                    resource: wgpu::BindingResource::TextureView(tile_view),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 3,
-                                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                                },
-                                wgpu::BindGroupEntry {
-                                    binding: 4,
-                                    resource: wgpu::BindingResource::TextureView(mask_view),
-                                },
-                            ],
-                        }));
+                        tile_bind_groups.push(self.device.create_bind_group(
+                            &wgpu::BindGroupDescriptor {
+                                label: Some("Tile Compositing Bind Group"),
+                                layout: &self.bind_group_layout,
+                                entries: &[
+                                    wgpu::BindGroupEntry {
+                                        binding: 0,
+                                        resource: wgpu::BindingResource::TextureView(
+                                            &self.folder_views[active_idx],
+                                        ),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 1,
+                                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 2,
+                                        resource: wgpu::BindingResource::TextureView(tile_view),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 3,
+                                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                                    },
+                                    wgpu::BindGroupEntry {
+                                        binding: 4,
+                                        resource: wgpu::BindingResource::TextureView(mask_view),
+                                    },
+                                ],
+                            },
+                        ));
 
                         let tile_world_x = (coords.0 * 64) as f32;
                         let tile_world_y = (coords.1 * 64) as f32;
@@ -934,13 +946,22 @@ impl WgpuRenderer {
                             };
 
                             let (x0, y0) = transform_pt(tile_world_x, tile_world_y);
-                            let (x1, y1) = transform_pt(tile_world_x + tile_world_size, tile_world_y);
-                            let (x2, y2) = transform_pt(tile_world_x, tile_world_y + tile_world_size);
-                            let (x3, y3) = transform_pt(tile_world_x + tile_world_size, tile_world_y + tile_world_size);
+                            let (x1, y1) =
+                                transform_pt(tile_world_x + tile_world_size, tile_world_y);
+                            let (x2, y2) =
+                                transform_pt(tile_world_x, tile_world_y + tile_world_size);
+                            let (x3, y3) = transform_pt(
+                                tile_world_x + tile_world_size,
+                                tile_world_y + tile_world_size,
+                            );
 
                             let to_ndc = |wx: f32, wy: f32| -> [f32; 2] {
-                                let left = ((wx - viewport_offset.x) * viewport_zoom) / (self.target_width as f32 * 0.5) - 1.0;
-                                let top = 1.0 - ((wy - viewport_offset.y) * viewport_zoom) / (self.target_height as f32 * 0.5);
+                                let left = ((wx - viewport_offset.x) * viewport_zoom)
+                                    / (self.target_width as f32 * 0.5)
+                                    - 1.0;
+                                let top = 1.0
+                                    - ((wy - viewport_offset.y) * viewport_zoom)
+                                        / (self.target_height as f32 * 0.5);
                                 [left, top]
                             };
 
@@ -982,7 +1003,8 @@ impl WgpuRenderer {
                                 - ((tile_world_y - viewport_offset.y) * viewport_zoom)
                                     / (self.target_height as f32 * 0.5);
                             let bottom = 1.0
-                                - (((tile_world_y + tile_world_size) - viewport_offset.y) * viewport_zoom)
+                                - (((tile_world_y + tile_world_size) - viewport_offset.y)
+                                    * viewport_zoom)
                                     / (self.target_height as f32 * 0.5);
 
                             [
@@ -1029,27 +1051,30 @@ impl WgpuRenderer {
                     }
 
                     if !all_vertices.is_empty() {
-                        let tile_vertex_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("Layer Tiles Vertex Buffer"),
-                            contents: bytemuck::cast_slice(&all_vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        });
+                        let tile_vertex_buf =
+                            self.device
+                                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                    label: Some("Layer Tiles Vertex Buffer"),
+                                    contents: bytemuck::cast_slice(&all_vertices),
+                                    usage: wgpu::BufferUsages::VERTEX,
+                                });
 
                         {
-                            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("Layer Blend Render Pass"),
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &self.folder_views[next_idx],
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Load,
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                            });
+                            let mut rpass =
+                                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                    label: Some("Layer Blend Render Pass"),
+                                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                        view: &self.folder_views[next_idx],
+                                        resolve_target: None,
+                                        ops: wgpu::Operations {
+                                            load: wgpu::LoadOp::Load,
+                                            store: wgpu::StoreOp::Store,
+                                        },
+                                    })],
+                                    depth_stencil_attachment: None,
+                                    timestamp_writes: None,
+                                    occlusion_query_set: None,
+                                });
 
                             rpass.set_pipeline(&self.render_pipeline);
                             rpass.set_vertex_buffer(0, tile_vertex_buf.slice(..));
@@ -1092,7 +1117,9 @@ impl WgpuRenderer {
                         entries: &[
                             wgpu::BindGroupEntry {
                                 binding: 0,
-                                resource: wgpu::BindingResource::TextureView(&self.folder_views[active_idx]),
+                                resource: wgpu::BindingResource::TextureView(
+                                    &self.folder_views[active_idx],
+                                ),
                             },
                             wgpu::BindGroupEntry {
                                 binding: 1,
@@ -1100,7 +1127,9 @@ impl WgpuRenderer {
                             },
                             wgpu::BindGroupEntry {
                                 binding: 2,
-                                resource: wgpu::BindingResource::TextureView(&self.folder_views[folder_result_idx]),
+                                resource: wgpu::BindingResource::TextureView(
+                                    &self.folder_views[folder_result_idx],
+                                ),
                             },
                             wgpu::BindGroupEntry {
                                 binding: 3,
@@ -1223,12 +1252,30 @@ impl WgpuRenderer {
                     / (self.target_height as f32 * 0.5);
 
             let mut paper_vertices: [Vertex; 6] = [
-                Vertex { position: [left, bottom], tex_coords: [0.0, 1.0] },
-                Vertex { position: [right, bottom], tex_coords: [1.0, 1.0] },
-                Vertex { position: [left, top], tex_coords: [0.0, 0.0] },
-                Vertex { position: [left, top], tex_coords: [0.0, 0.0] },
-                Vertex { position: [right, bottom], tex_coords: [1.0, 1.0] },
-                Vertex { position: [right, top], tex_coords: [1.0, 0.0] },
+                Vertex {
+                    position: [left, bottom],
+                    tex_coords: [0.0, 1.0],
+                },
+                Vertex {
+                    position: [right, bottom],
+                    tex_coords: [1.0, 1.0],
+                },
+                Vertex {
+                    position: [left, top],
+                    tex_coords: [0.0, 0.0],
+                },
+                Vertex {
+                    position: [left, top],
+                    tex_coords: [0.0, 0.0],
+                },
+                Vertex {
+                    position: [right, bottom],
+                    tex_coords: [1.0, 1.0],
+                },
+                Vertex {
+                    position: [right, top],
+                    tex_coords: [1.0, 0.0],
+                },
             ];
 
             let cos_theta = rotation_angle.cos();
@@ -1236,16 +1283,20 @@ impl WgpuRenderer {
             for v in &mut paper_vertices {
                 let mut px = v.position[0];
                 let py = v.position[1];
-                if mirror_horizontal { px = -px; }
+                if mirror_horizontal {
+                    px = -px;
+                }
                 v.position[0] = px * cos_theta - py * sin_theta;
                 v.position[1] = px * sin_theta + py * cos_theta;
             }
 
-            let paper_vertex_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Paper Canvas Vertex Buffer"),
-                contents: bytemuck::cast_slice(&paper_vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+            let paper_vertex_buf =
+                self.device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Paper Canvas Vertex Buffer"),
+                        contents: bytemuck::cast_slice(&paper_vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    });
 
             // Use blank_view for both texture bindings — blend_mode=6 ignores them and
             // just outputs vec4(1,1,1,1), so there is zero texture usage conflict.
@@ -1283,11 +1334,13 @@ impl WgpuRenderer {
                 padding: 0,
             };
 
-            let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Paper Blend Uniform Buffer"),
-                contents: bytemuck::cast_slice(&[uniforms]),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+            let uniform_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Paper Blend Uniform Buffer"),
+                    contents: bytemuck::cast_slice(&[uniforms]),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
 
             let uniform_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Paper Uniforms Bind Group"),
@@ -1338,7 +1391,9 @@ impl WgpuRenderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&self.folder_views[final_artwork_idx]),
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.folder_views[final_artwork_idx],
+                        ),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
@@ -1469,19 +1524,39 @@ impl WgpuRenderer {
         };
 
         let paper_vertices = [
-            Vertex { position: [left, bottom], tex_coords: [0.0, 1.0] },
-            Vertex { position: [right, bottom], tex_coords: [1.0, 1.0] },
-            Vertex { position: [left, top], tex_coords: [0.0, 0.0] },
-            Vertex { position: [left, top], tex_coords: [0.0, 0.0] },
-            Vertex { position: [right, bottom], tex_coords: [1.0, 1.0] },
-            Vertex { position: [right, top], tex_coords: [1.0, 0.0] },
+            Vertex {
+                position: [left, bottom],
+                tex_coords: [0.0, 1.0],
+            },
+            Vertex {
+                position: [right, bottom],
+                tex_coords: [1.0, 1.0],
+            },
+            Vertex {
+                position: [left, top],
+                tex_coords: [0.0, 0.0],
+            },
+            Vertex {
+                position: [left, top],
+                tex_coords: [0.0, 0.0],
+            },
+            Vertex {
+                position: [right, bottom],
+                tex_coords: [1.0, 1.0],
+            },
+            Vertex {
+                position: [right, top],
+                tex_coords: [1.0, 0.0],
+            },
         ];
 
-        let paper_vertex_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Navigator Paper Vertex Buffer"),
-            contents: bytemuck::cast_slice(&paper_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let paper_vertex_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Navigator Paper Vertex Buffer"),
+                contents: bytemuck::cast_slice(&paper_vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
         // Paper pass: blend_mode=6 outputs solid white — use blank_view for both
         // texture bindings so navigator_view is only bound as COLOR_TARGET here.
@@ -1519,11 +1594,13 @@ impl WgpuRenderer {
             padding: 0,
         };
 
-        let uniform_buf_paper = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Navigator Paper Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[uniforms_paper]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform_buf_paper = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Navigator Paper Uniform Buffer"),
+                contents: bytemuck::cast_slice(&[uniforms_paper]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let uniform_bind_group_paper = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Navigator Paper Uniforms Bind Group"),
@@ -1572,7 +1649,11 @@ impl WgpuRenderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 256,
+                height: 256,
+                depth_or_array_layers: 1,
+            },
         );
 
         // 4. Draw the final artwork on top of the paper sheet
@@ -1591,7 +1672,9 @@ impl WgpuRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.folder_views[final_artwork_idx]),
+                    resource: wgpu::BindingResource::TextureView(
+                        &self.folder_views[final_artwork_idx],
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -1611,11 +1694,13 @@ impl WgpuRenderer {
             padding: 0,
         };
 
-        let uniform_buf_art = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Navigator Art Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[uniforms_art]),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform_buf_art = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Navigator Art Uniform Buffer"),
+                contents: bytemuck::cast_slice(&[uniforms_art]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
 
         let uniform_bind_group_art = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Navigator Art Uniforms Bind Group"),

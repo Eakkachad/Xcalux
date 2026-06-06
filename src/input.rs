@@ -365,21 +365,36 @@ impl StrokeStabilizer {
 
         // 2. Queue pressure and tilt values
         let p_window = (window_size / 2).max(1);
-        push_ring(&mut self.pressure_buf, &mut self.pressure_start, &mut self.pressure_len, raw_pressure);
+        push_ring(
+            &mut self.pressure_buf,
+            &mut self.pressure_start,
+            &mut self.pressure_len,
+            raw_pressure,
+        );
         while self.pressure_len > p_window {
             self.pressure_start = (self.pressure_start + 1) % 128;
             self.pressure_len -= 1;
         }
         let avg_p = avg_ring(&self.pressure_buf, self.pressure_start, self.pressure_len);
 
-        push_ring(&mut self.tilt_x_buf, &mut self.tilt_x_start, &mut self.tilt_x_len, raw_tilt_x);
+        push_ring(
+            &mut self.tilt_x_buf,
+            &mut self.tilt_x_start,
+            &mut self.tilt_x_len,
+            raw_tilt_x,
+        );
         while self.tilt_x_len > p_window {
             self.tilt_x_start = (self.tilt_x_start + 1) % 128;
             self.tilt_x_len -= 1;
         }
         let avg_tx = avg_ring(&self.tilt_x_buf, self.tilt_x_start, self.tilt_x_len);
 
-        push_ring(&mut self.tilt_y_buf, &mut self.tilt_y_start, &mut self.tilt_y_len, raw_tilt_y);
+        push_ring(
+            &mut self.tilt_y_buf,
+            &mut self.tilt_y_start,
+            &mut self.tilt_y_len,
+            raw_tilt_y,
+        );
         while self.tilt_y_len > p_window {
             self.tilt_y_start = (self.tilt_y_start + 1) % 128;
             self.tilt_y_len -= 1;

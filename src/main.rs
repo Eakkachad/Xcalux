@@ -1,17 +1,17 @@
 mod app;
+mod brush_io;
 mod canvas;
+mod commands;
+mod diagnostics;
 mod history;
 mod input;
-mod renderer;
-mod stress_test;
-mod brush_io;
-mod save;
-mod commands;
-mod shortcuts;
-mod ui;
 mod preferences;
 mod pressure;
-mod diagnostics;
+mod renderer;
+mod save;
+mod shortcuts;
+mod stress_test;
+mod ui;
 mod vector;
 
 mod tools {

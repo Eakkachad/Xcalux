@@ -66,7 +66,12 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     )
                     .clicked()
                 {
-                    app.history.undo(&mut app.layers, &mut app.layer_order, &mut app.selection_mask, &mut app.active_layer_id);
+                    app.history.undo(
+                        &mut app.layers,
+                        &mut app.layer_order,
+                        &mut app.selection_mask,
+                        &mut app.active_layer_id,
+                    );
                     ui.close_menu();
                 }
                 if ui
@@ -76,7 +81,12 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     )
                     .clicked()
                 {
-                    app.history.redo(&mut app.layers, &mut app.layer_order, &mut app.selection_mask, &mut app.active_layer_id);
+                    app.history.redo(
+                        &mut app.layers,
+                        &mut app.layer_order,
+                        &mut app.selection_mask,
+                        &mut app.active_layer_id,
+                    );
                     ui.close_menu();
                 }
                 ui.separator();
@@ -118,10 +128,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(
-                        app.layer_order.len() > 1,
-                        egui::Button::new("Delete Layer"),
-                    )
+                    .add_enabled(app.layer_order.len() > 1, egui::Button::new("Delete Layer"))
                     .clicked()
                 {
                     app.command(CommandId::DeleteLayer);
@@ -129,10 +136,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(
-                        app.layer_order.len() > 1,
-                        egui::Button::new("Merge Down"),
-                    )
+                    .add_enabled(app.layer_order.len() > 1, egui::Button::new("Merge Down"))
                     .clicked()
                 {
                     app.command(CommandId::MergeDown);
@@ -148,24 +152,42 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 }
                 ui.separator();
                 ui.menu_button("Layer Mask", |ui| {
-                    let has_mask = app.layers.get(&app.active_layer_id).is_some_and(|l| l.mask.is_some());
-                    if ui.add_enabled(!has_mask, egui::Button::new("Add Mask")).clicked() {
+                    let has_mask = app
+                        .layers
+                        .get(&app.active_layer_id)
+                        .is_some_and(|l| l.mask.is_some());
+                    if ui
+                        .add_enabled(!has_mask, egui::Button::new("Add Mask"))
+                        .clicked()
+                    {
                         app.command(CommandId::AddLayerMask);
                         ui.close_menu();
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new("Delete Mask")).clicked() {
+                    if ui
+                        .add_enabled(has_mask, egui::Button::new("Delete Mask"))
+                        .clicked()
+                    {
                         app.command(CommandId::DeleteLayerMask);
                         ui.close_menu();
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new("Apply Mask")).clicked() {
+                    if ui
+                        .add_enabled(has_mask, egui::Button::new("Apply Mask"))
+                        .clicked()
+                    {
                         app.command(CommandId::ApplyLayerMask);
                         ui.close_menu();
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new("Invert Mask")).clicked() {
+                    if ui
+                        .add_enabled(has_mask, egui::Button::new("Invert Mask"))
+                        .clicked()
+                    {
                         app.command(CommandId::InvertLayerMask);
                         ui.close_menu();
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new("Toggle Mask")).clicked() {
+                    if ui
+                        .add_enabled(has_mask, egui::Button::new("Toggle Mask"))
+                        .clicked()
+                    {
                         app.command(CommandId::ToggleLayerMask);
                         ui.close_menu();
                     }
@@ -190,21 +212,27 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.label("Canvas Size:");
                 ui.horizontal(|ui| {
                     ui.label("W:");
-                    if ui.add(
-                        egui::DragValue::new(&mut app.canvas_width)
-                            .clamp_range(256..=4096)
-                            .suffix("px"),
-                    ).changed() {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut app.canvas_width)
+                                .clamp_range(256..=4096)
+                                .suffix("px"),
+                        )
+                        .changed()
+                    {
                         if let Some(r) = &mut app.renderer {
                             r.clear_cache();
                         }
                     }
                     ui.label("H:");
-                    if ui.add(
-                        egui::DragValue::new(&mut app.canvas_height)
-                            .clamp_range(256..=4096)
-                            .suffix("px"),
-                    ).changed() {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut app.canvas_height)
+                                .clamp_range(256..=4096)
+                                .suffix("px"),
+                        )
+                        .changed()
+                    {
                         if let Some(r) = &mut app.renderer {
                             r.clear_cache();
                         }
@@ -212,42 +240,57 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 });
 
                 egui::ComboBox::from_id_source("canvas_preset_menu")
-                    .selected_text(format!("Preset: {}x{}", app.canvas_width, app.canvas_height))
+                    .selected_text(format!(
+                        "Preset: {}x{}",
+                        app.canvas_width, app.canvas_height
+                    ))
                     .show_ui(ui, |ui| {
-                        if ui.selectable_label(
-                            app.canvas_width == 1024 && app.canvas_height == 1024,
-                            "Square (1024x1024)",
-                        ).clicked() {
+                        if ui
+                            .selectable_label(
+                                app.canvas_width == 1024 && app.canvas_height == 1024,
+                                "Square (1024x1024)",
+                            )
+                            .clicked()
+                        {
                             app.canvas_width = 1024;
                             app.canvas_height = 1024;
                             if let Some(r) = &mut app.renderer {
                                 r.clear_cache();
                             }
                         }
-                        if ui.selectable_label(
-                            app.canvas_width == 1920 && app.canvas_height == 1080,
-                            "FullHD (1920x1080)",
-                        ).clicked() {
+                        if ui
+                            .selectable_label(
+                                app.canvas_width == 1920 && app.canvas_height == 1080,
+                                "FullHD (1920x1080)",
+                            )
+                            .clicked()
+                        {
                             app.canvas_width = 1920;
                             app.canvas_height = 1080;
                             if let Some(r) = &mut app.renderer {
                                 r.clear_cache();
                             }
                         }
-                        if ui.selectable_label(
-                            app.canvas_width == 2048 && app.canvas_height == 2048,
-                            "2K Square (2048x2048)",
-                        ).clicked() {
+                        if ui
+                            .selectable_label(
+                                app.canvas_width == 2048 && app.canvas_height == 2048,
+                                "2K Square (2048x2048)",
+                            )
+                            .clicked()
+                        {
                             app.canvas_width = 2048;
                             app.canvas_height = 2048;
                             if let Some(r) = &mut app.renderer {
                                 r.clear_cache();
                             }
                         }
-                        if ui.selectable_label(
-                            app.canvas_width == 2480 && app.canvas_height == 3508,
-                            "A4 (2480x3508)",
-                        ).clicked() {
+                        if ui
+                            .selectable_label(
+                                app.canvas_width == 2480 && app.canvas_height == 3508,
+                                "A4 (2480x3508)",
+                            )
+                            .clicked()
+                        {
                             app.canvas_width = 2480;
                             app.canvas_height = 3508;
                             if let Some(r) = &mut app.renderer {
@@ -270,7 +313,10 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 }
                 ui.separator();
                 let has_selection = app.selection_mask.is_active && !app.selection_mask.is_empty();
-                if ui.add_enabled(has_selection, egui::Button::new("Crop to Selection")).clicked() {
+                if ui
+                    .add_enabled(has_selection, egui::Button::new("Crop to Selection"))
+                    .clicked()
+                {
                     app.command(CommandId::CropToSelection);
                     ui.close_menu();
                 }
@@ -343,46 +389,73 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::Navigator);
                     if ui.checkbox(&mut v, "Navigator").changed() {
-                        app.workspace_layout.toggle_panel_visibility(PanelKind::Navigator);
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::Navigator);
                     }
                 }
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::ColorWheel);
                     if ui.checkbox(&mut v, "Color Wheel").changed() {
-                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorWheel);
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::ColorWheel);
                     }
                 }
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::ColorSliders);
                     if ui.checkbox(&mut v, "Color Sliders").changed() {
-                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorSliders);
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::ColorSliders);
                     }
                 }
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::ColorPalette);
                     if ui.checkbox(&mut v, "Color Palette").changed() {
-                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorPalette);
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::ColorPalette);
                     }
                 }
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::ColorHistory);
                     if ui.checkbox(&mut v, "Color History").changed() {
-                        app.workspace_layout.toggle_panel_visibility(PanelKind::ColorHistory);
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::ColorHistory);
                     }
                 }
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::LayersManager);
                     if ui.checkbox(&mut v, "Layers Manager").changed() {
-                        app.workspace_layout.toggle_panel_visibility(PanelKind::LayersManager);
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::LayersManager);
                     }
                 }
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::Reference);
                     if ui.checkbox(&mut v, "Reference Panel").changed() {
-                        app.workspace_layout.toggle_panel_visibility(PanelKind::Reference);
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::Reference);
                     }
                 }
-                ui.checkbox(&mut app.show_symmetry_panel, "Symmetry Panel");
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::Stabilizer);
+                    if ui.checkbox(&mut v, "Stabilizer").changed() {
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::Stabilizer);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::Symmetry);
+                    if ui.checkbox(&mut v, "Symmetry / Drawing Guide").changed() {
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::Symmetry);
+                    }
+                }
+                {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::AdvancedDebug);
+                    if ui.checkbox(&mut v, "Advanced / Debug").changed() {
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::AdvancedDebug);
+                    }
+                }
                 ui.checkbox(&mut app.show_tool_options, "Tool Options");
                 ui.separator();
                 ui.checkbox(&mut app.layer_panel_on_left, "Layer Panel on Left Side");
@@ -390,7 +463,12 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 if ui.button("Dock All Panels").clicked() {
                     for panel in &mut app.workspace_layout.panels {
                         match panel.kind {
-                            PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => {
+                            PanelKind::ToolsAndPresets
+                            | PanelKind::BrushSettings
+                            | PanelKind::ToolOptions
+                            | PanelKind::Stabilizer
+                            | PanelKind::Symmetry
+                            | PanelKind::AdvancedDebug => {
                                 panel.location = PanelLocation::Left;
                             }
                             _ => {
@@ -435,7 +513,10 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 .width(90.0)
                 .show_ui(ui, |ui| {
                     let mut selected = false;
-                    if ui.selectable_label(matches!(current_level, StabilizerLevel::Off), "Off").clicked() {
+                    if ui
+                        .selectable_label(matches!(current_level, StabilizerLevel::Off), "Off")
+                        .clicked()
+                    {
                         app.stabilizer.set_level(StabilizerLevel::Off);
                         selected = true;
                     }
@@ -444,7 +525,10 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                             StabilizerLevel::Level(v) => v == val,
                             _ => false,
                         };
-                        if ui.selectable_label(is_sel, format!("Level {}", val)).clicked() {
+                        if ui
+                            .selectable_label(is_sel, format!("Level {}", val))
+                            .clicked()
+                        {
                             app.stabilizer.set_level(StabilizerLevel::Level(val));
                             selected = true;
                         }
@@ -477,11 +561,20 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 .width(120.0)
                 .show_ui(ui, |ui| {
                     let mut selected = false;
-                    if ui.selectable_label(current_mode == StabilizerMode::Ema, "EMA").clicked() {
+                    if ui
+                        .selectable_label(current_mode == StabilizerMode::Ema, "EMA")
+                        .clicked()
+                    {
                         app.stabilizer.mode = StabilizerMode::Ema;
                         selected = true;
                     }
-                    if ui.selectable_label(current_mode == StabilizerMode::SpringMassDamper, "Spring Physics").clicked() {
+                    if ui
+                        .selectable_label(
+                            current_mode == StabilizerMode::SpringMassDamper,
+                            "Spring Physics",
+                        )
+                        .clicked()
+                    {
                         app.stabilizer.mode = StabilizerMode::SpringMassDamper;
                         selected = true;
                     }

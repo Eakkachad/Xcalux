@@ -89,9 +89,15 @@ pub fn export_png(
                     let out_a = src_a_f + dst_a_f * (1.0 - src_a_f);
 
                     if out_a > 0.0 {
-                        img[idx] = ((src_r as f32 * src_a_f + img[idx] as f32 * dst_a_f * (1.0 - src_a_f)) / out_a) as u8;
-                        img[idx + 1] = ((src_g as f32 * src_a_f + img[idx + 1] as f32 * dst_a_f * (1.0 - src_a_f)) / out_a) as u8;
-                        img[idx + 2] = ((src_b as f32 * src_a_f + img[idx + 2] as f32 * dst_a_f * (1.0 - src_a_f)) / out_a) as u8;
+                        img[idx] = ((src_r as f32 * src_a_f
+                            + img[idx] as f32 * dst_a_f * (1.0 - src_a_f))
+                            / out_a) as u8;
+                        img[idx + 1] = ((src_g as f32 * src_a_f
+                            + img[idx + 1] as f32 * dst_a_f * (1.0 - src_a_f))
+                            / out_a) as u8;
+                        img[idx + 2] = ((src_b as f32 * src_a_f
+                            + img[idx + 2] as f32 * dst_a_f * (1.0 - src_a_f))
+                            / out_a) as u8;
                         img[idx + 3] = (out_a * 255.0) as u8;
                     }
                 }

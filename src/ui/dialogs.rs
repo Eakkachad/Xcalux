@@ -186,35 +186,45 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     ui.label(egui::RichText::new("Export Canvas as PNG").strong());
                 });
                 ui.add_space(8.0);
-                egui::Grid::new("export_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
-                    ui.label("File path:");
-                    ui.text_edit_singleline(&mut app.export_png_path);
-                    ui.end_row();
-                    ui.label("Background:");
-                    let mut bg_val = match app.export_png_options.background {
-                        crate::export::png::ExportBackground::Transparent => 0,
-                        crate::export::png::ExportBackground::White => 1,
-                    };
-                    egui::ComboBox::from_id_source("export_bg")
-                        .selected_text(if bg_val == 0 { "Transparent" } else { "White" })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut bg_val, 0, "Transparent").changed();
-                            if ui.selectable_value(&mut bg_val, 1, "White").changed() { }
-                        });
-                    app.export_png_options.background = if bg_val == 0 {
-                        crate::export::png::ExportBackground::Transparent
-                    } else {
-                        crate::export::png::ExportBackground::White
-                    };
-                    ui.end_row();
-                    ui.label("Scale:");
-                    ui.add(egui::Slider::new(&mut app.export_png_options.scale, 0.1..=4.0).text("x"));
-                    ui.end_row();
-                });
+                egui::Grid::new("export_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("File path:");
+                        ui.text_edit_singleline(&mut app.export_png_path);
+                        ui.end_row();
+                        ui.label("Background:");
+                        let mut bg_val = match app.export_png_options.background {
+                            crate::export::png::ExportBackground::Transparent => 0,
+                            crate::export::png::ExportBackground::White => 1,
+                        };
+                        egui::ComboBox::from_id_source("export_bg")
+                            .selected_text(if bg_val == 0 { "Transparent" } else { "White" })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut bg_val, 0, "Transparent").changed();
+                                if ui.selectable_value(&mut bg_val, 1, "White").changed() {}
+                            });
+                        app.export_png_options.background = if bg_val == 0 {
+                            crate::export::png::ExportBackground::Transparent
+                        } else {
+                            crate::export::png::ExportBackground::White
+                        };
+                        ui.end_row();
+                        ui.label("Scale:");
+                        ui.add(
+                            egui::Slider::new(&mut app.export_png_options.scale, 0.1..=4.0)
+                                .text("x"),
+                        );
+                        ui.end_row();
+                    });
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Export").clicked() { do_export = true; }
-                    if ui.button("Cancel").clicked() { close = true; }
+                    if ui.button("Export").clicked() {
+                        do_export = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
                 });
             });
         if do_export {
@@ -255,11 +265,21 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     ui.text_edit_singleline(&mut app.export_ora_path);
                 });
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("ORA preserves layers, opacity, blend modes, and visibility.").weak().small());
+                ui.label(
+                    egui::RichText::new(
+                        "ORA preserves layers, opacity, blend modes, and visibility.",
+                    )
+                    .weak()
+                    .small(),
+                );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Export").clicked() { do_export = true; }
-                    if ui.button("Cancel").clicked() { close = true; }
+                    if ui.button("Export").clicked() {
+                        do_export = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
                 });
             });
         if do_export {
@@ -299,11 +319,19 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     ui.text_edit_singleline(&mut app.import_ora_path);
                 });
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("Warning: Importing will replace all existing layers.").weak().small());
+                ui.label(
+                    egui::RichText::new("Warning: Importing will replace all existing layers.")
+                        .weak()
+                        .small(),
+                );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Import").clicked() { do_import = true; }
-                    if ui.button("Cancel").clicked() { close = true; }
+                    if ui.button("Import").clicked() {
+                        do_import = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
                 });
             });
         if do_import {
@@ -384,11 +412,25 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     ui.add_enabled(false, egui::Button::new("Press a key... (Esc to cancel)"));
                     let captured = ctx.input(|i| {
                         for event in &i.events {
-                            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                            if let egui::Event::Key {
+                                key,
+                                pressed: true,
+                                modifiers,
+                                ..
+                            } = event
+                            {
                                 let captured_idx = app.shortcut_listen_idx;
                                 if let Some(idx) = captured_idx {
                                     if *key != egui::Key::Escape {
-                                        return Some((idx, crate::shortcuts::KeyBinding::from_event(*key, modifiers.ctrl, modifiers.shift, modifiers.alt)));
+                                        return Some((
+                                            idx,
+                                            crate::shortcuts::KeyBinding::from_event(
+                                                *key,
+                                                modifiers.ctrl,
+                                                modifiers.shift,
+                                                modifiers.alt,
+                                            ),
+                                        ));
                                     }
                                 }
                                 return None; // Escape cancels
@@ -414,7 +456,10 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     for (entry_idx, entry) in app.shortcuts.entries.iter().enumerate() {
                         let name_lower = entry.name.to_lowercase();
                         let cat_lower = entry.category.to_lowercase();
-                        if !search_lower.is_empty() && !name_lower.contains(&search_lower) && !cat_lower.contains(&search_lower) {
+                        if !search_lower.is_empty()
+                            && !name_lower.contains(&search_lower)
+                            && !cat_lower.contains(&search_lower)
+                        {
                             continue;
                         }
 
@@ -422,31 +467,34 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
 
                         ui.horizontal(|ui| {
                             ui.label(entry.name);
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if is_editing {
-                                    if let Some(ref binding) = entry.primary {
-                                        if ui.button(binding.display()).clicked() {
-                                            app.shortcut_listen_idx = Some(entry_idx);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if is_editing {
+                                        if let Some(ref binding) = entry.primary {
+                                            if ui.button(binding.display()).clicked() {
+                                                app.shortcut_listen_idx = Some(entry_idx);
+                                            }
+                                        } else {
+                                            if ui.button("[none]").clicked() {
+                                                app.shortcut_listen_idx = Some(entry_idx);
+                                            }
+                                        }
+                                        if ui.button("Clear").clicked() {
+                                            app.shortcut_edit_idx = None;
                                         }
                                     } else {
-                                        if ui.button("[none]").clicked() {
-                                            app.shortcut_listen_idx = Some(entry_idx);
+                                        if let Some(ref binding) = entry.primary {
+                                            ui.label(binding.display());
+                                        } else {
+                                            ui.label("[none]");
+                                        }
+                                        if ui.button("Edit").clicked() {
+                                            clicked_idx = Some(entry_idx);
                                         }
                                     }
-                                    if ui.button("Clear").clicked() {
-                                        app.shortcut_edit_idx = None;
-                                    }
-                                } else {
-                                    if let Some(ref binding) = entry.primary {
-                                        ui.label(binding.display());
-                                    } else {
-                                        ui.label("[none]");
-                                    }
-                                    if ui.button("Edit").clicked() {
-                                        clicked_idx = Some(entry_idx);
-                                    }
-                                }
-                            });
+                                },
+                            );
                         });
                         ui.separator();
                     }
@@ -494,7 +542,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     if ui.button("Grow").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
                         let grow_px = app.grow_pixels;
-                        selection::grow_selection(&mut app.selection_mask, grow_px, app.canvas_width as i32, app.canvas_height as i32);
+                        selection::grow_selection(
+                            &mut app.selection_mask,
+                            grow_px,
+                            app.canvas_width as i32,
+                            app.canvas_height as i32,
+                        );
                         app.show_selection_overlay = app.selection_mask.is_active;
                         let new_mask = Box::new(app.selection_mask.clone());
                         grow_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
@@ -531,7 +584,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     if ui.button("Shrink").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
                         let shrink_px = app.shrink_pixels;
-                        selection::shrink_selection(&mut app.selection_mask, shrink_px, app.canvas_width as i32, app.canvas_height as i32);
+                        selection::shrink_selection(
+                            &mut app.selection_mask,
+                            shrink_px,
+                            app.canvas_width as i32,
+                            app.canvas_height as i32,
+                        );
                         app.show_selection_overlay = app.selection_mask.is_active;
                         let new_mask = Box::new(app.selection_mask.clone());
                         shrink_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
@@ -568,7 +626,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     if ui.button("Feather").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
                         let feather_px = app.feather_pixels;
-                        selection::feather_selection(&mut app.selection_mask, feather_px, app.canvas_width as i32, app.canvas_height as i32);
+                        selection::feather_selection(
+                            &mut app.selection_mask,
+                            feather_px,
+                            app.canvas_width as i32,
+                            app.canvas_height as i32,
+                        );
                         app.show_selection_overlay = app.selection_mask.is_active;
                         let new_mask = Box::new(app.selection_mask.clone());
                         feather_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
@@ -599,21 +662,33 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
 
                 let plot_size = egui::Vec2::splat(200.0);
-                let (plot_rect, plot_response) = ui.allocate_exact_size(plot_size, egui::Sense::click_and_drag());
+                let (plot_rect, plot_response) =
+                    ui.allocate_exact_size(plot_size, egui::Sense::click_and_drag());
 
-                ui.painter().rect_filled(plot_rect, 0.0, egui::Color32::from_gray(40));
-                ui.painter().rect_stroke(plot_rect, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(100)));
+                ui.painter()
+                    .rect_filled(plot_rect, 0.0, egui::Color32::from_gray(40));
+                ui.painter().rect_stroke(
+                    plot_rect,
+                    1.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+                );
 
                 // Draw grid
                 for i in 1..4 {
                     let x = plot_rect.left() + plot_rect.width() * (i as f32 / 4.0);
                     ui.painter().line_segment(
-                        [egui::Pos2::new(x, plot_rect.top()), egui::Pos2::new(x, plot_rect.bottom())],
+                        [
+                            egui::Pos2::new(x, plot_rect.top()),
+                            egui::Pos2::new(x, plot_rect.bottom()),
+                        ],
                         egui::Stroke::new(0.5, egui::Color32::from_gray(80)),
                     );
                     let y = plot_rect.top() + plot_rect.height() * (i as f32 / 4.0);
                     ui.painter().line_segment(
-                        [egui::Pos2::new(plot_rect.left(), y), egui::Pos2::new(plot_rect.right(), y)],
+                        [
+                            egui::Pos2::new(plot_rect.left(), y),
+                            egui::Pos2::new(plot_rect.right(), y),
+                        ],
                         egui::Stroke::new(0.5, egui::Color32::from_gray(80)),
                     );
                 }
@@ -630,7 +705,10 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                         plot_rect.left() + window[1].0 * plot_rect.width(),
                         plot_rect.bottom() - window[1].1 * plot_rect.height(),
                     );
-                    ui.painter().line_segment([p0, p1], egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255)));
+                    ui.painter().line_segment(
+                        [p0, p1],
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 200, 255)),
+                    );
                 }
 
                 // Draw and handle control points
@@ -641,7 +719,8 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                         plot_rect.bottom() - points[i].1 * plot_rect.height(),
                     );
                     let handle_size = 8.0;
-                    let handle_rect = egui::Rect::from_center_size(screen_pos, egui::Vec2::splat(handle_size));
+                    let handle_rect =
+                        egui::Rect::from_center_size(screen_pos, egui::Vec2::splat(handle_size));
                     let handle_resp = ui.allocate_rect(handle_rect, egui::Sense::drag());
 
                     let color = if i == 0 || i == points.len() - 1 {
@@ -649,16 +728,27 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     } else {
                         egui::Color32::from_rgb(100, 255, 100)
                     };
-                    ui.painter().circle_filled(screen_pos, handle_size * 0.5, color);
-                    ui.painter().circle_stroke(screen_pos, handle_size * 0.5, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                    ui.painter()
+                        .circle_filled(screen_pos, handle_size * 0.5, color);
+                    ui.painter().circle_stroke(
+                        screen_pos,
+                        handle_size * 0.5,
+                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    );
 
                     if handle_resp.dragged() {
                         if let Some(pos) = plot_response.interact_pointer_pos() {
-                            let nx = ((pos.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
-                            let ny = 1.0 - ((pos.y - plot_rect.top()) / plot_rect.height()).clamp(0.0, 1.0);
+                            let nx =
+                                ((pos.x - plot_rect.left()) / plot_rect.width()).clamp(0.0, 1.0);
+                            let ny = 1.0
+                                - ((pos.y - plot_rect.top()) / plot_rect.height()).clamp(0.0, 1.0);
                             points[i] = (nx, ny);
-                            if i == 0 { points[i].0 = 0.0; }
-                            if i == points.len() - 1 { points[i].0 = 1.0; }
+                            if i == 0 {
+                                points[i].0 = 0.0;
+                            }
+                            if i == points.len() - 1 {
+                                points[i].0 = 1.0;
+                            }
                         }
                     }
                 }
@@ -696,69 +786,91 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             .resizable(true)
             .default_size([300.0, 250.0])
             .show(ctx, |ui| {
-                egui::Grid::new("pref_grid").num_columns(2).spacing([10.0, 10.0]).show(ui, |ui| {
-                    ui.label("Theme:");
-                    let old_theme = app.pref_theme.clone();
-                    egui::ComboBox::from_id_source("pref_theme")
-                        .selected_text(&app.pref_theme)
-                        .show_ui(ui, |ui| {
-                            for theme in &["Light", "Gray", "Dark"] {
-                                ui.selectable_value(&mut app.pref_theme, theme.to_string(), *theme);
+                egui::Grid::new("pref_grid")
+                    .num_columns(2)
+                    .spacing([10.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Theme:");
+                        let old_theme = app.pref_theme.clone();
+                        egui::ComboBox::from_id_source("pref_theme")
+                            .selected_text(&app.pref_theme)
+                            .show_ui(ui, |ui| {
+                                for theme in &["Light", "Gray", "Dark"] {
+                                    ui.selectable_value(
+                                        &mut app.pref_theme,
+                                        theme.to_string(),
+                                        *theme,
+                                    );
+                                }
+                            });
+                        if app.pref_theme != old_theme {
+                            if app.pref_theme == "Light" {
+                                ctx.set_visuals(egui::Visuals::light());
+                            } else if app.pref_theme == "Dark" {
+                                ctx.set_visuals(egui::Visuals::dark());
+                            } else {
+                                let mut visuals = egui::Visuals::light();
+                                visuals.panel_fill = egui::Color32::from_rgb(240, 240, 240);
+                                visuals.window_fill = egui::Color32::from_rgb(245, 245, 245);
+                                visuals.widgets.active.bg_fill =
+                                    egui::Color32::from_rgb(180, 200, 240);
+                                visuals.widgets.hovered.bg_fill =
+                                    egui::Color32::from_rgb(215, 225, 250);
+                                visuals.widgets.inactive.bg_fill =
+                                    egui::Color32::from_rgb(230, 230, 230);
+                                ctx.set_visuals(visuals);
+                            }
+                        }
+                        ui.end_row();
+
+                        ui.label("UI Scale:");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Slider::new(&mut app.pref_ui_scale, 0.5..=2.0).step_by(0.1),
+                            );
+                            if ui.button("Apply").clicked() {
+                                ctx.set_pixels_per_point(app.pref_ui_scale);
                             }
                         });
-                    if app.pref_theme != old_theme {
-                        if app.pref_theme == "Light" {
-                            ctx.set_visuals(egui::Visuals::light());
-                        } else if app.pref_theme == "Dark" {
-                            ctx.set_visuals(egui::Visuals::dark());
-                        } else {
-                            let mut visuals = egui::Visuals::light();
-                            visuals.panel_fill = egui::Color32::from_rgb(240, 240, 240);
-                            visuals.window_fill = egui::Color32::from_rgb(245, 245, 245);
-                            visuals.widgets.active.bg_fill = egui::Color32::from_rgb(180, 200, 240);
-                            visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(215, 225, 250);
-                            visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(230, 230, 230);
-                            ctx.set_visuals(visuals);
-                        }
-                    }
-                    ui.end_row();
+                        ui.end_row();
 
-                    ui.label("UI Scale:");
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Slider::new(&mut app.pref_ui_scale, 0.5..=2.0).step_by(0.1));
-                        if ui.button("Apply").clicked() {
-                            ctx.set_pixels_per_point(app.pref_ui_scale);
-                        }
-                    });
-                    ui.end_row();
+                        ui.label("Canvas Background:");
+                        egui::ComboBox::from_id_source("pref_canvas_bg")
+                            .selected_text(&app.pref_canvas_bg)
+                            .show_ui(ui, |ui| {
+                                for bg in &["Checkerboard", "White", "Gray", "Black"] {
+                                    ui.selectable_value(
+                                        &mut app.pref_canvas_bg,
+                                        bg.to_string(),
+                                        *bg,
+                                    );
+                                }
+                            });
+                        ui.end_row();
 
-                    ui.label("Canvas Background:");
-                    egui::ComboBox::from_id_source("pref_canvas_bg")
-                        .selected_text(&app.pref_canvas_bg)
-                        .show_ui(ui, |ui| {
-                            for bg in &["Checkerboard", "White", "Gray", "Black"] {
-                                ui.selectable_value(&mut app.pref_canvas_bg, bg.to_string(), *bg);
-                            }
+                        ui.label("Autosave:");
+                        ui.checkbox(&mut app.pref_autosave_enabled, "Enabled");
+                        ui.end_row();
+
+                        ui.label("Autosave Interval:");
+                        let old_interval = app.pref_autosave_interval_mins;
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut app.pref_autosave_interval_mins)
+                                    .clamp_range(1..=60),
+                            );
+                            ui.label("minutes");
                         });
-                    ui.end_row();
-
-                    ui.label("Autosave:");
-                    ui.checkbox(&mut app.pref_autosave_enabled, "Enabled");
-                    ui.end_row();
-
-                    ui.label("Autosave Interval:");
-                    let old_interval = app.pref_autosave_interval_mins;
-                    ui.horizontal(|ui| {
-                        ui.add(egui::DragValue::new(&mut app.pref_autosave_interval_mins).clamp_range(1..=60));
-                        ui.label("minutes");
+                        if app.pref_autosave_interval_mins != old_interval
+                            || app.pref_autosave_enabled != app.autosave_enabled
+                        {
+                            app.autosave_enabled = app.pref_autosave_enabled;
+                            app.autosave_interval_secs =
+                                (app.pref_autosave_interval_mins * 60) as f64;
+                        }
+                        ui.end_row();
                     });
-                    if app.pref_autosave_interval_mins != old_interval || app.pref_autosave_enabled != app.autosave_enabled {
-                        app.autosave_enabled = app.pref_autosave_enabled;
-                        app.autosave_interval_secs = (app.pref_autosave_interval_mins * 60) as f64;
-                    }
-                    ui.end_row();
-                });
-                
+
                 ui.add_space(12.0);
                 if ui.button("Close").clicked() {
                     close = true;
@@ -813,7 +925,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                             }
                         });
                 });
-                
+
                 ui.add_space(8.0);
                 ui.label("PRESSURE CURVE DIAGRAM:");
                 let size = egui::Vec2::splat(120.0);
@@ -821,7 +933,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.painter().rect_filled(rect_curve, 4.0, egui::Color32::from_gray(240));
                 ui.painter().rect_stroke(rect_curve, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
                 ui.painter().line_segment([rect_curve.left_bottom(), rect_curve.right_top()], egui::Stroke::new(1.0, egui::Color32::GRAY));
-                
+
                 let mut pts = Vec::new();
                 let curve_steps = 20;
                 for i in 0..=curve_steps {
@@ -844,11 +956,11 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 let (pad_rect, pad_resp) = ui.allocate_exact_size(pad_size, egui::Sense::click_and_drag());
                 ui.painter().rect_filled(pad_rect, 4.0, egui::Color32::from_gray(255));
                 ui.painter().rect_stroke(pad_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
-                
+
                 thread_local! {
                     static DIAG_POINTS: std::cell::RefCell<Vec<egui::Pos2>> = const { std::cell::RefCell::new(Vec::new()) };
                 }
-                
+
                 if pad_resp.dragged_by(egui::PointerButton::Primary) {
                     if let Some(hover_pos) = pad_resp.hover_pos() {
                         DIAG_POINTS.with(|pts_cell| {
@@ -856,7 +968,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                         });
                     }
                 }
-                
+
                 DIAG_POINTS.with(|pts_cell| {
                     let points = pts_cell.borrow().clone();
                     if points.len() >= 2 {
@@ -865,7 +977,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                         }
                     }
                 });
-                
+
                 if ui.button("Clear Test Pad").clicked() {
                     DIAG_POINTS.with(|pts_cell| {
                         pts_cell.borrow_mut().clear();
@@ -895,7 +1007,12 @@ fn draw_panel_layout_settings(app: &mut PaintApp, ctx: &egui::Context) {
                 if ui.button("Dock All").clicked() {
                     for panel in &mut app.workspace_layout.panels {
                         match panel.kind {
-                            PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => {
+                            PanelKind::ToolsAndPresets
+                            | PanelKind::BrushSettings
+                            | PanelKind::ToolOptions
+                            | PanelKind::Stabilizer
+                            | PanelKind::Symmetry
+                            | PanelKind::AdvancedDebug => {
                                 panel.location = PanelLocation::Left;
                             }
                             _ => {
@@ -940,7 +1057,12 @@ fn draw_panel_layout_settings(app: &mut PaintApp, ctx: &egui::Context) {
                                 p.visible = true;
                             } else {
                                 p.location = match kind {
-                                    PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => PanelLocation::Left,
+                                    PanelKind::ToolsAndPresets
+                                    | PanelKind::BrushSettings
+                                    | PanelKind::ToolOptions
+                                    | PanelKind::Stabilizer
+                                    | PanelKind::Symmetry
+                                    | PanelKind::AdvancedDebug => PanelLocation::Left,
                                     _ => PanelLocation::Right,
                                 };
                             }
@@ -952,7 +1074,11 @@ fn draw_panel_layout_settings(app: &mut PaintApp, ctx: &egui::Context) {
                             PanelLocation::Hidden => "—",
                         };
                         if p.location == PanelLocation::Left || p.location == PanelLocation::Right {
-                            let mut side_idx = if p.location == PanelLocation::Left { 0 } else { 1 };
+                            let mut side_idx = if p.location == PanelLocation::Left {
+                                0
+                            } else {
+                                1
+                            };
                             egui::ComboBox::from_id_source(egui::Id::new("panel_side").with(kind))
                                 .selected_text(side_label)
                                 .width(60.0)

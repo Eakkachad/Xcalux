@@ -91,16 +91,27 @@ mod tests {
         let curve = PressureCurve::new_steep();
         let low = curve.calibrate(0.1);
         let high = curve.calibrate(0.9);
-        assert!(low > 0.0, "Low pressure should map to nonzero output, got {}", low);
+        assert!(
+            low > 0.0,
+            "Low pressure should map to nonzero output, got {}",
+            low
+        );
         assert!(high > low, "Steep curve: high pressure should exceed low");
-        assert!((high - 1.0).abs() < 0.2, "High pressure should approach 1.0");
+        assert!(
+            (high - 1.0).abs() < 0.2,
+            "High pressure should approach 1.0"
+        );
     }
 
     #[test]
     fn test_ease_in_curve() {
         let curve = PressureCurve::new_ease_in();
         let low = curve.calibrate(0.3);
-        assert!(low < 0.3, "Ease-in: low pressure should be even lower, got {}", low);
+        assert!(
+            low < 0.3,
+            "Ease-in: low pressure should be even lower, got {}",
+            low
+        );
     }
 
     #[test]

@@ -48,7 +48,7 @@ pub enum LayerType {
     Vector,
 }
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct VectorControlPoint {
@@ -180,7 +180,8 @@ impl Layer {
                         for y in 0..64 {
                             for x in 0..64 {
                                 let mask_val = mask_tile[y * 64 + x] as f32 / 255.0;
-                                tile.pixels[y][x][3] = (tile.pixels[y][x][3] as f32 * mask_val) as u16;
+                                tile.pixels[y][x][3] =
+                                    (tile.pixels[y][x][3] as f32 * mask_val) as u16;
                             }
                         }
                         tile.is_dirty = true;
@@ -219,7 +220,10 @@ impl Layer {
     pub fn sync_mask_tile_from_temp(&mut self, coords: (i32, i32)) {
         if let Some(ref mut mask) = self.mask {
             if let Some(temp_tile) = self.temp_mask_tiles.get(&coords) {
-                let mask_tile = mask.tiles.entry(coords).or_insert_with(|| Box::new([255; 4096]));
+                let mask_tile = mask
+                    .tiles
+                    .entry(coords)
+                    .or_insert_with(|| Box::new([255; 4096]));
                 for y in 0..64 {
                     for x in 0..64 {
                         let val = temp_tile.pixels[y][x][3];
@@ -236,7 +240,11 @@ impl Layer {
     /// Returns (pixels, width, height) as RGBA bytes.
     pub fn generate_thumbnail(&self, max_dim: u32) -> (Vec<u8>, u32, u32) {
         if self.tiles.is_empty() {
-            return (vec![0u8; (max_dim * max_dim * 4) as usize], max_dim, max_dim);
+            return (
+                vec![0u8; (max_dim * max_dim * 4) as usize],
+                max_dim,
+                max_dim,
+            );
         }
 
         let tx_min = self.tiles.keys().map(|&(tx, _)| tx).min().unwrap_or(0);
@@ -247,7 +255,9 @@ impl Layer {
         let pix_w = ((tx_max - tx_min + 1) * 64) as u32;
         let pix_h = ((ty_max - ty_min + 1) * 64) as u32;
 
-        let scale = (max_dim as f32 / pix_w as f32).min(max_dim as f32 / pix_h as f32).min(1.0);
+        let scale = (max_dim as f32 / pix_w as f32)
+            .min(max_dim as f32 / pix_h as f32)
+            .min(1.0);
         let thumb_w = (pix_w as f32 * scale).max(1.0) as u32;
         let thumb_h = (pix_h as f32 * scale).max(1.0) as u32;
 

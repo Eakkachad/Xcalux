@@ -63,16 +63,16 @@ impl Default for FillOptions {
 pub fn blend_colors(src: [u16; 4], dst: [u16; 4]) -> [u16; 4] {
     let src_a = src[3] as f32 / 32768.0;
     let dst_a = dst[3] as f32 / 32768.0;
-    
+
     let out_a = src_a + dst_a * (1.0 - src_a);
     if out_a <= 0.0 {
         return [0, 0, 0, 0];
     }
-    
+
     let out_r = (src[0] as f32 * src_a + dst[0] as f32 * dst_a * (1.0 - src_a)) / out_a;
     let out_g = (src[1] as f32 * src_a + dst[1] as f32 * dst_a * (1.0 - src_a)) / out_a;
     let out_b = (src[2] as f32 * src_a + dst[2] as f32 * dst_a * (1.0 - src_a)) / out_a;
-    
+
     [
         out_r.clamp(0.0, 32768.0) as u16,
         out_g.clamp(0.0, 32768.0) as u16,
@@ -87,14 +87,16 @@ pub fn sample_reference(
     reference: FillReference,
     x: i32,
     y: i32,
- ) -> [u16; 4] {
+) -> [u16; 4] {
     match reference {
         FillReference::CurrentLayer => sample_pixel(layer, x, y),
         FillReference::SelectionSourceLayers => {
             let mut acc = [0u16; 4];
             let mut count = 0u32;
             for l in layers {
-                if !l.visible || !l.selection_source { continue; }
+                if !l.visible || !l.selection_source {
+                    continue;
+                }
                 let tx = x.div_euclid(64);
                 let ty = y.div_euclid(64);
                 let lx = x.rem_euclid(64) as usize;
@@ -109,7 +111,12 @@ pub fn sample_reference(
                 }
             }
             if count > 0 {
-                return [acc[0] / count as u16, acc[1] / count as u16, acc[2] / count as u16, acc[3] / count as u16];
+                return [
+                    acc[0] / count as u16,
+                    acc[1] / count as u16,
+                    acc[2] / count as u16,
+                    acc[3] / count as u16,
+                ];
             }
             sample_pixel(layer, x, y)
         }
@@ -117,7 +124,9 @@ pub fn sample_reference(
             let mut acc = [0u16; 4];
             let mut count = 0u32;
             for l in layers {
-                if !l.visible { continue; }
+                if !l.visible {
+                    continue;
+                }
                 let tx = x.div_euclid(64);
                 let ty = y.div_euclid(64);
                 let lx = x.rem_euclid(64) as usize;
@@ -132,7 +141,12 @@ pub fn sample_reference(
                 }
             }
             if count > 0 {
-                return [acc[0] / count as u16, acc[1] / count as u16, acc[2] / count as u16, acc[3] / count as u16];
+                return [
+                    acc[0] / count as u16,
+                    acc[1] / count as u16,
+                    acc[2] / count as u16,
+                    acc[3] / count as u16,
+                ];
             }
             sample_pixel(layer, x, y)
         }
@@ -259,30 +273,33 @@ pub fn flood_fill(
         }
     }
 
-    let mut visited: std::collections::HashMap<(i32, i32), [u64; 64]> = std::collections::HashMap::new();
+    let mut visited: std::collections::HashMap<(i32, i32), [u64; 64]> =
+        std::collections::HashMap::new();
     let mut queue: VecDeque<(i32, i32)> = VecDeque::new();
     let mut pixels_to_fill: Vec<((i32, i32), f32)> = Vec::new();
 
-    let is_visited = |visited: &std::collections::HashMap<(i32, i32), [u64; 64]>, x: i32, y: i32| -> bool {
-        let tx = x.div_euclid(64);
-        let ty = y.div_euclid(64);
-        let lx = x.rem_euclid(64) as usize;
-        let ly = y.rem_euclid(64) as usize;
-        if let Some(tile) = visited.get(&(tx, ty)) {
-            (tile[ly] & (1u64 << lx)) != 0
-        } else {
-            false
-        }
-    };
+    let is_visited =
+        |visited: &std::collections::HashMap<(i32, i32), [u64; 64]>, x: i32, y: i32| -> bool {
+            let tx = x.div_euclid(64);
+            let ty = y.div_euclid(64);
+            let lx = x.rem_euclid(64) as usize;
+            let ly = y.rem_euclid(64) as usize;
+            if let Some(tile) = visited.get(&(tx, ty)) {
+                (tile[ly] & (1u64 << lx)) != 0
+            } else {
+                false
+            }
+        };
 
-    let mark_visited = |visited: &mut std::collections::HashMap<(i32, i32), [u64; 64]>, x: i32, y: i32| {
-        let tx = x.div_euclid(64);
-        let ty = y.div_euclid(64);
-        let lx = x.rem_euclid(64) as usize;
-        let ly = y.rem_euclid(64) as usize;
-        let tile = visited.entry((tx, ty)).or_insert([0u64; 64]);
-        tile[ly] |= 1u64 << lx;
-    };
+    let mark_visited =
+        |visited: &mut std::collections::HashMap<(i32, i32), [u64; 64]>, x: i32, y: i32| {
+            let tx = x.div_euclid(64);
+            let ty = y.div_euclid(64);
+            let lx = x.rem_euclid(64) as usize;
+            let ly = y.rem_euclid(64) as usize;
+            let tile = visited.entry((tx, ty)).or_insert([0u64; 64]);
+            tile[ly] |= 1u64 << lx;
+        };
 
     queue.push_back((start_x, start_y));
 
@@ -310,7 +327,8 @@ pub fn flood_fill(
                 Some(val) => val,
                 None => break,
             };
-            if options.respect_selection && selection.is_active && selection.get_value(nx, cy) == 0 {
+            if options.respect_selection && selection.is_active && selection.get_value(nx, cy) == 0
+            {
                 break;
             }
             left = nx;
@@ -329,7 +347,8 @@ pub fn flood_fill(
                 Some(val) => val,
                 None => break,
             };
-            if options.respect_selection && selection.is_active && selection.get_value(nx, cy) == 0 {
+            if options.respect_selection && selection.is_active && selection.get_value(nx, cy) == 0
+            {
                 break;
             }
             right = nx;
@@ -354,8 +373,11 @@ pub fn flood_fill(
             let ny = cy - 1;
             let mut in_span = false;
             for x in left..=right {
-                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options).is_some()
-                    && (!options.respect_selection || !selection.is_active || selection.get_value(x, ny) > 0)
+                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options)
+                    .is_some()
+                    && (!options.respect_selection
+                        || !selection.is_active
+                        || selection.get_value(x, ny) > 0)
                     && !is_visited(&visited, x, ny);
                 if fillable {
                     if !in_span {
@@ -373,8 +395,11 @@ pub fn flood_fill(
             let ny = cy + 1;
             let mut in_span = false;
             for x in left..=right {
-                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options).is_some()
-                    && (!options.respect_selection || !selection.is_active || selection.get_value(x, ny) > 0)
+                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options)
+                    .is_some()
+                    && (!options.respect_selection
+                        || !selection.is_active
+                        || selection.get_value(x, ny) > 0)
                     && !is_visited(&visited, x, ny);
                 if fillable {
                     if !in_span {

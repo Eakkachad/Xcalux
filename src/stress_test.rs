@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::canvas::Layer;
-use crate::history::{HistoryManager, TileSnapshot, HistoryCommand};
+use crate::history::{HistoryCommand, HistoryManager, TileSnapshot};
 use crate::input::StrokeStabilizer;
 
 use hokusai::mapping::SettingValue;

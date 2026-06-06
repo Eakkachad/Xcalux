@@ -115,10 +115,18 @@ pub fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
 }
 
 /// Build an OpenRaster stack.xml from the layer order
-pub fn build_stack_xml(layers: &AHashMap<u32, Layer>, layer_order: &[u32], width: u32, height: u32) -> String {
+pub fn build_stack_xml(
+    layers: &AHashMap<u32, Layer>,
+    layer_order: &[u32],
+    width: u32,
+    height: u32,
+) -> String {
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    xml.push_str(&format!("<image width=\"{}\" height=\"{}\" xres=\"72\" yres=\"72\" version=\"0.0.5\">\n", width, height));
+    xml.push_str(&format!(
+        "<image width=\"{}\" height=\"{}\" xres=\"72\" yres=\"72\" version=\"0.0.5\">\n",
+        width, height
+    ));
     xml.push_str("  <stack>\n");
     for (i, &layer_id) in layer_order.iter().enumerate() {
         let layer = match layers.get(&layer_id) {
@@ -127,7 +135,11 @@ pub fn build_stack_xml(layers: &AHashMap<u32, Layer>, layer_order: &[u32], width
         };
         let visibility = if layer.visible { "visible" } else { "hidden" };
         let blend = blend_mode_to_svg(layer.blend_mode);
-        let escaped_name = layer.name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let escaped_name = layer
+            .name
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
         xml.push_str(&format!(
             "    <layer name=\"{}\" opacity=\"{:.4}\" visibility=\"{}\" blendmode=\"{}\" src=\"data/layer{}.png\"/>\n",
             escaped_name, layer.opacity, visibility, blend, i
@@ -160,18 +172,24 @@ pub fn parse_stack_xml(xml: &str) -> Result<OraStack, String> {
     let width_start = xml.find("width=\"").ok_or("Missing width attribute")?;
     let width_str = &xml[width_start + 7..];
     let width_end = width_str.find('"').ok_or("Unterminated width")?;
-    let width: u32 = width_str[..width_end].parse().map_err(|e| format!("Bad width: {}", e))?;
+    let width: u32 = width_str[..width_end]
+        .parse()
+        .map_err(|e| format!("Bad width: {}", e))?;
 
     let height_start = xml.find("height=\"").ok_or("Missing height attribute")?;
     let height_str = &xml[height_start + 8..];
     let height_end = height_str.find('"').ok_or("Unterminated height")?;
-    let height: u32 = height_str[..height_end].parse().map_err(|e| format!("Bad height: {}", e))?;
+    let height: u32 = height_str[..height_end]
+        .parse()
+        .map_err(|e| format!("Bad height: {}", e))?;
 
     let mut layers = Vec::new();
     let mut search_from = 0;
     while let Some(layer_start) = xml[search_from..].find("<layer ") {
         let abs_start = search_from + layer_start;
-        let layer_end = xml[abs_start..].find("/>").ok_or("Unterminated layer tag")?;
+        let layer_end = xml[abs_start..]
+            .find("/>")
+            .ok_or("Unterminated layer tag")?;
         let abs_end = abs_start + layer_end;
         let layer_xml = &xml[abs_start..abs_end];
 
@@ -179,8 +197,10 @@ pub fn parse_stack_xml(xml: &str) -> Result<OraStack, String> {
         let opacity: f32 = extract_attr(layer_xml, "opacity")
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0);
-        let visibility = extract_attr(layer_xml, "visibility").unwrap_or_else(|| "visible".to_string());
-        let blend_mode_str = extract_attr(layer_xml, "blendmode").unwrap_or_else(|| "svg:src-over".to_string());
+        let visibility =
+            extract_attr(layer_xml, "visibility").unwrap_or_else(|| "visible".to_string());
+        let blend_mode_str =
+            extract_attr(layer_xml, "blendmode").unwrap_or_else(|| "svg:src-over".to_string());
         let src = extract_attr(layer_xml, "src").unwrap_or_default();
 
         layers.push(OraLayerEntry {
@@ -194,7 +214,11 @@ pub fn parse_stack_xml(xml: &str) -> Result<OraStack, String> {
         search_from = abs_end + 2;
     }
 
-    Ok(OraStack { width, height, layers })
+    Ok(OraStack {
+        width,
+        height,
+        layers,
+    })
 }
 
 fn extract_attr(xml: &str, attr: &str) -> Option<String> {
@@ -233,7 +257,12 @@ pub fn rgba_to_tiles(rgba: &[u8], width: u32, height: u32) -> AHashMap<(i32, i32
                     if a > 0 {
                         has_content = true;
                     }
-                    tile.pixels[ly][lx] = [u8_to_fix15(r), u8_to_fix15(g), u8_to_fix15(b), u8_to_fix15(a)];
+                    tile.pixels[ly][lx] = [
+                        u8_to_fix15(r),
+                        u8_to_fix15(g),
+                        u8_to_fix15(b),
+                        u8_to_fix15(a),
+                    ];
                 }
             }
             if has_content {
@@ -245,7 +274,12 @@ pub fn rgba_to_tiles(rgba: &[u8], width: u32, height: u32) -> AHashMap<(i32, i32
 }
 
 /// Build a flattened composite RGBA buffer (used for mergedimage and thumbnail)
-pub fn flatten_composite(layers: &AHashMap<u32, Layer>, layer_order: &[u32], canvas_w: u32, canvas_h: u32) -> Vec<u8> {
+pub fn flatten_composite(
+    layers: &AHashMap<u32, Layer>,
+    layer_order: &[u32],
+    canvas_w: u32,
+    canvas_h: u32,
+) -> Vec<u8> {
     let mut img: Vec<u8> = vec![0u8; (canvas_w * canvas_h * 4) as usize];
 
     for &layer_id in layer_order.iter().rev() {
@@ -277,9 +311,15 @@ pub fn flatten_composite(layers: &AHashMap<u32, Layer>, layer_order: &[u32], can
                     let dst_a = img[idx + 3] as f32 / 255.0;
                     let out_a = src_a + dst_a * (1.0 - src_a);
                     if out_a > 0.0 {
-                        img[idx] = ((src_r as f32 * src_a + img[idx] as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                        img[idx + 1] = ((src_g as f32 * src_a + img[idx + 1] as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
-                        img[idx + 2] = ((src_b as f32 * src_a + img[idx + 2] as f32 * dst_a * (1.0 - src_a)) / out_a) as u8;
+                        img[idx] = ((src_r as f32 * src_a
+                            + img[idx] as f32 * dst_a * (1.0 - src_a))
+                            / out_a) as u8;
+                        img[idx + 1] = ((src_g as f32 * src_a
+                            + img[idx + 1] as f32 * dst_a * (1.0 - src_a))
+                            / out_a) as u8;
+                        img[idx + 2] = ((src_b as f32 * src_a
+                            + img[idx + 2] as f32 * dst_a * (1.0 - src_a))
+                            / out_a) as u8;
                         img[idx + 3] = (out_a * 255.0) as u8;
                     }
                 }
@@ -427,7 +467,12 @@ fn write_central_header(w: &mut Vec<u8>, name: &str, meta: &ZipEntryMeta) {
     w.extend_from_slice(name_bytes);
 }
 
-fn write_end_of_central(w: &mut Vec<u8>, entry_count: u16, central_dir_size: u32, central_dir_offset: u32) {
+fn write_end_of_central(
+    w: &mut Vec<u8>,
+    entry_count: u16,
+    central_dir_size: u32,
+    central_dir_offset: u32,
+) {
     w.extend_from_slice(&ZIP_END_OF_CENTRAL.to_le_bytes());
     w.extend_from_slice(&0u16.to_le_bytes()); // disk number
     w.extend_from_slice(&0u16.to_le_bytes()); // start disk
@@ -463,7 +508,9 @@ struct ZipCentralEntry {
 fn find_eocd(buf: &[u8]) -> Option<usize> {
     // EOCD minimum is 22 bytes; max comment is 65535, so scan at most 65557 bytes from end
     let start = buf.len().saturating_sub(22 + 65535);
-    (start..=buf.len().saturating_sub(22)).rev().find(|&i| read_u32_le(buf, i) == ZIP_END_OF_CENTRAL)
+    (start..=buf.len().saturating_sub(22))
+        .rev()
+        .find(|&i| read_u32_le(buf, i) == ZIP_END_OF_CENTRAL)
 }
 
 /// Parse central directory entries from the ZIP archive
@@ -726,10 +773,20 @@ mod tests {
 
     #[test]
     fn test_blend_mode_roundtrip() {
-        for mode in [BlendMode::Normal, BlendMode::Multiply, BlendMode::Screen, BlendMode::Overlay, BlendMode::Luminosity, BlendMode::Shade] {
+        for mode in [
+            BlendMode::Normal,
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Overlay,
+            BlendMode::Luminosity,
+            BlendMode::Shade,
+        ] {
             let svg = blend_mode_to_svg(mode);
             let parsed = svg_to_blend_mode(svg);
-            if matches!(mode, BlendMode::Normal | BlendMode::Luminosity | BlendMode::Shade) {
+            if matches!(
+                mode,
+                BlendMode::Normal | BlendMode::Luminosity | BlendMode::Shade
+            ) {
                 assert_eq!(parsed, BlendMode::Normal);
             } else {
                 assert_eq!(parsed, mode, "Roundtrip failed for {:?}", mode);
@@ -804,7 +861,12 @@ mod tests {
         let tile = imp.tiles.get(&(0, 0)).expect("tile");
         let p = tile.pixels[10][10];
         let expected_r = fix15_to_u8(((10 + 10) * 4) as u16);
-        assert!((fix15_to_u8(p[0]) as i32 - expected_r as i32).abs() <= 1, "R channel mismatch: got {}, expected {}", fix15_to_u8(p[0]), expected_r);
+        assert!(
+            (fix15_to_u8(p[0]) as i32 - expected_r as i32).abs() <= 1,
+            "R channel mismatch: got {}, expected {}",
+            fix15_to_u8(p[0]),
+            expected_r
+        );
         assert!(p[3] > 30000, "Alpha should be ~opaque");
 
         let _ = std::fs::remove_file(&tmp);
@@ -818,7 +880,12 @@ mod tests {
         let mut tile = Tile::new();
         for ly in 0..64 {
             for lx in 0..64 {
-                tile.pixels[ly][lx] = [fill[0] as u16 * 128, fill[1] as u16 * 128, fill[2] as u16 * 128, fill[3] as u16 * 128];
+                tile.pixels[ly][lx] = [
+                    fill[0] as u16 * 128,
+                    fill[1] as u16 * 128,
+                    fill[2] as u16 * 128,
+                    fill[3] as u16 * 128,
+                ];
             }
         }
         layer.tiles.insert((0, 0), tile);

@@ -1,4 +1,4 @@
-use crate::canvas::{Layer, Tile, BlendMode, SelectionMask};
+use crate::canvas::{BlendMode, Layer, SelectionMask, Tile};
 use ahash::AHashMap;
 use hokusai::tile::{empty_tile, TilePixels};
 
@@ -134,7 +134,13 @@ impl HistoryManager {
             return false;
         };
 
-        let reversed = self.apply_command_reversed(command, layers, layer_order, selection_mask, active_layer_id);
+        let reversed = self.apply_command_reversed(
+            command,
+            layers,
+            layer_order,
+            selection_mask,
+            active_layer_id,
+        );
         self.redo_stack.push(reversed);
         true
     }
@@ -151,7 +157,13 @@ impl HistoryManager {
             return false;
         };
 
-        let forward = self.apply_command_forward(command, layers, layer_order, selection_mask, active_layer_id);
+        let forward = self.apply_command_forward(
+            command,
+            layers,
+            layer_order,
+            selection_mask,
+            active_layer_id,
+        );
         self.undo_stack.push(forward);
         true
     }
@@ -191,7 +203,11 @@ impl HistoryManager {
                     if let Some(pixels) = snapshot.pixels.take() {
                         tiles_map.insert(
                             snapshot.coords,
-                            Tile { pixels, is_dirty: true, last_stroke_id: 0 },
+                            Tile {
+                                pixels,
+                                is_dirty: true,
+                                last_stroke_id: 0,
+                            },
                         );
                     }
 
@@ -200,7 +216,9 @@ impl HistoryManager {
                     }
                     layer.dirty_tiles.insert(snapshot.coords);
                 }
-                HistoryCommand::TileEdit { snapshots: redo_snapshots }
+                HistoryCommand::TileEdit {
+                    snapshots: redo_snapshots,
+                }
             }
             HistoryCommand::LayerCreate { layer, index } => {
                 // Forward: INSERT the layer
@@ -222,9 +240,15 @@ impl HistoryManager {
                     *active_layer_id = *id;
                 }
                 // Return reversed (undo): a LayerDelete that will restore it
-                HistoryCommand::LayerDelete { layer: Box::new(layer_clone), index }
+                HistoryCommand::LayerDelete {
+                    layer: Box::new(layer_clone),
+                    index,
+                }
             }
-            HistoryCommand::LayerReorder { old_order, new_order } => {
+            HistoryCommand::LayerReorder {
+                old_order,
+                new_order,
+            } => {
                 *layer_order = old_order.clone();
                 HistoryCommand::LayerReorder {
                     old_order: new_order,
@@ -264,7 +288,10 @@ impl HistoryManager {
                             LayerPropertyChange::Rename { old: new, new: old }
                         }
                     };
-                    HistoryCommand::LayerProperty { layer_id, property: reverse }
+                    HistoryCommand::LayerProperty {
+                        layer_id,
+                        property: reverse,
+                    }
                 } else {
                     HistoryCommand::LayerProperty { layer_id, property }
                 }
@@ -314,7 +341,11 @@ impl HistoryManager {
                     if let Some(pixels) = snapshot.pixels.take() {
                         tiles_map.insert(
                             snapshot.coords,
-                            Tile { pixels, is_dirty: true, last_stroke_id: 0 },
+                            Tile {
+                                pixels,
+                                is_dirty: true,
+                                last_stroke_id: 0,
+                            },
                         );
                     }
 
@@ -323,7 +354,9 @@ impl HistoryManager {
                     }
                     layer.dirty_tiles.insert(snapshot.coords);
                 }
-                HistoryCommand::TileEdit { snapshots: undo_snapshots }
+                HistoryCommand::TileEdit {
+                    snapshots: undo_snapshots,
+                }
             }
             HistoryCommand::LayerCreate { layer, index } => {
                 // Reversed: REMOVE the layer (undo a create)
@@ -335,7 +368,10 @@ impl HistoryManager {
                     *active_layer_id = *id;
                 }
                 // Return forward: a LayerCreate that will re-insert it
-                HistoryCommand::LayerCreate { layer: Box::new(layer_clone), index }
+                HistoryCommand::LayerCreate {
+                    layer: Box::new(layer_clone),
+                    index,
+                }
             }
             HistoryCommand::LayerDelete { layer, index } => {
                 // Reversed: INSERT the layer (undo a delete)
@@ -347,7 +383,10 @@ impl HistoryManager {
                 // Return forward: a LayerDelete that will re-remove it
                 HistoryCommand::LayerDelete { layer, index }
             }
-            HistoryCommand::LayerReorder { old_order, new_order } => {
+            HistoryCommand::LayerReorder {
+                old_order,
+                new_order,
+            } => {
                 *layer_order = old_order.clone();
                 HistoryCommand::LayerReorder {
                     old_order: new_order,
@@ -387,7 +426,10 @@ impl HistoryManager {
                             LayerPropertyChange::Rename { old: new, new: old }
                         }
                     };
-                    HistoryCommand::LayerProperty { layer_id, property: reverse }
+                    HistoryCommand::LayerProperty {
+                        layer_id,
+                        property: reverse,
+                    }
                 } else {
                     HistoryCommand::LayerProperty { layer_id, property }
                 }
@@ -457,7 +499,8 @@ impl<'a> hokusai::TiledSurface for StrokeSurface<'a> {
                             for x in 0..64 {
                                 let v = mask_tile[y * 64 + x];
                                 let pixel_val = (v as u32 * 32768 / 255) as u16;
-                                temp_tile.pixels[y][x] = [pixel_val, pixel_val, pixel_val, pixel_val];
+                                temp_tile.pixels[y][x] =
+                                    [pixel_val, pixel_val, pixel_val, pixel_val];
                             }
                         }
                         has_copied = true;
@@ -508,7 +551,9 @@ impl<'a> hokusai::TiledSurface for StrokeSurface<'a> {
             self.layer.dirty_tiles.insert((tx, ty));
         }
 
-        let tile = tiles_map.entry((tx, ty)).or_insert_with(crate::canvas::Tile::new);
+        let tile = tiles_map
+            .entry((tx, ty))
+            .or_insert_with(crate::canvas::Tile::new);
         tile.is_dirty = true;
         tile.last_stroke_id = self.stroke_id;
 
@@ -521,7 +566,10 @@ impl<'a> hokusai::TiledSurface for StrokeSurface<'a> {
 
     fn tile_lookup(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
         if self.active_mask_editing {
-            self.layer.temp_mask_tiles.get(&(tx, ty)).map(|t| &*t.pixels)
+            self.layer
+                .temp_mask_tiles
+                .get(&(tx, ty))
+                .map(|t| &*t.pixels)
         } else {
             self.layer.tiles.get(&(tx, ty)).map(|t| &*t.pixels)
         }
@@ -539,9 +587,13 @@ impl<'a> hokusai::TiledSurface for StrokeSurface<'a> {
         let mut mask = 1.0;
 
         if self.lock_canvas_bounds
-            && (px < 0.0 || px >= self.canvas_width as f32 || py < 0.0 || py >= self.canvas_height as f32) {
-                return 0.0;
-            }
+            && (px < 0.0
+                || px >= self.canvas_width as f32
+                || py < 0.0
+                || py >= self.canvas_height as f32)
+        {
+            return 0.0;
+        }
 
         if let Some(sel) = self.selection_mask {
             mask *= sel.get_value(px as i32, py as i32) as f32 / 255.0;
@@ -562,7 +614,13 @@ impl<'a> hokusai::TiledSurface for StrokeSurface<'a> {
             let u = xxr_unscaled / (dab.radius * scale) * 0.5 + 0.5;
             let v = yyr_unscaled / (dab.radius * scale) * 0.5 + 0.5;
 
-            mask *= sample_bilinear(tex, self.brush_texture_width, self.brush_texture_height, u, v);
+            mask *= sample_bilinear(
+                tex,
+                self.brush_texture_width,
+                self.brush_texture_height,
+                u,
+                v,
+            );
         }
 
         mask
@@ -612,7 +670,10 @@ mod tests {
         // Redo
         assert!(hm.redo(&mut layers, &mut layer_order, &mut sel, &mut active));
         let layer = layers.get(&1).unwrap();
-        assert_eq!(layer.tiles.get(&(0, 0)).unwrap().pixels[0][0], [16384, 0, 0, 16384]);
+        assert_eq!(
+            layer.tiles.get(&(0, 0)).unwrap().pixels[0][0],
+            [16384, 0, 0, 16384]
+        );
     }
 
     #[test]
@@ -630,7 +691,10 @@ mod tests {
         layers.insert(2, l2.clone());
         layer_order.insert(0, 2);
         active = 2;
-        hm.push_command(HistoryCommand::LayerCreate { layer: Box::new(l2), index: 0 });
+        hm.push_command(HistoryCommand::LayerCreate {
+            layer: Box::new(l2),
+            index: 0,
+        });
 
         // Undo: layer 2 should be removed
         assert!(hm.undo(&mut layers, &mut layer_order, &mut sel, &mut active));
@@ -677,7 +741,10 @@ mod tests {
         assert!(layers.contains_key(&2));
         assert_eq!(layer_order, vec![2, 1]);
         assert_eq!(active, 2);
-        assert_eq!(layers.get(&2).unwrap().tiles.get(&(0, 0)).unwrap().pixels[0][0], [32768, 0, 0, 32768]);
+        assert_eq!(
+            layers.get(&2).unwrap().tiles.get(&(0, 0)).unwrap().pixels[0][0],
+            [32768, 0, 0, 32768]
+        );
 
         // Redo: layer 2 should be deleted again
         assert!(hm.redo(&mut layers, &mut layer_order, &mut sel, &mut active));

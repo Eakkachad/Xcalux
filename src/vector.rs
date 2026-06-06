@@ -321,7 +321,11 @@ pub fn generate_layer_egui_meshes(
 
 /// Export vector strokes to an SVG string.
 /// Samples each stroke at a high resolution and outputs polylines with stroke colors.
-pub fn export_strokes_svg(strokes: &[crate::canvas::VectorStroke], width: u32, height: u32) -> String {
+pub fn export_strokes_svg(
+    strokes: &[crate::canvas::VectorStroke],
+    width: u32,
+    height: u32,
+) -> String {
     let mut svg = String::new();
     svg.push_str(&format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -367,7 +371,13 @@ mod tests {
     use super::*;
 
     fn make_cp(x: f32, y: f32, pressure: f32) -> VectorControlPoint {
-        VectorControlPoint { x, y, pressure, tilt_x: 0.0, tilt_y: 0.0 }
+        VectorControlPoint {
+            x,
+            y,
+            pressure,
+            tilt_x: 0.0,
+            tilt_y: 0.0,
+        }
     }
 
     #[test]
@@ -405,10 +415,7 @@ mod tests {
     #[test]
     fn test_hit_test_control_point() {
         let stroke = crate::canvas::VectorStroke {
-            control_points: vec![
-                make_cp(10.0, 10.0, 1.0),
-                make_cp(100.0, 100.0, 1.0),
-            ],
+            control_points: vec![make_cp(10.0, 10.0, 1.0), make_cp(100.0, 100.0, 1.0)],
             brush_preset_id: 1,
             color: [0.0, 0.0, 0.0],
             width: 1.0,
@@ -434,10 +441,7 @@ mod tests {
     #[test]
     fn test_stroke_bounds() {
         let stroke = crate::canvas::VectorStroke {
-            control_points: vec![
-                make_cp(10.0, 20.0, 1.0),
-                make_cp(100.0, 200.0, 1.0),
-            ],
+            control_points: vec![make_cp(10.0, 20.0, 1.0), make_cp(100.0, 200.0, 1.0)],
             brush_preset_id: 1,
             color: [0.0, 0.0, 0.0],
             width: 1.0,

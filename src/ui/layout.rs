@@ -5,6 +5,9 @@ pub enum PanelKind {
     ToolsAndPresets,
     BrushSettings,
     ToolOptions,
+    Stabilizer,
+    Symmetry,
+    AdvancedDebug,
     Navigator,
     ColorWheel,
     ColorSliders,
@@ -48,7 +51,13 @@ pub struct PanelState {
 }
 
 impl PanelState {
-    pub fn new(kind: PanelKind, title: &str, location: PanelLocation, visible: bool, collapsed: bool) -> Self {
+    pub fn new(
+        kind: PanelKind,
+        title: &str,
+        location: PanelLocation,
+        visible: bool,
+        collapsed: bool,
+    ) -> Self {
         Self {
             kind,
             title: title.to_string(),
@@ -84,14 +93,16 @@ impl WorkspaceLayout {
 
     #[allow(dead_code)]
     pub fn panel_visible(&self, kind: PanelKind) -> bool {
-        self.panels.iter()
+        self.panels
+            .iter()
             .find(|p| p.kind == kind)
             .map(|p| p.visible && p.location != PanelLocation::Hidden)
             .unwrap_or(false)
     }
 
     pub fn is_panel_at(&self, kind: PanelKind, location: PanelLocation) -> bool {
-        self.panels.iter()
+        self.panels
+            .iter()
             .find(|p| p.kind == kind)
             .map(|p| p.visible && p.location == location)
             .unwrap_or(false)
@@ -125,16 +136,97 @@ impl Default for WorkspaceLayout {
             left_panel_width: 240.0,
             right_panel_width: 280.0,
             panels: vec![
-                PanelState::new(PanelKind::ToolsAndPresets, "TOOLS / BRUSH PRESETS", PanelLocation::Left, true, false),
-                PanelState::new(PanelKind::BrushSettings, "BRUSH SETTINGS", PanelLocation::Left, true, false),
-                PanelState::new(PanelKind::ToolOptions, "TOOL OPTIONS", PanelLocation::Left, true, false),
-                PanelState::new(PanelKind::Navigator, "NAVIGATOR", PanelLocation::Right, true, false),
-                PanelState::new(PanelKind::ColorWheel, "COLOR WHEEL", PanelLocation::Right, true, false),
-                PanelState::new(PanelKind::ColorSliders, "COLOR SLIDERS", PanelLocation::Right, false, false),
-                PanelState::new(PanelKind::ColorPalette, "COLOR PALETTE", PanelLocation::Right, false, false),
-                PanelState::new(PanelKind::ColorHistory, "COLOR HISTORY", PanelLocation::Right, true, false),
-                PanelState::new(PanelKind::LayersManager, "LAYERS MANAGER", PanelLocation::Right, true, false),
-                PanelState::new(PanelKind::Reference, "REFERENCE", PanelLocation::Right, true, false),
+                PanelState::new(
+                    PanelKind::ToolsAndPresets,
+                    "TOOLS / BRUSH PRESETS",
+                    PanelLocation::Left,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::BrushSettings,
+                    "BRUSH SETTINGS",
+                    PanelLocation::Left,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::ToolOptions,
+                    "TOOL OPTIONS",
+                    PanelLocation::Left,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::Stabilizer,
+                    "STABILIZER",
+                    PanelLocation::Left,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::Symmetry,
+                    "SYMMETRY / DRAWING GUIDE",
+                    PanelLocation::Left,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::AdvancedDebug,
+                    "ADVANCED / DEBUG",
+                    PanelLocation::Left,
+                    false,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::Navigator,
+                    "NAVIGATOR",
+                    PanelLocation::Right,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::ColorWheel,
+                    "COLOR WHEEL",
+                    PanelLocation::Right,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::ColorSliders,
+                    "COLOR SLIDERS",
+                    PanelLocation::Right,
+                    false,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::ColorPalette,
+                    "COLOR PALETTE",
+                    PanelLocation::Right,
+                    false,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::ColorHistory,
+                    "COLOR HISTORY",
+                    PanelLocation::Right,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::LayersManager,
+                    "LAYERS MANAGER",
+                    PanelLocation::Right,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::Reference,
+                    "REFERENCE",
+                    PanelLocation::Right,
+                    true,
+                    false,
+                ),
             ],
             ui_scale: 1.0,
         }

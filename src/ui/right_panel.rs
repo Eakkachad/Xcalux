@@ -14,10 +14,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
             .min_width(22.0)
             .max_width(22.0)
             .show(ctx, |ui| {
-                let resp = ui.add_sized(
-                    egui::vec2(20.0, ui.available_height()),
-                    egui::Button::new(egui::RichText::new("◀").size(10.0)),
-                ).on_hover_text("Show Right Panel");
+                let resp = ui
+                    .add_sized(
+                        egui::vec2(20.0, ui.available_height()),
+                        egui::Button::new(egui::RichText::new("◀").size(10.0)),
+                    )
+                    .on_hover_text("Show Right Panel");
                 if resp.clicked() {
                     app.workspace_layout.right_panel_visible = true;
                     app.workspace_layout.right_panel_collapsed = false;
@@ -26,9 +28,21 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
         return;
     }
     if !app.show_minimal_ui {
-        let panel_width = if app.workspace_layout.right_panel_collapsed { 22.0 } else { app.workspace_layout.right_panel_width };
-        let panel_min_w = if app.workspace_layout.right_panel_collapsed { 22.0 } else { 180.0 };
-        let panel_max_w = if app.workspace_layout.right_panel_collapsed { 22.0 } else { 500.0 };
+        let panel_width = if app.workspace_layout.right_panel_collapsed {
+            22.0
+        } else {
+            app.workspace_layout.right_panel_width
+        };
+        let panel_min_w = if app.workspace_layout.right_panel_collapsed {
+            22.0
+        } else {
+            180.0
+        };
+        let panel_max_w = if app.workspace_layout.right_panel_collapsed {
+            22.0
+        } else {
+            500.0
+        };
 
         let side_panel = egui::SidePanel::right("right_sidebar")
             .resizable(!app.workspace_layout.right_panel_collapsed)
@@ -43,11 +57,21 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
 
             // Collapse/expand button at top
             ui.horizontal(|ui| {
-                let collapse_label = if app.workspace_layout.right_panel_collapsed { "◀" } else { "▶" };
-                let resp = ui.add_sized(
-                    egui::vec2(14.0, 14.0),
-                    egui::Button::new(egui::RichText::new(collapse_label).size(9.0)),
-                ).on_hover_text(if app.workspace_layout.right_panel_collapsed { "Expand Right Panel" } else { "Collapse Right Panel" });
+                let collapse_label = if app.workspace_layout.right_panel_collapsed {
+                    "◀"
+                } else {
+                    "▶"
+                };
+                let resp = ui
+                    .add_sized(
+                        egui::vec2(14.0, 14.0),
+                        egui::Button::new(egui::RichText::new(collapse_label).size(9.0)),
+                    )
+                    .on_hover_text(if app.workspace_layout.right_panel_collapsed {
+                        "Expand Right Panel"
+                    } else {
+                        "Collapse Right Panel"
+                    });
                 if resp.clicked() {
                     if app.workspace_layout.right_panel_collapsed {
                         app.workspace_layout.right_panel_collapsed = false;
@@ -65,122 +89,227 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                         ui.vertical(|ui| {
                             // PANEL VISIBILITY SHORTCUT ROW
                             panel_section(ui, "TOGGLE PANELS", |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
-                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    ui.spacing_mut().item_spacing.y = 2.0;
 
-                                let nav_vis = app.workspace_layout.panel_visible(PanelKind::Navigator);
-                                if ui.add(egui::Button::new("🧭").selected(nav_vis)).on_hover_text("Toggle Navigator panel").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::Navigator);
-                                }
-                                let wheel_vis = app.workspace_layout.panel_visible(PanelKind::ColorWheel);
-                                if ui.add(egui::Button::new("🎨").selected(wheel_vis)).on_hover_text("Toggle Color Wheel panel").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::ColorWheel);
-                                }
-                                let sliders_vis = app.workspace_layout.panel_visible(PanelKind::ColorSliders);
-                                if ui.add(egui::Button::new("🎚").selected(sliders_vis)).on_hover_text("Toggle Color sliders").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::ColorSliders);
-                                }
-                                let pal_vis = app.workspace_layout.panel_visible(PanelKind::ColorPalette);
-                                if ui.add(egui::Button::new("▦").selected(pal_vis)).on_hover_text("Toggle Color Palette panel").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::ColorPalette);
-                                }
-                                let hist_vis = app.workspace_layout.panel_visible(PanelKind::ColorHistory);
-                                if ui.add(egui::Button::new("⏱").selected(hist_vis)).on_hover_text("Toggle Color History panel").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::ColorHistory);
-                                }
-                                let layers_vis = app.workspace_layout.panel_visible(PanelKind::LayersManager);
-                                if ui.add(egui::Button::new("🗂").selected(layers_vis)).on_hover_text("Toggle Layers panel").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::LayersManager);
-                                }
-                                let ref_vis = app.workspace_layout.panel_visible(PanelKind::Reference);
-                                if ui.add(egui::Button::new("🖼").selected(ref_vis)).on_hover_text("Toggle Reference panel").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::Reference);
-                                }
-                                let sym_vis = app.show_symmetry_panel;
-                                if ui.add(egui::Button::new("🪞").selected(sym_vis)).on_hover_text("Toggle Symmetry panel").clicked() {
-                                    app.show_symmetry_panel = !app.show_symmetry_panel;
-                                }
-                                let tool_vis = app.workspace_layout.panel_visible(PanelKind::ToolOptions);
-                                if ui.add(egui::Button::new("🛠").selected(tool_vis)).on_hover_text("Toggle Tool Options panel").clicked() {
-                                    app.workspace_layout.toggle_panel_visibility(PanelKind::ToolOptions);
-                                }
-                            });
+                                    let nav_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::Navigator);
+                                    if ui
+                                        .add(egui::Button::new("🧭").selected(nav_vis))
+                                        .on_hover_text("Toggle Navigator panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::Navigator);
+                                    }
+                                    let wheel_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::ColorWheel);
+                                    if ui
+                                        .add(egui::Button::new("🎨").selected(wheel_vis))
+                                        .on_hover_text("Toggle Color Wheel panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::ColorWheel);
+                                    }
+                                    let sliders_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::ColorSliders);
+                                    if ui
+                                        .add(egui::Button::new("🎚").selected(sliders_vis))
+                                        .on_hover_text("Toggle Color sliders")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::ColorSliders);
+                                    }
+                                    let pal_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::ColorPalette);
+                                    if ui
+                                        .add(egui::Button::new("▦").selected(pal_vis))
+                                        .on_hover_text("Toggle Color Palette panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::ColorPalette);
+                                    }
+                                    let hist_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::ColorHistory);
+                                    if ui
+                                        .add(egui::Button::new("⏱").selected(hist_vis))
+                                        .on_hover_text("Toggle Color History panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::ColorHistory);
+                                    }
+                                    let layers_vis = app
+                                        .workspace_layout
+                                        .panel_visible(PanelKind::LayersManager);
+                                    if ui
+                                        .add(egui::Button::new("🗂").selected(layers_vis))
+                                        .on_hover_text("Toggle Layers panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::LayersManager);
+                                    }
+                                    let ref_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::Reference);
+                                    if ui
+                                        .add(egui::Button::new("🖼").selected(ref_vis))
+                                        .on_hover_text("Toggle Reference panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::Reference);
+                                    }
+                                    let sym_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::Symmetry);
+                                    if ui
+                                        .add(egui::Button::new("🪞").selected(sym_vis))
+                                        .on_hover_text("Toggle Symmetry panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::Symmetry);
+                                    }
+                                    let tool_vis =
+                                        app.workspace_layout.panel_visible(PanelKind::ToolOptions);
+                                    if ui
+                                        .add(egui::Button::new("🛠").selected(tool_vis))
+                                        .on_hover_text("Toggle Tool Options panel")
+                                        .clicked()
+                                    {
+                                        app.workspace_layout
+                                            .toggle_panel_visibility(PanelKind::ToolOptions);
+                                    }
+                                });
                             }); // panel_section TOGGLE PANELS
 
                             // ── NAVIGATOR ──
-                            if app.workspace_layout.is_panel_at(PanelKind::Navigator, PanelLocation::Right) {
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::Navigator, PanelLocation::Right)
+                            {
                                 section_frame(ui, |ui| {
-                                let cr = egui::CollapsingHeader::new("NAVIGATOR")
-                                    .default_open(true)
-                                    .show(ui, |ui| { draw_navigator_content(app, ui); });
-                                cr.header_response.context_menu(|ui| panel_menu(ui, PanelKind::Navigator, app));
+                                    let cr = egui::CollapsingHeader::new("NAVIGATOR")
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            draw_navigator_content(app, ui);
+                                        });
+                                    cr.header_response.context_menu(|ui| {
+                                        panel_menu(ui, PanelKind::Navigator, app)
+                                    });
                                 });
                                 ui.add_space(5.0);
                             }
 
                             // ── COLOR WHEEL ──
-                            if app.workspace_layout.is_panel_at(PanelKind::ColorWheel, PanelLocation::Right) {
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::ColorWheel, PanelLocation::Right)
+                            {
                                 section_frame(ui, |ui| {
-                                let cr = egui::CollapsingHeader::new("COLOR WHEEL")
-                                    .default_open(true)
-                                    .show(ui, |ui| { draw_color_wheel_content(app, ui); });
-                                cr.header_response.context_menu(|ui| panel_menu(ui, PanelKind::ColorWheel, app));
+                                    let cr = egui::CollapsingHeader::new("COLOR WHEEL")
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            draw_color_wheel_content(app, ui);
+                                        });
+                                    cr.header_response.context_menu(|ui| {
+                                        panel_menu(ui, PanelKind::ColorWheel, app)
+                                    });
                                 });
                                 ui.add_space(5.0);
                             }
 
                             // ── COLOR SLIDERS (RGB + HSV) ──
-                            if app.workspace_layout.is_panel_at(PanelKind::ColorSliders, PanelLocation::Right) {
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::ColorSliders, PanelLocation::Right)
+                            {
                                 section_frame(ui, |ui| {
-                                let cr = egui::CollapsingHeader::new("COLOR SLIDERS")
-                                    .default_open(true)
-                                    .show(ui, |ui| { draw_color_sliders_content(app, ui); });
-                                cr.header_response.context_menu(|ui| panel_menu(ui, PanelKind::ColorSliders, app));
+                                    let cr = egui::CollapsingHeader::new("COLOR SLIDERS")
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            draw_color_sliders_content(app, ui);
+                                        });
+                                    cr.header_response.context_menu(|ui| {
+                                        panel_menu(ui, PanelKind::ColorSliders, app)
+                                    });
                                 });
                                 ui.add_space(5.0);
                             }
 
                             // ── COLOR PALETTE ──
-                            if app.workspace_layout.is_panel_at(PanelKind::ColorPalette, PanelLocation::Right) {
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::ColorPalette, PanelLocation::Right)
+                            {
                                 section_frame(ui, |ui| {
-                                let cr = egui::CollapsingHeader::new("COLOR PALETTE")
-                                    .default_open(true)
-                                    .show(ui, |ui| { draw_color_palette_content(app, ui); });
-                                cr.header_response.context_menu(|ui| panel_menu(ui, PanelKind::ColorPalette, app));
+                                    let cr = egui::CollapsingHeader::new("COLOR PALETTE")
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            draw_color_palette_content(app, ui);
+                                        });
+                                    cr.header_response.context_menu(|ui| {
+                                        panel_menu(ui, PanelKind::ColorPalette, app)
+                                    });
                                 });
                                 ui.add_space(5.0);
                             }
 
                             // ── COLOR HISTORY ──
-                            if app.workspace_layout.is_panel_at(PanelKind::ColorHistory, PanelLocation::Right) {
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::ColorHistory, PanelLocation::Right)
+                            {
                                 section_frame(ui, |ui| {
-                                let cr = egui::CollapsingHeader::new("COLOR HISTORY")
-                                    .default_open(true)
-                                    .show(ui, |ui| { draw_color_history_content(app, ui); });
-                                cr.header_response.context_menu(|ui| panel_menu(ui, PanelKind::ColorHistory, app));
+                                    let cr = egui::CollapsingHeader::new("COLOR HISTORY")
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            draw_color_history_content(app, ui);
+                                        });
+                                    cr.header_response.context_menu(|ui| {
+                                        panel_menu(ui, PanelKind::ColorHistory, app)
+                                    });
                                 });
                                 ui.add_space(5.0);
                             }
 
                             // ── LAYERS MANAGER ──
-                            if app.workspace_layout.is_panel_at(PanelKind::LayersManager, PanelLocation::Right) && !app.layer_panel_on_left {
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::LayersManager, PanelLocation::Right)
+                                && !app.layer_panel_on_left
+                            {
                                 section_frame(ui, |ui| {
-                                let cr = egui::CollapsingHeader::new("LAYERS MANAGER")
-                                    .default_open(true)
-                                    .show(ui, |ui| { draw_layers_manager_widget(app, ui, ctx); });
-                                cr.header_response.context_menu(|ui| panel_menu(ui, PanelKind::LayersManager, app));
+                                    let cr = egui::CollapsingHeader::new("LAYERS MANAGER")
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            draw_layers_manager_widget(app, ui, ctx);
+                                        });
+                                    cr.header_response.context_menu(|ui| {
+                                        panel_menu(ui, PanelKind::LayersManager, app)
+                                    });
                                 });
                                 ui.add_space(5.0);
                             }
 
                             // ── REFERENCE ──
-                            if app.workspace_layout.is_panel_at(PanelKind::Reference, PanelLocation::Right) {
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::Reference, PanelLocation::Right)
+                            {
                                 section_frame(ui, |ui| {
-                                let cr = egui::CollapsingHeader::new("REFERENCE")
-                                    .default_open(true)
-                                    .show(ui, |ui| { draw_reference_widget(app, ui, ctx); });
-                                cr.header_response.context_menu(|ui| panel_menu(ui, PanelKind::Reference, app));
+                                    let cr = egui::CollapsingHeader::new("REFERENCE")
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            draw_reference_widget(app, ui, ctx);
+                                        });
+                                    cr.header_response.context_menu(|ui| {
+                                        panel_menu(ui, PanelKind::Reference, app)
+                                    });
                                 });
                                 ui.add_space(5.0);
                             }
@@ -201,13 +330,19 @@ pub fn render_floating_right_panels(app: &mut PaintApp, ctx: &egui::Context) {
         let kind = panel.kind;
         let title = panel.title.clone();
         match kind {
-            PanelKind::Navigator | PanelKind::ColorWheel | PanelKind::ColorSliders
-            | PanelKind::ColorPalette | PanelKind::ColorHistory
-            | PanelKind::LayersManager | PanelKind::Reference => {}
+            PanelKind::Navigator
+            | PanelKind::ColorWheel
+            | PanelKind::ColorSliders
+            | PanelKind::ColorPalette
+            | PanelKind::ColorHistory
+            | PanelKind::LayersManager
+            | PanelKind::Reference => {}
             _ => continue,
         }
         let default_side = match kind {
-            PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => PanelLocation::Left,
+            PanelKind::ToolsAndPresets | PanelKind::BrushSettings | PanelKind::ToolOptions => {
+                PanelLocation::Left
+            }
             _ => PanelLocation::Right,
         };
         egui::Window::new(&title)
@@ -259,20 +394,24 @@ pub fn render_floating_right_panels(app: &mut PaintApp, ctx: &egui::Context) {
 // ── Panel location context menu (shared across all sections) ──
 fn panel_menu(ui: &mut egui::Ui, kind: PanelKind, app: &mut PaintApp) {
     if ui.button("Dock Left").clicked() {
-        app.workspace_layout.set_panel_location(kind, PanelLocation::Left);
+        app.workspace_layout
+            .set_panel_location(kind, PanelLocation::Left);
         ui.close_menu();
     }
     if ui.button("Dock Right").clicked() {
-        app.workspace_layout.set_panel_location(kind, PanelLocation::Right);
+        app.workspace_layout
+            .set_panel_location(kind, PanelLocation::Right);
         ui.close_menu();
     }
     if ui.button("Float").clicked() {
-        app.workspace_layout.set_panel_location(kind, PanelLocation::Floating);
+        app.workspace_layout
+            .set_panel_location(kind, PanelLocation::Floating);
         ui.close_menu();
     }
     ui.separator();
     if ui.button("Hide").clicked() {
-        app.workspace_layout.set_panel_location(kind, PanelLocation::Hidden);
+        app.workspace_layout
+            .set_panel_location(kind, PanelLocation::Hidden);
         ui.close_menu();
     }
 }
@@ -284,7 +423,7 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(nav_size, nav_size),
-            egui::Sense::click_and_drag()
+            egui::Sense::click_and_drag(),
         );
         let painter = ui.painter().with_clip_rect(rect);
 
@@ -301,9 +440,12 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
 
         if let Some(r) = &app.renderer {
             if let Some(texture_id) = r.navigator_egui_id {
-                painter.image(texture_id, rect, egui::Rect::from_min_max(
-                    egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)
-                ), egui::Color32::WHITE);
+                painter.image(
+                    texture_id,
+                    rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
             } else {
                 painter.rect_filled(paper_rect, 0.0, egui::Color32::WHITE);
             }
@@ -311,7 +453,11 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
             painter.rect_filled(paper_rect, 0.0, egui::Color32::WHITE);
         }
 
-        painter.rect_stroke(paper_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 184, 184)));
+        painter.rect_stroke(
+            paper_rect,
+            0.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 184, 184)),
+        );
 
         if let Some(view_rect) = app.last_viewport_rect {
             let corners = [
@@ -338,8 +484,12 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
         if response.clicked() || response.dragged() {
             if let Some(click_pos) = response.interact_pointer_pos() {
                 let pct_x = ((click_pos.x - paper_rect.min.x) / paper_rect.width()).clamp(0.0, 1.0);
-                let pct_y = ((click_pos.y - paper_rect.min.y) / paper_rect.height()).clamp(0.0, 1.0);
-                let w_target = egui::Vec2::new(pct_x * app.canvas_width as f32, pct_y * app.canvas_height as f32);
+                let pct_y =
+                    ((click_pos.y - paper_rect.min.y) / paper_rect.height()).clamp(0.0, 1.0);
+                let w_target = egui::Vec2::new(
+                    pct_x * app.canvas_width as f32,
+                    pct_y * app.canvas_height as f32,
+                );
                 let half_w = app.last_viewport_size.x * 0.5;
                 let half_h = app.last_viewport_size.y * 0.5;
                 app.viewport_offset = w_target - egui::vec2(half_w, half_h) / app.viewport_zoom;
@@ -350,45 +500,76 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button("Fit").on_hover_text("Fit canvas to viewport").clicked() {
+        if ui
+            .button("Fit")
+            .on_hover_text("Fit canvas to viewport")
+            .clicked()
+        {
             app.command(CommandId::FitToScreen);
         }
-        if ui.button("100%").on_hover_text("Zoom to actual size (100%)").clicked() {
+        if ui
+            .button("100%")
+            .on_hover_text("Zoom to actual size (100%)")
+            .clicked()
+        {
             app.command(CommandId::ActualSize);
         }
-        if ui.button("Reset").on_hover_text("Reset view rotation and mirror").clicked() {
+        if ui
+            .button("Reset")
+            .on_hover_text("Reset view rotation and mirror")
+            .clicked()
+        {
             app.command(CommandId::ResetView);
         }
     });
     ui.add_space(4.0);
     ui.label(format!("Zoom: {:.1}%", app.viewport_zoom * 100.0));
     let angle_deg = app.rotation_angle.to_degrees().round();
-    let mirror_state = if app.mirror_horizontal { "Mirror On" } else { "Mirror Off" };
+    let mirror_state = if app.mirror_horizontal {
+        "Mirror On"
+    } else {
+        "Mirror Off"
+    };
     ui.label(format!("Rot: {:.0}° | {}", angle_deg, mirror_state));
 }
 
 pub(crate) fn draw_color_wheel_content(app: &mut PaintApp, ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         let mut active_col = app.active_color();
-        let res = crate::app::draw_hsv_color_wheel(ui, &mut active_col, &mut app.color_wheel_drag_zone);
-        if res.changed() { app.set_active_color(active_col); }
-        if res.drag_stopped() || res.clicked() { app.record_color(active_col); }
+        let res =
+            crate::app::draw_hsv_color_wheel(ui, &mut active_col, &mut app.color_wheel_drag_zone);
+        if res.changed() {
+            app.set_active_color(active_col);
+        }
+        if res.drag_stopped() || res.clicked() {
+            app.record_color(active_col);
+        }
     });
 
     ui.add_space(5.0);
 
     ui.horizontal(|ui| {
-        let (swatches_rect, response) = ui.allocate_exact_size(egui::vec2(50.0, 50.0), egui::Sense::click());
-        let (trans_rect, trans_resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+        let (swatches_rect, response) =
+            ui.allocate_exact_size(egui::vec2(50.0, 50.0), egui::Sense::click());
+        let (trans_rect, trans_resp) =
+            ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
 
         if response.clicked() {
             if let Some(click_pos) = response.interact_pointer_pos() {
                 let local_pos = click_pos - swatches_rect.min;
-                if local_pos.x >= 0.0 && local_pos.x <= 34.0 && local_pos.y >= 0.0 && local_pos.y <= 34.0 {
+                if local_pos.x >= 0.0
+                    && local_pos.x <= 34.0
+                    && local_pos.y >= 0.0
+                    && local_pos.y <= 34.0
+                {
                     app.active_color_is_bg = false;
                     app.active_color_is_transparent = false;
                     app.brush_settings_dirty = true;
-                } else if local_pos.x >= 16.0 && local_pos.x <= 50.0 && local_pos.y >= 16.0 && local_pos.y <= 50.0 {
+                } else if local_pos.x >= 16.0
+                    && local_pos.x <= 50.0
+                    && local_pos.y >= 16.0
+                    && local_pos.y <= 50.0
+                {
                     app.active_color_is_bg = true;
                     app.active_color_is_transparent = false;
                     app.brush_settings_dirty = true;
@@ -396,24 +577,48 @@ pub(crate) fn draw_color_wheel_content(app: &mut PaintApp, ui: &mut egui::Ui) {
             }
         }
 
-        if trans_resp.clicked() { app.active_color_is_transparent = true; app.brush_settings_dirty = true; }
-        if trans_resp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+        if trans_resp.clicked() {
+            app.active_color_is_transparent = true;
+            app.brush_settings_dirty = true;
+        }
+        if trans_resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
 
         let painter = ui.painter();
-        let bg_rect = egui::Rect::from_min_size(swatches_rect.min + egui::vec2(16.0, 16.0), egui::vec2(34.0, 34.0));
-        let bg_color = egui::Color32::from_rgb((app.background_color[0] * 255.0) as u8, (app.background_color[1] * 255.0) as u8, (app.background_color[2] * 255.0) as u8);
+        let bg_rect = egui::Rect::from_min_size(
+            swatches_rect.min + egui::vec2(16.0, 16.0),
+            egui::vec2(34.0, 34.0),
+        );
+        let bg_color = egui::Color32::from_rgb(
+            (app.background_color[0] * 255.0) as u8,
+            (app.background_color[1] * 255.0) as u8,
+            (app.background_color[2] * 255.0) as u8,
+        );
         painter.rect_filled(bg_rect, 0.0, bg_color);
         if app.active_color_is_bg && !app.active_color_is_transparent {
-            painter.rect_stroke(bg_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)));
+            painter.rect_stroke(
+                bg_rect,
+                0.0,
+                egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)),
+            );
         } else {
             painter.rect_stroke(bg_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
         }
 
         let fg_rect = egui::Rect::from_min_size(swatches_rect.min, egui::vec2(34.0, 34.0));
-        let fg_color = egui::Color32::from_rgb((app.foreground_color[0] * 255.0) as u8, (app.foreground_color[1] * 255.0) as u8, (app.foreground_color[2] * 255.0) as u8);
+        let fg_color = egui::Color32::from_rgb(
+            (app.foreground_color[0] * 255.0) as u8,
+            (app.foreground_color[1] * 255.0) as u8,
+            (app.foreground_color[2] * 255.0) as u8,
+        );
         painter.rect_filled(fg_rect, 0.0, fg_color);
         if !app.active_color_is_bg && !app.active_color_is_transparent {
-            painter.rect_stroke(fg_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)));
+            painter.rect_stroke(
+                fg_rect,
+                0.0,
+                egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)),
+            );
         } else {
             painter.rect_stroke(fg_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
         }
@@ -421,12 +626,31 @@ pub(crate) fn draw_color_wheel_content(app: &mut PaintApp, ui: &mut egui::Ui) {
         let size_w = 6.0;
         for row in 0..4 {
             for col in 0..4 {
-                let sq_rect = egui::Rect::from_min_max(trans_rect.min + egui::vec2(col as f32 * size_w, row as f32 * size_w), trans_rect.min + egui::vec2((col + 1) as f32 * size_w, (row + 1) as f32 * size_w));
-                painter.rect_filled(sq_rect, 0.0, if (row + col) % 2 == 0 { egui::Color32::from_gray(240) } else { egui::Color32::from_gray(180) });
+                let sq_rect = egui::Rect::from_min_max(
+                    trans_rect.min + egui::vec2(col as f32 * size_w, row as f32 * size_w),
+                    trans_rect.min
+                        + egui::vec2((col + 1) as f32 * size_w, (row + 1) as f32 * size_w),
+                );
+                painter.rect_filled(
+                    sq_rect,
+                    0.0,
+                    if (row + col) % 2 == 0 {
+                        egui::Color32::from_gray(240)
+                    } else {
+                        egui::Color32::from_gray(180)
+                    },
+                );
             }
         }
-        if app.active_color_is_transparent { painter.rect_stroke(trans_rect, 0.0, egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215))); }
-        else { painter.rect_stroke(trans_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY)); }
+        if app.active_color_is_transparent {
+            painter.rect_stroke(
+                trans_rect,
+                0.0,
+                egui::Stroke::new(2.5, egui::Color32::from_rgb(0, 120, 215)),
+            );
+        } else {
+            painter.rect_stroke(trans_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::GRAY));
+        }
 
         if ui.button("⇄").on_hover_text("Swap colors (X)").clicked() {
             std::mem::swap(&mut app.foreground_color, &mut app.background_color);
@@ -437,7 +661,12 @@ pub(crate) fn draw_color_wheel_content(app: &mut PaintApp, ui: &mut egui::Ui) {
 
     ui.add_space(3.0);
     let active_col = app.active_color();
-    let active_hex = format!("#{:02X}{:02X}{:02X}", (active_col[0] * 255.0).round() as u8, (active_col[1] * 255.0).round() as u8, (active_col[2] * 255.0).round() as u8);
+    let active_hex = format!(
+        "#{:02X}{:02X}{:02X}",
+        (active_col[0] * 255.0).round() as u8,
+        (active_col[1] * 255.0).round() as u8,
+        (active_col[2] * 255.0).round() as u8
+    );
     ui.horizontal(|ui| {
         ui.label("Hex:");
         let hex_edit = ui.text_edit_singleline(&mut app.hex_color_input);
@@ -447,7 +676,9 @@ pub(crate) fn draw_color_wheel_content(app: &mut PaintApp, ui: &mut egui::Ui) {
                 app.record_color(parsed);
             }
         }
-        if !hex_edit.has_focus() { app.hex_color_input = active_hex; }
+        if !hex_edit.has_focus() {
+            app.hex_color_input = active_hex;
+        }
     });
 }
 
@@ -458,16 +689,45 @@ pub(crate) fn draw_color_sliders_content(app: &mut PaintApp, ui: &mut egui::Ui) 
     let mut b_val = (active_col[2] * 255.0).round() as u8;
     let mut rgb_changed = false;
     let mut rgb_drag_released = false;
-    ui.horizontal(|ui| { ui.label("R:"); let res = ui.add(egui::Slider::new(&mut r_val, 0..=255)); if res.changed() { rgb_changed = true; } if res.drag_stopped() { rgb_drag_released = true; } });
-    ui.horizontal(|ui| { ui.label("G:"); let res = ui.add(egui::Slider::new(&mut g_val, 0..=255)); if res.changed() { rgb_changed = true; } if res.drag_stopped() { rgb_drag_released = true; } });
-    ui.horizontal(|ui| { ui.label("B:"); let res = ui.add(egui::Slider::new(&mut b_val, 0..=255)); if res.changed() { rgb_changed = true; } if res.drag_stopped() { rgb_drag_released = true; } });
+    ui.horizontal(|ui| {
+        ui.label("R:");
+        let res = ui.add(egui::Slider::new(&mut r_val, 0..=255));
+        if res.changed() {
+            rgb_changed = true;
+        }
+        if res.drag_stopped() {
+            rgb_drag_released = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("G:");
+        let res = ui.add(egui::Slider::new(&mut g_val, 0..=255));
+        if res.changed() {
+            rgb_changed = true;
+        }
+        if res.drag_stopped() {
+            rgb_drag_released = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("B:");
+        let res = ui.add(egui::Slider::new(&mut b_val, 0..=255));
+        if res.changed() {
+            rgb_changed = true;
+        }
+        if res.drag_stopped() {
+            rgb_drag_released = true;
+        }
+    });
     if rgb_changed {
         active_col[0] = r_val as f32 / 255.0;
         active_col[1] = g_val as f32 / 255.0;
         active_col[2] = b_val as f32 / 255.0;
         app.set_active_color(active_col);
     }
-    if rgb_drag_released { app.record_color(active_col); }
+    if rgb_drag_released {
+        app.record_color(active_col);
+    }
 
     ui.add_space(4.0);
 
@@ -477,15 +737,50 @@ pub(crate) fn draw_color_sliders_content(app: &mut PaintApp, ui: &mut egui::Ui) 
     let mut v_pct = (v * 100.0).round() as u32;
     let mut hsv_changed = false;
     let mut hsv_drag_released = false;
-    ui.horizontal(|ui| { ui.label("H:"); let res = ui.add(egui::Slider::new(&mut h_deg, 0..=360).suffix("°")); if res.changed() { hsv_changed = true; } if res.drag_stopped() { hsv_drag_released = true; } });
-    ui.horizontal(|ui| { ui.label("S:"); let res = ui.add(egui::Slider::new(&mut s_pct, 0..=100).suffix("%")); if res.changed() { hsv_changed = true; } if res.drag_stopped() { hsv_drag_released = true; } });
-    ui.horizontal(|ui| { ui.label("V:"); let res = ui.add(egui::Slider::new(&mut v_pct, 0..=100).suffix("%")); if res.changed() { hsv_changed = true; } if res.drag_stopped() { hsv_drag_released = true; } });
+    ui.horizontal(|ui| {
+        ui.label("H:");
+        let res = ui.add(egui::Slider::new(&mut h_deg, 0..=360).suffix("°"));
+        if res.changed() {
+            hsv_changed = true;
+        }
+        if res.drag_stopped() {
+            hsv_drag_released = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("S:");
+        let res = ui.add(egui::Slider::new(&mut s_pct, 0..=100).suffix("%"));
+        if res.changed() {
+            hsv_changed = true;
+        }
+        if res.drag_stopped() {
+            hsv_drag_released = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("V:");
+        let res = ui.add(egui::Slider::new(&mut v_pct, 0..=100).suffix("%"));
+        if res.changed() {
+            hsv_changed = true;
+        }
+        if res.drag_stopped() {
+            hsv_drag_released = true;
+        }
+    });
     if hsv_changed {
-        let (r, g, b) = crate::app::hsv_to_rgb(h_deg as f32 / 360.0, s_pct as f32 / 100.0, v_pct as f32 / 100.0);
-        active_col[0] = r; active_col[1] = g; active_col[2] = b;
+        let (r, g, b) = crate::app::hsv_to_rgb(
+            h_deg as f32 / 360.0,
+            s_pct as f32 / 100.0,
+            v_pct as f32 / 100.0,
+        );
+        active_col[0] = r;
+        active_col[1] = g;
+        active_col[2] = b;
         app.set_active_color(active_col);
     }
-    if hsv_drag_released { app.record_color(active_col); }
+    if hsv_drag_released {
+        app.record_color(active_col);
+    }
 }
 
 pub(crate) fn draw_color_palette_content(app: &mut PaintApp, ui: &mut egui::Ui) {
@@ -496,23 +791,77 @@ pub(crate) fn draw_color_palette_content(app: &mut PaintApp, ui: &mut egui::Ui) 
         .spacing([4.0, 4.0])
         .show(ui, |ui| {
             for (i, color) in app.palette.iter().enumerate() {
-                let fill = egui::Color32::from_rgb((color[0] * 255.0) as u8, (color[1] * 255.0) as u8, (color[2] * 255.0) as u8);
+                let fill = egui::Color32::from_rgb(
+                    (color[0] * 255.0) as u8,
+                    (color[1] * 255.0) as u8,
+                    (color[2] * 255.0) as u8,
+                );
                 let is_selected_swatch = app.selected_palette_index == Some(i);
-                let btn_response = ui.add(egui::Button::new("").min_size(egui::Vec2::splat(22.0)).fill(fill)).on_hover_text("Pick palette color");
+                let btn_response = ui
+                    .add(
+                        egui::Button::new("")
+                            .min_size(egui::Vec2::splat(22.0))
+                            .fill(fill),
+                    )
+                    .on_hover_text("Pick palette color");
                 if is_selected_swatch {
-                    ui.painter().rect_stroke(btn_response.rect.expand(1.5), 1.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215)));
+                    ui.painter().rect_stroke(
+                        btn_response.rect.expand(1.5),
+                        1.0,
+                        egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 120, 215)),
+                    );
                 }
-                if btn_response.clicked() { clicked_palette_color = Some(*color); clicked_palette_idx = Some(i); }
-                if i % 6 == 5 { ui.end_row(); }
+                if btn_response.clicked() {
+                    clicked_palette_color = Some(*color);
+                    clicked_palette_idx = Some(i);
+                }
+                if i % 6 == 5 {
+                    ui.end_row();
+                }
             }
         });
-    if let Some(picked) = clicked_palette_color { app.set_active_color(picked); app.selected_palette_index = clicked_palette_idx; app.record_color(picked); app.brush_settings_dirty = true; }
+    if let Some(picked) = clicked_palette_color {
+        app.set_active_color(picked);
+        app.selected_palette_index = clicked_palette_idx;
+        app.record_color(picked);
+        app.brush_settings_dirty = true;
+    }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button("Save").on_hover_text("Save current color to selected swatch").clicked() { if let Some(i) = app.selected_palette_index { if i < app.palette.len() { app.palette[i] = app.active_color(); } } }
-        if ui.button("+").on_hover_text("Add current color to palette").clicked() && app.palette.len() < 36 { let active_col = app.active_color(); app.palette.push(active_col); app.selected_palette_index = Some(app.palette.len() - 1); }
-        if ui.add_enabled(app.selected_palette_index.is_some() && app.palette.len() > 1, egui::Button::new("-")).on_hover_text("Remove selected swatch from palette").clicked() {
-            if let Some(i) = app.selected_palette_index.take() { if i < app.palette.len() { app.palette.remove(i); } }
+        if ui
+            .button("Save")
+            .on_hover_text("Save current color to selected swatch")
+            .clicked()
+        {
+            if let Some(i) = app.selected_palette_index {
+                if i < app.palette.len() {
+                    app.palette[i] = app.active_color();
+                }
+            }
+        }
+        if ui
+            .button("+")
+            .on_hover_text("Add current color to palette")
+            .clicked()
+            && app.palette.len() < 36
+        {
+            let active_col = app.active_color();
+            app.palette.push(active_col);
+            app.selected_palette_index = Some(app.palette.len() - 1);
+        }
+        if ui
+            .add_enabled(
+                app.selected_palette_index.is_some() && app.palette.len() > 1,
+                egui::Button::new("-"),
+            )
+            .on_hover_text("Remove selected swatch from palette")
+            .clicked()
+        {
+            if let Some(i) = app.selected_palette_index.take() {
+                if i < app.palette.len() {
+                    app.palette.remove(i);
+                }
+            }
         }
     });
 }
@@ -523,15 +872,32 @@ pub(crate) fn draw_color_history_content(app: &mut PaintApp, ui: &mut egui::Ui) 
         ui.horizontal_wrapped(|ui| {
             let hist_len = app.color_history.len();
             for (i, color) in app.color_history.iter().rev().enumerate() {
-                if i >= 12 { break; }
-                let fill = egui::Color32::from_rgb((color[0] * 255.0) as u8, (color[1] * 255.0) as u8, (color[2] * 255.0) as u8);
-                let btn = ui.add(egui::Button::new("").min_size(egui::Vec2::splat(16.0)).fill(fill));
-                if btn.clicked() { clicked_history_color = Some(*color); }
-                if i < hist_len.min(12) - 1 { ui.add_space(2.0); }
+                if i >= 12 {
+                    break;
+                }
+                let fill = egui::Color32::from_rgb(
+                    (color[0] * 255.0) as u8,
+                    (color[1] * 255.0) as u8,
+                    (color[2] * 255.0) as u8,
+                );
+                let btn = ui.add(
+                    egui::Button::new("")
+                        .min_size(egui::Vec2::splat(16.0))
+                        .fill(fill),
+                );
+                if btn.clicked() {
+                    clicked_history_color = Some(*color);
+                }
+                if i < hist_len.min(12) - 1 {
+                    ui.add_space(2.0);
+                }
             }
         });
     }
-    if let Some(color) = clicked_history_color { app.set_active_color(color); app.brush_settings_dirty = true; }
+    if let Some(color) = clicked_history_color {
+        app.set_active_color(color);
+        app.brush_settings_dirty = true;
+    }
 }
 
 pub(crate) fn draw_reference_widget(app: &mut PaintApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
@@ -557,10 +923,14 @@ pub(crate) fn draw_reference_widget(app: &mut PaintApp, ui: &mut egui::Ui, _ctx:
                         }
                     }
                     if ui.button("Hide All").clicked() {
-                        for img in &mut app.reference_images { img.visible = false; }
+                        for img in &mut app.reference_images {
+                            img.visible = false;
+                        }
                     }
                     if ui.button("Show All").clicked() {
-                        for img in &mut app.reference_images { img.visible = true; }
+                        for img in &mut app.reference_images {
+                            img.visible = true;
+                        }
                     }
                 });
 
@@ -571,8 +941,16 @@ pub(crate) fn draw_reference_widget(app: &mut PaintApp, ui: &mut egui::Ui, _ctx:
                     for (idx, img) in app.reference_images.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
                             let eye_text = if img.visible { "👁" } else { "⦂" };
-                            let btn_eye = egui::Button::new(eye_text).frame(false).selected(img.visible);
-                            if ui.add(btn_eye).on_hover_text("Toggle reference visibility").clicked() { img.visible = !img.visible; }
+                            let btn_eye = egui::Button::new(eye_text)
+                                .frame(false)
+                                .selected(img.visible);
+                            if ui
+                                .add(btn_eye)
+                                .on_hover_text("Toggle reference visibility")
+                                .clicked()
+                            {
+                                img.visible = !img.visible;
+                            }
 
                             let is_selected = app.selected_reference_idx == Some(idx);
                             let opacity_pct = (img.opacity * 100.0).round() as i32;
@@ -595,34 +973,55 @@ pub(crate) fn draw_reference_widget(app: &mut PaintApp, ui: &mut egui::Ui, _ctx:
 
                             ui.horizontal(|ui| {
                                 ui.label("Opacity:");
-                                ui.add(egui::Slider::new(&mut img.opacity, 0.0..=1.0).show_value(true));
+                                ui.add(
+                                    egui::Slider::new(&mut img.opacity, 0.0..=1.0).show_value(true),
+                                );
                             });
 
                             ui.horizontal(|ui| {
                                 ui.label("Scale:");
-                                ui.add(egui::Slider::new(&mut img.scale, 0.1..=5.0).show_value(true));
+                                ui.add(
+                                    egui::Slider::new(&mut img.scale, 0.1..=5.0).show_value(true),
+                                );
                             });
 
                             ui.horizontal(|ui| {
                                 ui.label("Rotation:");
                                 let mut degrees = img.rotation.to_degrees();
-                                if ui.add(egui::Slider::new(&mut degrees, -180.0..=180.0).show_value(true).suffix("°")).changed() {
+                                if ui
+                                    .add(
+                                        egui::Slider::new(&mut degrees, -180.0..=180.0)
+                                            .show_value(true)
+                                            .suffix("°"),
+                                    )
+                                    .changed()
+                                {
                                     img.rotation = degrees.to_radians();
                                 }
                             });
 
                             ui.horizontal(|ui| {
-                                if ui.selectable_label(img.pinned_to_view, "Pin to View").clicked() && !img.pinned_to_view {
+                                if ui
+                                    .selectable_label(img.pinned_to_view, "Pin to View")
+                                    .clicked()
+                                    && !img.pinned_to_view
+                                {
                                     img.pinned_to_view = true;
                                     img.world_pos = egui::vec2(200.0, 200.0);
                                 }
-                                if ui.selectable_label(!img.pinned_to_view, "Pin to Canvas").clicked() && img.pinned_to_view {
+                                if ui
+                                    .selectable_label(!img.pinned_to_view, "Pin to Canvas")
+                                    .clicked()
+                                    && img.pinned_to_view
+                                {
                                     img.pinned_to_view = false;
                                     img.world_pos = egui::vec2(canvas_w * 0.5, canvas_h * 0.5);
                                 }
                             });
 
-                            if ui.button("Remove").clicked() { to_remove_idx = Some(idx); }
+                            if ui.button("Remove").clicked() {
+                                to_remove_idx = Some(idx);
+                            }
                         }
                     }
 
@@ -635,7 +1034,11 @@ pub(crate) fn draw_reference_widget(app: &mut PaintApp, ui: &mut egui::Ui, _ctx:
         });
 }
 
-pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, ctx: &egui::Context) {
+pub(crate) fn draw_layers_manager_widget(
+    app: &mut PaintApp,
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+) {
     egui::CollapsingHeader::new("LAYERS MANAGER")
         .default_open(true)
         .show(ui, |ui| {
@@ -643,10 +1046,14 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
 
             // --- LAYER EFFECT SECTION ---
             egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(), ui.next_auto_id(), false
-            ).show_header(ui, |ui| {
+                ui.ctx(),
+                ui.next_auto_id(),
+                false,
+            )
+            .show_header(ui, |ui| {
                 ui.label("Layer Effect");
-            }).body(|ui| {
+            })
+            .body(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(3.0, 1.0);
 
                 // Paper subsection
@@ -660,14 +1067,23 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     ui.horizontal(|ui| {
                         ui.label("Intensity");
                         let mut dummy_i = 0.0;
-                        ui.add_enabled(false, egui::Slider::new(&mut dummy_i, 0.0..=100.0).show_value(false));
+                        ui.add_enabled(
+                            false,
+                            egui::Slider::new(&mut dummy_i, 0.0..=100.0).show_value(false),
+                        );
                         ui.add_enabled(false, egui::DragValue::new(&mut dummy_i).speed(1.0));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Scale");
                         let mut dummy_s = 10.0;
-                        ui.add_enabled(false, egui::Slider::new(&mut dummy_s, 1.0..=500.0).show_value(false));
-                        ui.add_enabled(false, egui::DragValue::new(&mut dummy_s).speed(1.0).suffix("%"));
+                        ui.add_enabled(
+                            false,
+                            egui::Slider::new(&mut dummy_s, 1.0..=500.0).show_value(false),
+                        );
+                        ui.add_enabled(
+                            false,
+                            egui::DragValue::new(&mut dummy_s).speed(1.0).suffix("%"),
+                        );
                     });
                     ui.add_enabled(false, egui::Checkbox::new(&mut false, "Apply to Linework"));
                 });
@@ -685,13 +1101,19 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     ui.horizontal(|ui| {
                         ui.label("Width");
                         let mut dummy_w = 1.0;
-                        ui.add_enabled(false, egui::Slider::new(&mut dummy_w, 1.0..=20.0).show_value(false));
+                        ui.add_enabled(
+                            false,
+                            egui::Slider::new(&mut dummy_w, 1.0..=20.0).show_value(false),
+                        );
                         ui.add_enabled(false, egui::DragValue::new(&mut dummy_w).speed(1.0));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Intensity");
                         let mut dummy_i = 0.0;
-                        ui.add_enabled(false, egui::Slider::new(&mut dummy_i, 0.0..=100.0).show_value(false));
+                        ui.add_enabled(
+                            false,
+                            egui::Slider::new(&mut dummy_i, 0.0..=100.0).show_value(false),
+                        );
                         ui.add_enabled(false, egui::DragValue::new(&mut dummy_i).speed(1.0));
                     });
                 });
@@ -701,12 +1123,35 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
 
             // --- ACTIVE LAYER CONTROLS (Mode / Opacity / Lock / Clipping) ---
             let layer_id = app.active_layer_id;
-            let (old_opacity, old_blend, old_lock_alpha, old_clipping, _old_visible, old_name, old_locked) =
-                if let Some(l) = app.layers.get(&layer_id) {
-                    (l.opacity, l.blend_mode, l.lock_alpha, l.is_clipping, l.visible, l.name.clone(), l.locked)
-                } else {
-                    (1.0, BlendMode::Normal, false, false, true, String::new(), false)
-                };
+            let (
+                old_opacity,
+                old_blend,
+                old_lock_alpha,
+                old_clipping,
+                _old_visible,
+                old_name,
+                old_locked,
+            ) = if let Some(l) = app.layers.get(&layer_id) {
+                (
+                    l.opacity,
+                    l.blend_mode,
+                    l.lock_alpha,
+                    l.is_clipping,
+                    l.visible,
+                    l.name.clone(),
+                    l.locked,
+                )
+            } else {
+                (
+                    1.0,
+                    BlendMode::Normal,
+                    false,
+                    false,
+                    true,
+                    String::new(),
+                    false,
+                )
+            };
 
             if let Some(active_layer) = app.layers.get_mut(&app.active_layer_id) {
                 // Mode row
@@ -716,21 +1161,54 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                         .selected_text(format!("{:?}", active_layer.blend_mode))
                         .width(120.0)
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut active_layer.blend_mode, BlendMode::Normal, "Normal");
-                            ui.selectable_value(&mut active_layer.blend_mode, BlendMode::Multiply, "Multiply");
-                            ui.selectable_value(&mut active_layer.blend_mode, BlendMode::Screen, "Screen");
-                            ui.selectable_value(&mut active_layer.blend_mode, BlendMode::Overlay, "Overlay");
-                            ui.selectable_value(&mut active_layer.blend_mode, BlendMode::Luminosity, "Luminosity (Shine)");
-                            ui.selectable_value(&mut active_layer.blend_mode, BlendMode::Shade, "Shade");
+                            ui.selectable_value(
+                                &mut active_layer.blend_mode,
+                                BlendMode::Normal,
+                                "Normal",
+                            );
+                            ui.selectable_value(
+                                &mut active_layer.blend_mode,
+                                BlendMode::Multiply,
+                                "Multiply",
+                            );
+                            ui.selectable_value(
+                                &mut active_layer.blend_mode,
+                                BlendMode::Screen,
+                                "Screen",
+                            );
+                            ui.selectable_value(
+                                &mut active_layer.blend_mode,
+                                BlendMode::Overlay,
+                                "Overlay",
+                            );
+                            ui.selectable_value(
+                                &mut active_layer.blend_mode,
+                                BlendMode::Luminosity,
+                                "Luminosity (Shine)",
+                            );
+                            ui.selectable_value(
+                                &mut active_layer.blend_mode,
+                                BlendMode::Shade,
+                                "Shade",
+                            );
                         });
                 });
 
                 // Opacity row
                 ui.horizontal(|ui| {
                     ui.label("Opacity:");
-                    ui.add(egui::Slider::new(&mut active_layer.opacity, 0.0..=1.0).show_value(false));
+                    ui.add(
+                        egui::Slider::new(&mut active_layer.opacity, 0.0..=1.0).show_value(false),
+                    );
                     let mut opacity_pct = (active_layer.opacity * 100.0).round() as i32;
-                    if ui.add(egui::DragValue::new(&mut opacity_pct).speed(1).clamp_range(0..=100)).changed() {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut opacity_pct)
+                                .speed(1)
+                                .clamp_range(0..=100),
+                        )
+                        .changed()
+                    {
                         active_layer.opacity = (opacity_pct as f32 / 100.0).clamp(0.0, 1.0);
                     }
                 });
@@ -743,39 +1221,69 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     let move_locked = false;
                     let full_locked = false;
 
-                    let alpha_res = ui.add_sized([20.0, 20.0],
-                        egui::Button::new(egui::RichText::new(if alpha_locked { "A" } else { "A" }).size(11.0))
-                            .selected(alpha_locked)
-                    ).on_hover_text("Lock Alpha (Preserve Opacity)");
-                    if alpha_res.clicked() { active_layer.lock_alpha = !active_layer.lock_alpha; }
+                    let alpha_res = ui
+                        .add_sized(
+                            [20.0, 20.0],
+                            egui::Button::new(
+                                egui::RichText::new(if alpha_locked { "A" } else { "A" })
+                                    .size(11.0),
+                            )
+                            .selected(alpha_locked),
+                        )
+                        .on_hover_text("Lock Alpha (Preserve Opacity)");
+                    if alpha_res.clicked() {
+                        active_layer.lock_alpha = !active_layer.lock_alpha;
+                    }
 
-                    let draw_res = ui.add_sized([20.0, 20.0],
-                        egui::Button::new(egui::RichText::new(if maker_locked { "D" } else { "D" }).size(11.0))
-                            .selected(maker_locked)
-                    ).on_hover_text("Lock Drawing");
-                    if draw_res.clicked() { active_layer.locked = !active_layer.locked; }
+                    let draw_res = ui
+                        .add_sized(
+                            [20.0, 20.0],
+                            egui::Button::new(
+                                egui::RichText::new(if maker_locked { "D" } else { "D" })
+                                    .size(11.0),
+                            )
+                            .selected(maker_locked),
+                        )
+                        .on_hover_text("Lock Drawing");
+                    if draw_res.clicked() {
+                        active_layer.locked = !active_layer.locked;
+                    }
 
-                    let _move_btn = ui.add_sized([20.0, 20.0],
-                        egui::Button::new(egui::RichText::new("M").size(11.0))
-                            .selected(move_locked)
-                    ).on_hover_text("Lock Movement (future)");
+                    let _move_btn = ui
+                        .add_sized(
+                            [20.0, 20.0],
+                            egui::Button::new(egui::RichText::new("M").size(11.0))
+                                .selected(move_locked),
+                        )
+                        .on_hover_text("Lock Movement (future)");
 
-                    let _full_btn = ui.add_sized([20.0, 20.0],
-                        egui::Button::new(egui::RichText::new("F").size(11.0))
-                            .selected(full_locked)
-                    ).on_hover_text("Full Lock (future)");
+                    let _full_btn = ui
+                        .add_sized(
+                            [20.0, 20.0],
+                            egui::Button::new(egui::RichText::new("F").size(11.0))
+                                .selected(full_locked),
+                        )
+                        .on_hover_text("Full Lock (future)");
                 });
 
                 // Clipping + Selection Source row
                 ui.horizontal(|ui| {
-                    if ui.checkbox(&mut active_layer.is_clipping, "Clipping Group").changed() {
+                    if ui
+                        .checkbox(&mut active_layer.is_clipping, "Clipping Group")
+                        .changed()
+                    {
                         // handled below via old_clipping comparison
                     }
                     let sel_src = active_layer.selection_source;
-                    let sel_res = ui.add_sized([20.0, 20.0],
-                        egui::Button::new(egui::RichText::new(if sel_src { "◎" } else { "⚬" }).size(12.0))
-                            .selected(sel_src)
-                    ).on_hover_text("Selection Source (reference for Bucket/Wand)");
+                    let sel_res = ui
+                        .add_sized(
+                            [20.0, 20.0],
+                            egui::Button::new(
+                                egui::RichText::new(if sel_src { "◎" } else { "⚬" }).size(12.0),
+                            )
+                            .selected(sel_src),
+                        )
+                        .on_hover_text("Selection Source (reference for Bucket/Wand)");
                     if sel_res.clicked() {
                         active_layer.selection_source = !active_layer.selection_source;
                     }
@@ -789,37 +1297,55 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                 if (active_layer.opacity - old_opacity).abs() > f32::EPSILON {
                     commands.push(HistoryCommand::LayerProperty {
                         layer_id: aid,
-                        property: LayerPropertyChange::Opacity { old: old_opacity, new: active_layer.opacity },
+                        property: LayerPropertyChange::Opacity {
+                            old: old_opacity,
+                            new: active_layer.opacity,
+                        },
                     });
                 }
                 if active_layer.blend_mode != old_blend {
                     commands.push(HistoryCommand::LayerProperty {
                         layer_id: aid,
-                        property: LayerPropertyChange::BlendMode { old: old_blend, new: active_layer.blend_mode },
+                        property: LayerPropertyChange::BlendMode {
+                            old: old_blend,
+                            new: active_layer.blend_mode,
+                        },
                     });
                 }
                 if active_layer.lock_alpha != old_lock_alpha {
                     commands.push(HistoryCommand::LayerProperty {
                         layer_id: aid,
-                        property: LayerPropertyChange::LockAlpha { old: old_lock_alpha, new: active_layer.lock_alpha },
+                        property: LayerPropertyChange::LockAlpha {
+                            old: old_lock_alpha,
+                            new: active_layer.lock_alpha,
+                        },
                     });
                 }
                 if active_layer.is_clipping != old_clipping {
                     commands.push(HistoryCommand::LayerProperty {
                         layer_id: aid,
-                        property: LayerPropertyChange::Clipping { old: old_clipping, new: active_layer.is_clipping },
+                        property: LayerPropertyChange::Clipping {
+                            old: old_clipping,
+                            new: active_layer.is_clipping,
+                        },
                     });
                 }
                 if active_layer.name != old_name {
                     commands.push(HistoryCommand::LayerProperty {
                         layer_id: aid,
-                        property: LayerPropertyChange::Rename { old: old_name, new: active_layer.name.clone() },
+                        property: LayerPropertyChange::Rename {
+                            old: old_name,
+                            new: active_layer.name.clone(),
+                        },
                     });
                 }
                 if active_layer.locked != old_locked {
                     commands.push(HistoryCommand::LayerProperty {
                         layer_id: aid,
-                        property: LayerPropertyChange::Locked { old: old_locked, new: active_layer.locked },
+                        property: LayerPropertyChange::Locked {
+                            old: old_locked,
+                            new: active_layer.locked,
+                        },
                     });
                 }
                 for cmd in commands {
@@ -828,11 +1354,19 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
             }
 
             // Vector layer display mode toggle
-            let (is_vector, is_spline_mode) = app.layers.get(&app.active_layer_id).map(|l| {
-                let is_v = matches!(l.kind, crate::canvas::LayerType::Vector);
-                let is_spline = l.vector_data.as_ref().map(|vd| vd.display_mode == crate::canvas::VectorDisplayMode::SplineMesh).unwrap_or(false);
-                (is_v, is_spline)
-            }).unwrap_or((false, false));
+            let (is_vector, is_spline_mode) = app
+                .layers
+                .get(&app.active_layer_id)
+                .map(|l| {
+                    let is_v = matches!(l.kind, crate::canvas::LayerType::Vector);
+                    let is_spline = l
+                        .vector_data
+                        .as_ref()
+                        .map(|vd| vd.display_mode == crate::canvas::VectorDisplayMode::SplineMesh)
+                        .unwrap_or(false);
+                    (is_v, is_spline)
+                })
+                .unwrap_or((false, false));
 
             if is_vector {
                 ui.add_space(2.0);
@@ -840,19 +1374,25 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     ui.label("Vector:");
                     if ui.selectable_label(!is_spline_mode, "Raster").clicked() {
                         if let Some(layer) = app.layers.get_mut(&app.active_layer_id) {
-                            if let Some(vd) = &mut layer.vector_data { vd.display_mode = crate::canvas::VectorDisplayMode::Rasterized; }
+                            if let Some(vd) = &mut layer.vector_data {
+                                vd.display_mode = crate::canvas::VectorDisplayMode::Rasterized;
+                            }
                         }
                     }
                     if ui.selectable_label(is_spline_mode, "Spline").clicked() {
                         if let Some(layer) = app.layers.get_mut(&app.active_layer_id) {
-                            if let Some(vd) = &mut layer.vector_data { vd.display_mode = crate::canvas::VectorDisplayMode::SplineMesh; }
+                            if let Some(vd) = &mut layer.vector_data {
+                                vd.display_mode = crate::canvas::VectorDisplayMode::SplineMesh;
+                            }
                         }
                     }
                 });
 
                 let selected_width = app.edit_cp_selection.and_then(|(si, _)| {
                     app.layers.get(&app.active_layer_id).and_then(|l| {
-                        l.vector_data.as_ref().and_then(|vd| vd.strokes.get(si).map(|s| s.width))
+                        l.vector_data
+                            .as_ref()
+                            .and_then(|vd| vd.strokes.get(si).map(|s| s.width))
                     })
                 });
                 if let Some(cur_width) = selected_width {
@@ -860,10 +1400,16 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     let si = app.edit_cp_selection.map(|(s, _)| s).unwrap_or(0);
                     ui.horizontal(|ui| {
                         ui.label("Width:");
-                        if ui.add(egui::Slider::new(&mut new_width, 0.1..=10.0).step_by(0.1)).changed() {
+                        if ui
+                            .add(egui::Slider::new(&mut new_width, 0.1..=10.0).step_by(0.1))
+                            .changed()
+                        {
                             if let Some(layer) = app.layers.get_mut(&app.active_layer_id) {
                                 if let Some(vd) = &mut layer.vector_data {
-                                    if si < vd.strokes.len() { vd.strokes[si].width = new_width; app.redraw_vector_layer(app.active_layer_id); }
+                                    if si < vd.strokes.len() {
+                                        vd.strokes[si].width = new_width;
+                                        app.redraw_vector_layer(app.active_layer_id);
+                                    }
                                 }
                             }
                         }
@@ -871,14 +1417,25 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                 }
 
                 ui.horizontal(|ui| {
-                    if ui.button("To Raster").clicked() { app.convert_active_vector_to_raster(); ctx.request_repaint(); }
+                    if ui.button("To Raster").clicked() {
+                        app.convert_active_vector_to_raster();
+                        ctx.request_repaint();
+                    }
                     if ui.button("Export SVG").clicked() {
                         if let Some(layer) = app.layers.get(&app.active_layer_id) {
                             if let Some(vd) = &layer.vector_data {
-                                let svg_content = crate::vector::export_strokes_svg(&vd.strokes, app.canvas_width, app.canvas_height);
-                                let svg_path = std::path::Path::new(&app.document_path).with_extension("svg");
-                                if let Err(e) = std::fs::write(&svg_path, &svg_content) { log::error!("Failed to export SVG: {}", e); }
-                                else { log::info!("Exported SVG to {:?}", svg_path); }
+                                let svg_content = crate::vector::export_strokes_svg(
+                                    &vd.strokes,
+                                    app.canvas_width,
+                                    app.canvas_height,
+                                );
+                                let svg_path =
+                                    std::path::Path::new(&app.document_path).with_extension("svg");
+                                if let Err(e) = std::fs::write(&svg_path, &svg_content) {
+                                    log::error!("Failed to export SVG: {}", e);
+                                } else {
+                                    log::info!("Exported SVG to {:?}", svg_path);
+                                }
                             }
                         }
                     }
@@ -890,7 +1447,11 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
             // --- LAYER OPERATION ICON TOOLBAR ---
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
-                if ui.add_sized([22.0, 22.0], egui::Button::new("R+")).on_hover_text("New Raster Layer").clicked() {
+                if ui
+                    .add_sized([22.0, 22.0], egui::Button::new("R+"))
+                    .on_hover_text("New Raster Layer")
+                    .clicked()
+                {
                     app.layer_id_counter += 1;
                     let new_id = app.layer_id_counter;
                     let mut new_layer = Layer::new(new_id, format!("Layer {}", new_id));
@@ -899,80 +1460,170 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     app.layers.insert(new_id, new_layer);
                     app.layer_order.insert(0, new_id);
                     app.active_layer_id = new_id;
-                    app.history.push_command(HistoryCommand::LayerCreate { layer: Box::new(layer_clone), index: 0 });
+                    app.history.push_command(HistoryCommand::LayerCreate {
+                        layer: Box::new(layer_clone),
+                        index: 0,
+                    });
                 }
-                if ui.add_sized([22.0, 22.0], egui::Button::new("F+")).on_hover_text("New Folder").clicked() {
+                if ui
+                    .add_sized([22.0, 22.0], egui::Button::new("F+"))
+                    .on_hover_text("New Folder")
+                    .clicked()
+                {
                     app.layer_id_counter += 1;
                     let new_id = app.layer_id_counter;
                     let mut new_layer = Layer::new(new_id, format!("Folder {}", new_id));
-                    new_layer.kind = crate::canvas::LayerType::Folder { child_ids: Vec::new() };
+                    new_layer.kind = crate::canvas::LayerType::Folder {
+                        child_ids: Vec::new(),
+                    };
                     let layer_clone = new_layer.clone();
                     app.layers.insert(new_id, new_layer);
                     app.layer_order.insert(0, new_id);
                     app.active_layer_id = new_id;
-                    app.history.push_command(HistoryCommand::LayerCreate { layer: Box::new(layer_clone), index: 0 });
+                    app.history.push_command(HistoryCommand::LayerCreate {
+                        layer: Box::new(layer_clone),
+                        index: 0,
+                    });
                 }
-                if ui.add_sized([22.0, 22.0], egui::Button::new("V+")).on_hover_text("New Vector Layer").clicked() {
+                if ui
+                    .add_sized([22.0, 22.0], egui::Button::new("V+"))
+                    .on_hover_text("New Vector Layer")
+                    .clicked()
+                {
                     app.layer_id_counter += 1;
                     let new_id = app.layer_id_counter;
                     let mut new_layer = Layer::new(new_id, format!("Vector {}", new_id));
                     new_layer.kind = crate::canvas::LayerType::Vector;
-                    new_layer.vector_data = Some(crate::canvas::VectorLayer { strokes: Vec::new(), display_mode: Default::default() });
+                    new_layer.vector_data = Some(crate::canvas::VectorLayer {
+                        strokes: Vec::new(),
+                        display_mode: Default::default(),
+                    });
                     let layer_clone = new_layer.clone();
                     app.layers.insert(new_id, new_layer);
                     app.layer_order.insert(0, new_id);
                     app.active_layer_id = new_id;
-                    app.history.push_command(HistoryCommand::LayerCreate { layer: Box::new(layer_clone), index: 0 });
+                    app.history.push_command(HistoryCommand::LayerCreate {
+                        layer: Box::new(layer_clone),
+                        index: 0,
+                    });
                 }
                 ui.separator();
-                if ui.add_enabled(app.layer_order.len() > 1, egui::Button::new("✕").min_size(egui::Vec2::new(22.0, 22.0))).on_hover_text("Delete Layer").clicked() {
+                if ui
+                    .add_enabled(
+                        app.layer_order.len() > 1,
+                        egui::Button::new("✕").min_size(egui::Vec2::new(22.0, 22.0)),
+                    )
+                    .on_hover_text("Delete Layer")
+                    .clicked()
+                {
                     if app.layer_order.len() > 1 {
                         let active_id = app.active_layer_id;
                         if let Some(pos) = app.layer_order.iter().position(|&x| x == active_id) {
                             let removed = app.layers.remove(&active_id).unwrap();
                             app.layer_order.remove(pos);
                             app.active_layer_id = app.layer_order[0];
-                            app.history.push_command(HistoryCommand::LayerDelete { layer: Box::new(removed), index: pos });
+                            app.history.push_command(HistoryCommand::LayerDelete {
+                                layer: Box::new(removed),
+                                index: pos,
+                            });
                         }
                     }
                 }
-                if ui.add_sized([22.0, 22.0], egui::Button::new("Clr")).on_hover_text("Clear Layer").clicked() {
+                if ui
+                    .add_sized([22.0, 22.0], egui::Button::new("Clr"))
+                    .on_hover_text("Clear Layer")
+                    .clicked()
+                {
                     app.command(CommandId::ClearLayer);
                 }
-                if ui.add_sized([22.0, 22.0], egui::Button::new("Fill")).on_hover_text("Fill Layer").clicked() {
+                if ui
+                    .add_sized([22.0, 22.0], egui::Button::new("Fill"))
+                    .on_hover_text("Fill Layer")
+                    .clicked()
+                {
                     app.command(CommandId::FillLayer);
                 }
-                if ui.add_sized([22.0, 22.0], egui::Button::new("Img")).on_hover_text("Import Image as Layer").clicked() {
+                if ui
+                    .add_sized([22.0, 22.0], egui::Button::new("Img"))
+                    .on_hover_text("Import Image as Layer")
+                    .clicked()
+                {
                     app.command(CommandId::ImportImageAsLayer);
                 }
             });
 
             // --- MASK TOOLBAR ---
-            let mask_state = app.layers.get(&app.active_layer_id).map(|l| (l.mask.is_some(), l.mask.as_ref().is_some_and(|m| m.enabled)));
+            let mask_state = app
+                .layers
+                .get(&app.active_layer_id)
+                .map(|l| (l.mask.is_some(), l.mask.as_ref().is_some_and(|m| m.enabled)));
             let has_mask = mask_state.is_some_and(|(h, _)| h);
             let mask_enabled = mask_state.is_some_and(|(_, e)| e);
             if mask_state.is_some() {
                 ui.add_space(1.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
-                    if ui.add_enabled(!has_mask, egui::Button::new("M+").min_size(egui::Vec2::new(22.0, 22.0))).on_hover_text("Add Mask").clicked() {
+                    if ui
+                        .add_enabled(
+                            !has_mask,
+                            egui::Button::new("M+").min_size(egui::Vec2::new(22.0, 22.0)),
+                        )
+                        .on_hover_text("Add Mask")
+                        .clicked()
+                    {
                         app.command(CommandId::AddLayerMask);
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new("M-").min_size(egui::Vec2::new(22.0, 22.0))).on_hover_text("Delete Mask").clicked() {
+                    if ui
+                        .add_enabled(
+                            has_mask,
+                            egui::Button::new("M-").min_size(egui::Vec2::new(22.0, 22.0)),
+                        )
+                        .on_hover_text("Delete Mask")
+                        .clicked()
+                    {
                         app.command(CommandId::DeleteLayerMask);
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new(if mask_enabled { "On" } else { "Off" }).min_size(egui::Vec2::new(22.0, 22.0))).on_hover_text("Toggle Mask").clicked() {
+                    if ui
+                        .add_enabled(
+                            has_mask,
+                            egui::Button::new(if mask_enabled { "On" } else { "Off" })
+                                .min_size(egui::Vec2::new(22.0, 22.0)),
+                        )
+                        .on_hover_text("Toggle Mask")
+                        .clicked()
+                    {
                         app.command(CommandId::ToggleLayerMask);
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new("Ap").min_size(egui::Vec2::new(22.0, 22.0))).on_hover_text("Apply Mask").clicked() {
+                    if ui
+                        .add_enabled(
+                            has_mask,
+                            egui::Button::new("Ap").min_size(egui::Vec2::new(22.0, 22.0)),
+                        )
+                        .on_hover_text("Apply Mask")
+                        .clicked()
+                    {
                         app.command(CommandId::ApplyLayerMask);
                     }
-                    if ui.add_enabled(has_mask, egui::Button::new("Inv").min_size(egui::Vec2::new(22.0, 22.0))).on_hover_text("Invert Mask").clicked() {
+                    if ui
+                        .add_enabled(
+                            has_mask,
+                            egui::Button::new("Inv").min_size(egui::Vec2::new(22.0, 22.0)),
+                        )
+                        .on_hover_text("Invert Mask")
+                        .clicked()
+                    {
                         app.command(CommandId::InvertLayerMask);
                     }
                     if has_mask {
                         let label = if app.active_mask_editing { "Mc" } else { "Ma" };
-                        if ui.add_sized([22.0, 22.0], egui::Button::new(label).selected(app.active_mask_editing)).on_hover_text("Edit Mask / Edit Color").clicked() {
+                        if ui
+                            .add_sized(
+                                [22.0, 22.0],
+                                egui::Button::new(label).selected(app.active_mask_editing),
+                            )
+                            .on_hover_text("Edit Mask / Edit Color")
+                            .clicked()
+                        {
                             app.active_mask_editing = !app.active_mask_editing;
                         }
                     }
@@ -982,7 +1633,8 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
             ui.add_space(2.0);
 
             // --- LAYER LIST ---
-            let mut thumb_textures: ahash::AHashMap<u32, egui::TextureHandle> = ahash::AHashMap::default();
+            let mut thumb_textures: ahash::AHashMap<u32, egui::TextureHandle> =
+                ahash::AHashMap::default();
             for id in &app.layer_order.clone() {
                 if let Some(tex) = app.get_layer_thumbnail_texture(ctx, *id) {
                     thumb_textures.insert(*id, tex);
@@ -997,7 +1649,8 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
 
                 let row_height = 48.0;
                 let avail_w = ui.available_width();
-                let (row_rect, row_response) = ui.allocate_exact_size(egui::vec2(avail_w, row_height), egui::Sense::click());
+                let (row_rect, row_response) =
+                    ui.allocate_exact_size(egui::vec2(avail_w, row_height), egui::Sense::click());
                 let row_hovered = row_response.hovered();
 
                 // Draw row with painter (fresh borrow per iteration)
@@ -1005,7 +1658,11 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     let p = ui.painter();
                     if is_active {
                         p.rect_filled(row_rect, 0.0, egui::Color32::from_rgb(224, 220, 255));
-                        p.rect_stroke(row_rect, 0.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(125, 120, 255)));
+                        p.rect_stroke(
+                            row_rect,
+                            0.0,
+                            egui::Stroke::new(1.5, egui::Color32::from_rgb(125, 120, 255)),
+                        );
                     } else if row_response.hovered() {
                         p.rect_filled(row_rect, 0.0, egui::Color32::from_gray(245));
                     } else {
@@ -1020,7 +1677,13 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                         egui::vec2(14.0, row_height - 4.0),
                     );
                     let grip_resp = ui.allocate_rect(grip_rect, egui::Sense::click_and_drag());
-                    ui.painter().text(grip_rect.center(), egui::Align2::CENTER_CENTER, "⠿", egui::FontId::proportional(10.0), egui::Color32::from_gray(160));
+                    ui.painter().text(
+                        grip_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "⠿",
+                        egui::FontId::proportional(10.0),
+                        egui::Color32::from_gray(160),
+                    );
 
                     if grip_resp.drag_started() {
                         app.dragging_layer_id = Some(id);
@@ -1030,33 +1693,64 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
 
                     // Visibility eye
                     let vis_x = row_rect.min.x + 18.0;
-                    let vis_rect = egui::Rect::from_min_size(egui::pos2(vis_x, row_rect.min.y + 2.0), egui::vec2(18.0, row_height - 4.0));
+                    let vis_rect = egui::Rect::from_min_size(
+                        egui::pos2(vis_x, row_rect.min.y + 2.0),
+                        egui::vec2(18.0, row_height - 4.0),
+                    );
                     let vis_resp = ui.allocate_rect(vis_rect, egui::Sense::click());
                     {
                         let p = ui.painter();
                         let eye_text = if layer.visible { "👁" } else { "⦂" };
-                        let eye_color = if layer.visible { egui::Color32::BLACK } else { egui::Color32::from_gray(160) };
-                        p.text(vis_rect.center(), egui::Align2::CENTER_CENTER, eye_text, egui::FontId::proportional(11.0), eye_color);
+                        let eye_color = if layer.visible {
+                            egui::Color32::BLACK
+                        } else {
+                            egui::Color32::from_gray(160)
+                        };
+                        p.text(
+                            vis_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            eye_text,
+                            egui::FontId::proportional(11.0),
+                            eye_color,
+                        );
                     }
                     if vis_resp.clicked() {
                         let old_vis = layer.visible;
                         layer.visible = !layer.visible;
                         app.history.push_command(HistoryCommand::LayerProperty {
                             layer_id: id,
-                            property: LayerPropertyChange::Visible { old: old_vis, new: layer.visible },
+                            property: LayerPropertyChange::Visible {
+                                old: old_vis,
+                                new: layer.visible,
+                            },
                         });
                     }
 
                     // Reference dot
-                    let ref_rect = egui::Rect::from_min_size(egui::pos2(vis_x, row_rect.min.y + 24.0), egui::vec2(18.0, 18.0));
+                    let ref_rect = egui::Rect::from_min_size(
+                        egui::pos2(vis_x, row_rect.min.y + 24.0),
+                        egui::vec2(18.0, 18.0),
+                    );
                     let ref_resp = ui.allocate_rect(ref_rect, egui::Sense::click());
                     {
                         let p = ui.painter();
                         let ref_text = if layer.selection_source { "◎" } else { "⚬" };
-                        let ref_color = if layer.selection_source { egui::Color32::from_rgb(0, 120, 215) } else { egui::Color32::from_gray(160) };
-                        p.text(ref_rect.center(), egui::Align2::CENTER_CENTER, ref_text, egui::FontId::proportional(10.0), ref_color);
+                        let ref_color = if layer.selection_source {
+                            egui::Color32::from_rgb(0, 120, 215)
+                        } else {
+                            egui::Color32::from_gray(160)
+                        };
+                        p.text(
+                            ref_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            ref_text,
+                            egui::FontId::proportional(10.0),
+                            ref_color,
+                        );
                     }
-                    if ref_resp.clicked() { layer.selection_source = !layer.selection_source; }
+                    if ref_resp.clicked() {
+                        layer.selection_source = !layer.selection_source;
+                    }
 
                     // Layer type label
                     let type_str = match &layer.kind {
@@ -1076,12 +1770,26 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                     {
                         let p = ui.painter();
                         p.rect_filled(thumb_rect, 1.0, egui::Color32::WHITE);
-                        p.rect_stroke(thumb_rect, 1.0, egui::Stroke::new(1.0, egui::Color32::from_gray(180)));
+                        p.rect_stroke(
+                            thumb_rect,
+                            1.0,
+                            egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                        );
                         if let Some(tex) = thumb_textures.get(&id) {
-                            p.image(tex.id(), thumb_rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+                            p.image(
+                                tex.id(),
+                                thumb_rect,
+                                egui::Rect::from_min_max(
+                                    egui::Pos2::ZERO,
+                                    egui::Pos2::new(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
                         }
                     }
-                    if is_active && thumb_resp.clicked() { app.active_mask_editing = false; }
+                    if is_active && thumb_resp.clicked() {
+                        app.active_mask_editing = false;
+                    }
 
                     // Mask overlay on thumbnail
                     if layer.mask.is_some() {
@@ -1092,27 +1800,55 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                         {
                             let p = ui.painter();
                             p.rect_filled(mask_overlay_rect, 0.0, egui::Color32::WHITE);
-                            p.rect_stroke(mask_overlay_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_gray(180)));
+                            p.rect_stroke(
+                                mask_overlay_rect,
+                                0.0,
+                                egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                            );
                             if is_active && app.active_mask_editing {
-                                p.rect_stroke(mask_overlay_rect.expand(1.0), 0.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 200, 80)));
+                                p.rect_stroke(
+                                    mask_overlay_rect.expand(1.0),
+                                    0.0,
+                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 200, 80)),
+                                );
                             }
                         }
-                        let mask_thumb_resp = ui.allocate_rect(mask_overlay_rect, egui::Sense::click());
-                        if mask_thumb_resp.clicked() { app.active_mask_editing = true; }
-                        if mask_thumb_resp.hovered() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+                        let mask_thumb_resp =
+                            ui.allocate_rect(mask_overlay_rect, egui::Sense::click());
+                        if mask_thumb_resp.clicked() {
+                            app.active_mask_editing = true;
+                        }
+                        if mask_thumb_resp.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
                     }
 
                     // Text: name, blend mode, opacity
                     let text_x = thumb_left + thumb_size + 6.0;
                     {
                         let p = ui.painter();
-                        p.text(egui::pos2(text_x, row_rect.min.y + 4.0), egui::Align2::LEFT_TOP,
-                            format!("{}  {}", type_str, layer.name), egui::FontId::proportional(11.0), egui::Color32::BLACK);
-                        p.text(egui::pos2(text_x, row_rect.min.y + 19.0), egui::Align2::LEFT_TOP,
-                            format!("{:?}", layer.blend_mode), egui::FontId::proportional(10.0), egui::Color32::from_gray(100));
+                        p.text(
+                            egui::pos2(text_x, row_rect.min.y + 4.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{}  {}", type_str, layer.name),
+                            egui::FontId::proportional(11.0),
+                            egui::Color32::BLACK,
+                        );
+                        p.text(
+                            egui::pos2(text_x, row_rect.min.y + 19.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{:?}", layer.blend_mode),
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::from_gray(100),
+                        );
                         let opacity_pct = (layer.opacity * 100.0).round() as i32;
-                        p.text(egui::pos2(text_x, row_rect.min.y + 32.0), egui::Align2::LEFT_TOP,
-                            format!("{}%", opacity_pct), egui::FontId::proportional(10.0), egui::Color32::from_gray(100));
+                        p.text(
+                            egui::pos2(text_x, row_rect.min.y + 32.0),
+                            egui::Align2::LEFT_TOP,
+                            format!("{}%", opacity_pct),
+                            egui::FontId::proportional(10.0),
+                            egui::Color32::from_gray(100),
+                        );
                     }
 
                     if row_response.clicked() {
@@ -1137,7 +1873,10 @@ pub(crate) fn draw_layers_manager_widget(app: &mut PaintApp, ui: &mut egui::Ui, 
                         if let Some(old_order) = app.drag_start_order.take() {
                             let new_order = app.layer_order.clone();
                             if old_order != new_order {
-                                app.history.push_command(HistoryCommand::LayerReorder { old_order, new_order });
+                                app.history.push_command(HistoryCommand::LayerReorder {
+                                    old_order,
+                                    new_order,
+                                });
                             }
                         }
                         app.dragging_layer_id = None;

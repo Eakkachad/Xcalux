@@ -1,10 +1,10 @@
-use std::fs::File;
-use std::io::{Read, Write, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use flate2::write::DeflateEncoder;
 use flate2::read::DeflateDecoder;
+use flate2::write::DeflateEncoder;
 use flate2::Compression;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct LayerMetadata {
@@ -88,7 +88,7 @@ fn perform_save(task: SaveTask) -> std::io::Result<()> {
     for t in task.tiles {
         let offset = file.stream_position()?;
         let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-        
+
         let pixels_slice: &[u16] = bytemuck::cast_slice(&*t.pixels);
         let pixels_bytes: &[u8] = bytemuck::cast_slice(pixels_slice);
         encoder.write_all(pixels_bytes)?;
@@ -108,7 +108,7 @@ fn perform_save(task: SaveTask) -> std::io::Result<()> {
 
     // 3. Write JSON metadata block
     let json_offset = file.stream_position()?;
-    
+
     #[derive(Serialize)]
     struct DocumentMetadata {
         pub canvas_width: u32,
@@ -116,7 +116,7 @@ fn perform_save(task: SaveTask) -> std::io::Result<()> {
         pub layer_order: Vec<u32>,
         pub layers: Vec<LayerMetadata>,
     }
-    
+
     let doc_meta = DocumentMetadata {
         canvas_width: task.canvas_width,
         canvas_height: task.canvas_height,
@@ -185,7 +185,10 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
     if &magic != b"ARTY" {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid file format"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Invalid file format",
+        ));
     }
 
     let mut version = [0u8; 4];
@@ -197,8 +200,12 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
     let tile_dir_offset = u64::from_le_bytes(offsets[8..16].try_into().unwrap());
 
     let metadata_len = file.metadata()?.len();
-    if json_offset > metadata_len || tile_dir_offset > metadata_len || tile_dir_offset < json_offset {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid offsets in header"));
+    if json_offset > metadata_len || tile_dir_offset > metadata_len || tile_dir_offset < json_offset
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Invalid offsets in header",
+        ));
     }
 
     // 1. Read JSON metadata
@@ -206,11 +213,14 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
     let mut json_bytes = Vec::new();
     let json_len = (tile_dir_offset - json_offset) as usize;
     if json_len > 50 * 1024 * 1024 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "JSON metadata block too large"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "JSON metadata block too large",
+        ));
     }
     json_bytes.resize(json_len, 0);
     file.read_exact(&mut json_bytes)?;
-    
+
     #[derive(Deserialize)]
     struct DocumentMetadata {
         pub canvas_width: u32,
@@ -243,17 +253,30 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
         let ty = i32::from_le_bytes(entry_buf[8..12].try_into().unwrap());
         let offset = u64::from_le_bytes(entry_buf[12..20].try_into().unwrap());
         let compressed_size = u32::from_le_bytes(entry_buf[20..24].try_into().unwrap());
-        directory.push(DirEntry { layer_id, tx, ty, offset, compressed_size });
+        directory.push(DirEntry {
+            layer_id,
+            tx,
+            ty,
+            offset,
+            compressed_size,
+        });
     }
 
     // 3. Load and Decompress Tiles
     let mut loaded_tiles = Vec::with_capacity(entry_count);
     for entry in directory {
         if entry.compressed_size > 1024 * 1024 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Tile compressed size too large"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Tile compressed size too large",
+            ));
         }
-        if entry.offset > metadata_len || entry.offset + entry.compressed_size as u64 > metadata_len {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Tile offset out of file bounds"));
+        if entry.offset > metadata_len || entry.offset + entry.compressed_size as u64 > metadata_len
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Tile offset out of file bounds",
+            ));
         }
         file.seek(SeekFrom::Start(entry.offset))?;
         let mut comp_bytes = vec![0u8; entry.compressed_size as usize];
@@ -262,7 +285,10 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
         let mut decoder = DeflateDecoder::new(&comp_bytes[..]);
         let mut uncomp_bytes = vec![0u8; 64 * 64 * 8];
         if let Err(e) = decoder.read_exact(&mut uncomp_bytes) {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("Failed to decompress tile: {}", e)));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to decompress tile: {}", e),
+            ));
         }
 
         let mut pixels = hokusai::tile::empty_tile();
@@ -300,13 +326,18 @@ pub fn load_document(path: &Path) -> std::io::Result<LoadedDocument> {
         };
 
         let kind = match lm.kind.as_str() {
-            "Folder" => crate::canvas::LayerType::Folder { child_ids: lm.folder_child_ids },
+            "Folder" => crate::canvas::LayerType::Folder {
+                child_ids: lm.folder_child_ids,
+            },
             "Vector" => crate::canvas::LayerType::Vector,
             _ => crate::canvas::LayerType::Raster,
         };
 
         let vector_data = if let crate::canvas::LayerType::Vector = kind {
-            lm.vector_strokes.map(|strokes| crate::canvas::VectorLayer { strokes, display_mode: Default::default() })
+            lm.vector_strokes.map(|strokes| crate::canvas::VectorLayer {
+                strokes,
+                display_mode: Default::default(),
+            })
         } else {
             None
         };

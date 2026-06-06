@@ -64,37 +64,40 @@ pub fn load_preferences(app: &mut PaintApp, ctx: &Context) {
         return;
     }
     match fs::read_to_string(&path) {
-        Ok(content) => {
-            match content.parse::<toml_edit::DocumentMut>() {
-                Ok(doc) => {
-                    if let Some(theme) = doc.get("theme").and_then(|i| i.as_str()) {
-                        app.pref_theme = theme.to_string();
-                        apply_theme(theme, ctx);
-                    }
-                    if let Some(ui_scale) = doc.get("ui_scale").and_then(|i| i.as_float()) {
-                        let scale = ui_scale as f32;
-                        app.pref_ui_scale = scale;
-                        ctx.set_pixels_per_point(scale);
-                    }
-                    if let Some(canvas_bg) = doc.get("canvas_bg").and_then(|i| i.as_str()) {
-                        app.pref_canvas_bg = canvas_bg.to_string();
-                    }
-                    if let Some(autosave_enabled) = doc.get("autosave_enabled").and_then(|i| i.as_bool()) {
-                        app.pref_autosave_enabled = autosave_enabled;
-                        app.autosave_enabled = autosave_enabled;
-                    }
-                    if let Some(interval) = doc.get("autosave_interval_mins").and_then(|i| i.as_integer()) {
-                        let interval = interval as u32;
-                        app.pref_autosave_interval_mins = interval;
-                        app.autosave_interval_secs = (interval * 60) as f64;
-                    }
-                    log::info!("Loaded preferences from {:?}", path);
+        Ok(content) => match content.parse::<toml_edit::DocumentMut>() {
+            Ok(doc) => {
+                if let Some(theme) = doc.get("theme").and_then(|i| i.as_str()) {
+                    app.pref_theme = theme.to_string();
+                    apply_theme(theme, ctx);
                 }
-                Err(e) => {
-                    log::error!("Failed to parse preferences TOML: {}", e);
+                if let Some(ui_scale) = doc.get("ui_scale").and_then(|i| i.as_float()) {
+                    let scale = ui_scale as f32;
+                    app.pref_ui_scale = scale;
+                    ctx.set_pixels_per_point(scale);
                 }
+                if let Some(canvas_bg) = doc.get("canvas_bg").and_then(|i| i.as_str()) {
+                    app.pref_canvas_bg = canvas_bg.to_string();
+                }
+                if let Some(autosave_enabled) =
+                    doc.get("autosave_enabled").and_then(|i| i.as_bool())
+                {
+                    app.pref_autosave_enabled = autosave_enabled;
+                    app.autosave_enabled = autosave_enabled;
+                }
+                if let Some(interval) = doc
+                    .get("autosave_interval_mins")
+                    .and_then(|i| i.as_integer())
+                {
+                    let interval = interval as u32;
+                    app.pref_autosave_interval_mins = interval;
+                    app.autosave_interval_secs = (interval * 60) as f64;
+                }
+                log::info!("Loaded preferences from {:?}", path);
             }
-        }
+            Err(e) => {
+                log::error!("Failed to parse preferences TOML: {}", e);
+            }
+        },
         Err(e) => {
             log::error!("Failed to read preferences file: {}", e);
         }
@@ -115,8 +118,18 @@ autosave_interval_mins = 10
         let doc = toml_data.parse::<toml_edit::DocumentMut>().unwrap();
         assert_eq!(doc.get("theme").and_then(|i| i.as_str()), Some("Dark"));
         assert_eq!(doc.get("ui_scale").and_then(|i| i.as_float()), Some(1.5));
-        assert_eq!(doc.get("canvas_bg").and_then(|i| i.as_str()), Some("Checkerboard"));
-        assert_eq!(doc.get("autosave_enabled").and_then(|i| i.as_bool()), Some(false));
-        assert_eq!(doc.get("autosave_interval_mins").and_then(|i| i.as_integer()), Some(10));
+        assert_eq!(
+            doc.get("canvas_bg").and_then(|i| i.as_str()),
+            Some("Checkerboard")
+        );
+        assert_eq!(
+            doc.get("autosave_enabled").and_then(|i| i.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            doc.get("autosave_interval_mins")
+                .and_then(|i| i.as_integer()),
+            Some(10)
+        );
     }
 }

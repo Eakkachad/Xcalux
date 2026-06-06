@@ -123,21 +123,17 @@ impl TransformState {
 
                         // Inverse transform
                         let det = a * d - b * c;
-                        if det.abs() < 0.0001 { continue; }
+                        if det.abs() < 0.0001 {
+                            continue;
+                        }
                         let inv_det = 1.0 / det;
                         let sx = (d * (dx - e) - c * (dy - f)) * inv_det;
                         let sy = (a * (dy - f) - b * (dx - e)) * inv_det;
 
                         let color = match self.interpolation {
-                            InterpolationMode::Nearest => {
-                                sample_nearest(&snapshot.tiles, sx, sy)
-                            }
-                            InterpolationMode::Bilinear => {
-                                sample_bilinear(&snapshot.tiles, sx, sy)
-                            }
-                            InterpolationMode::Bicubic => {
-                                sample_bicubic(&snapshot.tiles, sx, sy)
-                            }
+                            InterpolationMode::Nearest => sample_nearest(&snapshot.tiles, sx, sy),
+                            InterpolationMode::Bilinear => sample_bilinear(&snapshot.tiles, sx, sy),
+                            InterpolationMode::Bicubic => sample_bicubic(&snapshot.tiles, sx, sy),
                         };
                         new_tile.pixels[ly as usize][lx as usize] = color;
                     }

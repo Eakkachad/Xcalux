@@ -28,9 +28,15 @@ pub fn draw_status_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.separator();
 
                 let mode_text = match app.fill_options.detection_mode {
-                    fill::FillDetectionMode::TransparencyStrict => "Transparency Strict".to_string(),
-                    fill::FillDetectionMode::TransparencyFuzzy => format!("Transp Fuzzy ({})", app.fill_options.transp_diff),
-                    fill::FillDetectionMode::ColorDifference => format!("Color Diff ({})", app.fill_options.tolerance),
+                    fill::FillDetectionMode::TransparencyStrict => {
+                        "Transparency Strict".to_string()
+                    }
+                    fill::FillDetectionMode::TransparencyFuzzy => {
+                        format!("Transp Fuzzy ({})", app.fill_options.transp_diff)
+                    }
+                    fill::FillDetectionMode::ColorDifference => {
+                        format!("Color Diff ({})", app.fill_options.tolerance)
+                    }
                 };
                 ui.label(format!("Mode: {}", mode_text));
                 ui.separator();
@@ -43,7 +49,10 @@ pub fn draw_status_bar(app: &mut PaintApp, ctx: &egui::Context) {
             ui.label(format!("Pressure: {:.2}", pressure));
             ui.separator();
 
-            ui.label(format!("Canvas: {}x{}", app.canvas_width, app.canvas_height));
+            ui.label(format!(
+                "Canvas: {}x{}",
+                app.canvas_width, app.canvas_height
+            ));
             ui.separator();
 
             ui.label(format!("Zoom: {:.1}%", app.viewport_zoom * 100.0));
@@ -53,11 +62,17 @@ pub fn draw_status_bar(app: &mut PaintApp, ctx: &egui::Context) {
             ui.label(format!("Rot: {:.0}\u{b0}", angle_deg));
             ui.separator();
 
-            let mirror_state = if app.mirror_horizontal { "Mirror: On" } else { "Mirror: Off" };
+            let mirror_state = if app.mirror_horizontal {
+                "Mirror: On"
+            } else {
+                "Mirror: Off"
+            };
             ui.label(mirror_state);
             ui.separator();
 
-            let layer_name = app.layers.get(&app.active_layer_id)
+            let layer_name = app
+                .layers
+                .get(&app.active_layer_id)
                 .map(|l| l.name.as_str())
                 .unwrap_or("(none)");
             ui.label(format!("Layer: {}", layer_name));

@@ -1,8 +1,8 @@
 use crate::app::{BrushPreset, PresetIcon};
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 #[allow(dead_code)]
 #[derive(Serialize, Deserialize)]
@@ -71,13 +71,17 @@ pub fn decode_png_to_grayscale(png_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), 
         }
         png::ColorType::Rgb => {
             for chunk in bytes.chunks_exact(3) {
-                let g = (0.299 * chunk[0] as f32 + 0.587 * chunk[1] as f32 + 0.114 * chunk[2] as f32) as u8;
+                let g = (0.299 * chunk[0] as f32
+                    + 0.587 * chunk[1] as f32
+                    + 0.114 * chunk[2] as f32) as u8;
                 grayscale.push(g);
             }
         }
         png::ColorType::Rgba => {
             for chunk in bytes.chunks_exact(4) {
-                let g = (0.299 * chunk[0] as f32 + 0.587 * chunk[1] as f32 + 0.114 * chunk[2] as f32) as u8;
+                let g = (0.299 * chunk[0] as f32
+                    + 0.587 * chunk[1] as f32
+                    + 0.114 * chunk[2] as f32) as u8;
                 let a = chunk[3] as f32 / 255.0;
                 grayscale.push((g as f32 * a) as u8);
             }
@@ -88,12 +92,18 @@ pub fn decode_png_to_grayscale(png_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), 
     Ok((grayscale, w, h))
 }
 
-pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<crate::app::BrushTexture>) -> std::io::Result<BrushPreset> {
+pub fn load_artybrush(
+    path: &Path,
+    textures_registry: &mut Vec<crate::app::BrushTexture>,
+) -> std::io::Result<BrushPreset> {
     let mut file = File::open(path)?;
     let mut magic = [0u8; 4];
     file.read_exact(&mut magic)?;
     if &magic != b"ARTB" {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid magic bytes"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Invalid magic bytes",
+        ));
     }
 
     let mut sizes = [0u8; 12];
@@ -126,7 +136,8 @@ pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<crate::app::Brush
                         final_bytes[(y * 256 + x) as usize] = gray_bytes[(y * w + x) as usize];
                     }
                 }
-                let name = path.file_stem()
+                let name = path
+                    .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("Imported")
                     .to_string();
@@ -144,11 +155,7 @@ pub fn load_artybrush(path: &Path, textures_registry: &mut Vec<crate::app::Brush
         0
     };
 
-    let bristle_id = if bristle_size > 0 {
-        1
-    } else {
-        0
-    };
+    let bristle_id = if bristle_size > 0 { 1 } else { 0 };
 
     Ok(BrushPreset {
         id: 0,
@@ -187,9 +194,15 @@ pub fn extract_sut_texture(sut_path: &Path) -> std::io::Result<(Vec<u8>, u32, u3
                 Err(e) => Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
             }
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No PNG footer found in SUT file"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No PNG footer found in SUT file",
+            ))
         }
     } else {
-        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "No PNG header found in SUT file"))
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No PNG header found in SUT file",
+        ))
     }
 }
