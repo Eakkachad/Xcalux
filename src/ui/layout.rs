@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+/// Tracks an in-progress panel header drag for drag-to-float.
+#[derive(Clone, Debug)]
+pub(crate) struct PanelDragState {
+    pub kind: PanelKind,
+    pub drag_start_screen: egui::Pos2,
+    pub detached: bool,
+}
+
+/// Tracks a floating window being dragged for drop-zone detection.
+#[derive(Clone, Debug)]
+pub(crate) struct FloatingDragState {
+    #[allow(dead_code)]
+    pub kind: PanelKind,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PanelKind {
     ToolsAndPresets,

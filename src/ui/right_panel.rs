@@ -198,7 +198,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         .show(ui, |ui| {
                                             draw_navigator_content(app, ui);
                                         });
-                                    cr.header_response.context_menu(|ui| {
+                                    crate::ui::handle_panel_drag(
+                                        &cr.header_response,
+                                        PanelKind::Navigator,
+                                        app,
+                                    );
+                                    let _ = cr.header_response.context_menu(|ui| {
                                         panel_menu(ui, PanelKind::Navigator, app)
                                     });
                                 });
@@ -216,7 +221,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         .show(ui, |ui| {
                                             draw_color_wheel_content(app, ui);
                                         });
-                                    cr.header_response.context_menu(|ui| {
+                                    crate::ui::handle_panel_drag(
+                                        &cr.header_response,
+                                        PanelKind::ColorWheel,
+                                        app,
+                                    );
+                                    let _ = cr.header_response.context_menu(|ui| {
                                         panel_menu(ui, PanelKind::ColorWheel, app)
                                     });
                                 });
@@ -234,7 +244,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         .show(ui, |ui| {
                                             draw_color_sliders_content(app, ui);
                                         });
-                                    cr.header_response.context_menu(|ui| {
+                                    crate::ui::handle_panel_drag(
+                                        &cr.header_response,
+                                        PanelKind::ColorSliders,
+                                        app,
+                                    );
+                                    let _ = cr.header_response.context_menu(|ui| {
                                         panel_menu(ui, PanelKind::ColorSliders, app)
                                     });
                                 });
@@ -252,7 +267,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         .show(ui, |ui| {
                                             draw_color_palette_content(app, ui);
                                         });
-                                    cr.header_response.context_menu(|ui| {
+                                    crate::ui::handle_panel_drag(
+                                        &cr.header_response,
+                                        PanelKind::ColorPalette,
+                                        app,
+                                    );
+                                    let _ = cr.header_response.context_menu(|ui| {
                                         panel_menu(ui, PanelKind::ColorPalette, app)
                                     });
                                 });
@@ -270,7 +290,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         .show(ui, |ui| {
                                             draw_color_history_content(app, ui);
                                         });
-                                    cr.header_response.context_menu(|ui| {
+                                    crate::ui::handle_panel_drag(
+                                        &cr.header_response,
+                                        PanelKind::ColorHistory,
+                                        app,
+                                    );
+                                    let _ = cr.header_response.context_menu(|ui| {
                                         panel_menu(ui, PanelKind::ColorHistory, app)
                                     });
                                 });
@@ -289,7 +314,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         .show(ui, |ui| {
                                             draw_layers_manager_widget(app, ui, ctx);
                                         });
-                                    cr.header_response.context_menu(|ui| {
+                                    crate::ui::handle_panel_drag(
+                                        &cr.header_response,
+                                        PanelKind::LayersManager,
+                                        app,
+                                    );
+                                    let _ = cr.header_response.context_menu(|ui| {
                                         panel_menu(ui, PanelKind::LayersManager, app)
                                     });
                                 });
@@ -307,7 +337,12 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         .show(ui, |ui| {
                                             draw_reference_widget(app, ui, ctx);
                                         });
-                                    cr.header_response.context_menu(|ui| {
+                                    crate::ui::handle_panel_drag(
+                                        &cr.header_response,
+                                        PanelKind::Reference,
+                                        app,
+                                    );
+                                    let _ = cr.header_response.context_menu(|ui| {
                                         panel_menu(ui, PanelKind::Reference, app)
                                     });
                                 });
@@ -345,7 +380,7 @@ pub fn render_floating_right_panels(app: &mut PaintApp, ctx: &egui::Context) {
             }
             _ => PanelLocation::Right,
         };
-        egui::Window::new(&title)
+        let window_resp = egui::Window::new(&title)
             .vscroll(true)
             .resizable(true)
             .min_size([200.0, 200.0])
@@ -388,6 +423,26 @@ pub fn render_floating_right_panels(app: &mut PaintApp, ctx: &egui::Context) {
                     _ => {}
                 }
             });
+        // Drag-to-dock detection for floating windows
+        if let Some(resp) = window_resp {
+            if resp.response.dragged() || resp.response.drag_started() {
+                app.floating_drag_panel = Some(crate::ui::layout::FloatingDragState { kind });
+            }
+            if resp.response.drag_stopped() {
+                app.floating_drag_panel = None;
+                let screen_rect = ctx.input(|i| i.screen_rect());
+                let drop_zone_width = 40.0;
+                if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    if pos.x <= screen_rect.min.x + drop_zone_width {
+                        app.workspace_layout
+                            .set_panel_location(kind, PanelLocation::Left);
+                    } else if pos.x >= screen_rect.max.x - drop_zone_width {
+                        app.workspace_layout
+                            .set_panel_location(kind, PanelLocation::Right);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -420,6 +475,9 @@ fn panel_menu(ui: &mut egui::Ui, kind: PanelKind, app: &mut PaintApp) {
 
 pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
     let nav_size = ui.available_width().min(300.0);
+    if nav_size < 16.0 {
+        return;
+    }
     ui.vertical_centered(|ui| {
         let (rect, response) = ui.allocate_exact_size(
             egui::vec2(nav_size, nav_size),
@@ -427,98 +485,141 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
         );
         let painter = ui.painter().with_clip_rect(rect);
 
+        // Always fill the entire preview with medium gray workspace background
         painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(60, 60, 60));
 
-        let canvas_aspect = app.canvas_width as f32 / app.canvas_height as f32;
-        let paper_rect = if canvas_aspect >= 1.0 {
-            let paper_h = nav_size / canvas_aspect;
-            egui::Rect::from_center_size(rect.center(), egui::vec2(nav_size, paper_h))
-        } else {
-            let paper_w = nav_size * canvas_aspect;
-            egui::Rect::from_center_size(rect.center(), egui::vec2(paper_w, nav_size))
-        };
-
-        if let Some(r) = &app.renderer {
-            if let Some(texture_id) = r.navigator_egui_id {
-                painter.image(
-                    texture_id,
-                    rect,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+        // Guard: skip canvas-aware drawing if canvas size is unavailable
+        if app.canvas_width > 0 && app.canvas_height > 0 {
+            // Compute aspect‑preserving canvas thumbnail rect centered in the preview
+            let canvas_aspect = app.canvas_width as f32 / app.canvas_height as f32;
+            let paper_rect = if canvas_aspect >= 1.0 {
+                let paper_h = nav_size / canvas_aspect;
+                egui::Rect::from_center_size(rect.center(), egui::vec2(nav_size, paper_h))
             } else {
-                painter.rect_filled(paper_rect, 0.0, egui::Color32::WHITE);
+                let paper_w = nav_size * canvas_aspect;
+                egui::Rect::from_center_size(rect.center(), egui::vec2(paper_w, nav_size))
+            };
+
+            let has_thumbnail = app
+                .renderer
+                .as_ref()
+                .and_then(|r| r.navigator_egui_id)
+                .is_some();
+
+            // Draw artwork thumbnail if available, otherwise fallback to checkerboard
+            if has_thumbnail {
+                if let Some(r) = &app.renderer {
+                    if let Some(texture_id) = r.navigator_egui_id {
+                        painter.image(
+                            texture_id,
+                            rect,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                }
+            } else {
+                // Draw a checkerboard pattern for transparent canvas area
+                let cell_size = 4.0;
+                let cols = (paper_rect.width() / cell_size).ceil() as i32;
+                let rows = (paper_rect.height() / cell_size).ceil() as i32;
+                for yi in 0..rows {
+                    for xi in 0..cols {
+                        if (xi + yi) % 2 == 0 {
+                            let cell_rect = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    paper_rect.min.x + xi as f32 * cell_size,
+                                    paper_rect.min.y + yi as f32 * cell_size,
+                                ),
+                                egui::Vec2::splat(cell_size),
+                            )
+                            .intersect(paper_rect);
+                            if cell_rect.area() > 0.0 {
+                                painter.rect_filled(
+                                    cell_rect,
+                                    0.0,
+                                    egui::Color32::from_rgb(220, 220, 220),
+                                );
+                            }
+                        }
+                    }
+                }
+                // Subtle white overlay so the canvas area is visually distinct from the gray workspace
+                painter.rect_filled(paper_rect, 0.0, egui::Color32::from_white_alpha(24));
             }
-        } else {
-            painter.rect_filled(paper_rect, 0.0, egui::Color32::WHITE);
+
+            // Canvas border (always visible)
+            painter.rect_stroke(
+                paper_rect,
+                0.0,
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 184, 184)),
+            );
+
+            // Red viewport rectangle — transforms screen corners to world, then to navigator space
+            if let Some(view_rect) = app.last_viewport_rect {
+                let corners = [
+                    view_rect.min,
+                    egui::pos2(view_rect.max.x, view_rect.min.y),
+                    view_rect.max,
+                    egui::pos2(view_rect.min.x, view_rect.max.y),
+                ];
+                let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 50, 50));
+                let mut nav_corners = Vec::with_capacity(4);
+                for pt in corners {
+                    let w = app.screen_to_world(pt, view_rect);
+                    nav_corners.push(canvas_to_navigator(
+                        w,
+                        paper_rect,
+                        app.canvas_width,
+                        app.canvas_height,
+                    ));
+                }
+                for i in 0..nav_corners.len() {
+                    let j = (i + 1) % nav_corners.len();
+                    painter.line_segment([nav_corners[i], nav_corners[j]], stroke);
+                }
+            }
+
+            // Click/drag interaction
+            if response.clicked() || response.dragged() {
+                if let Some(click_pos) = response.interact_pointer_pos() {
+                    let canvas_pos = navigator_to_canvas(
+                        click_pos,
+                        paper_rect,
+                        app.canvas_width,
+                        app.canvas_height,
+                    );
+                    let half_w = app.last_viewport_size.x * 0.5;
+                    let half_h = app.last_viewport_size.y * 0.5;
+                    app.viewport_offset =
+                        canvas_pos - egui::vec2(half_w, half_h) / app.viewport_zoom;
+                    ui.ctx().request_repaint();
+                }
+            }
         }
 
-        painter.rect_stroke(
-            paper_rect,
-            0.0,
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 184, 184)),
-        );
-
-        if let Some(view_rect) = app.last_viewport_rect {
-            let corners = [
-                view_rect.min,
-                egui::pos2(view_rect.max.x, view_rect.min.y),
-                view_rect.max,
-                egui::pos2(view_rect.min.x, view_rect.max.y),
-            ];
-            let mut nav_corners = Vec::with_capacity(4);
-            for pt in corners {
-                let w = app.screen_to_world(pt, view_rect);
-                let pct_x = w.x / app.canvas_width as f32;
-                let pct_y = w.y / app.canvas_height as f32;
-                let nav_x = paper_rect.min.x + pct_x * paper_rect.width();
-                let nav_y = paper_rect.min.y + pct_y * paper_rect.height();
-                nav_corners.push(egui::pos2(nav_x, nav_y));
-            }
-            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 50, 50));
-            for i in 0..4 {
-                painter.line_segment([nav_corners[i], nav_corners[(i + 1) % 4]], stroke);
-            }
-        }
-
-        if response.clicked() || response.dragged() {
-            if let Some(click_pos) = response.interact_pointer_pos() {
-                let pct_x = ((click_pos.x - paper_rect.min.x) / paper_rect.width()).clamp(0.0, 1.0);
-                let pct_y =
-                    ((click_pos.y - paper_rect.min.y) / paper_rect.height()).clamp(0.0, 1.0);
-                let w_target = egui::Vec2::new(
-                    pct_x * app.canvas_width as f32,
-                    pct_y * app.canvas_height as f32,
-                );
-                let half_w = app.last_viewport_size.x * 0.5;
-                let half_h = app.last_viewport_size.y * 0.5;
-                app.viewport_offset = w_target - egui::vec2(half_w, half_h) / app.viewport_zoom;
-                ui.ctx().request_repaint();
-            }
-        }
+        // Tooltip on the preview area
+        let _ = response.on_hover_text("Click or drag to pan the canvas");
     });
 
+    // Buttons and readouts
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
             .button("Fit")
-            .on_hover_text("Fit canvas to viewport")
+            .on_hover_text("Fit canvas to view")
             .clicked()
         {
             app.command(CommandId::FitToScreen);
         }
         if ui
             .button("100%")
-            .on_hover_text("Zoom to actual size (100%)")
+            .on_hover_text("Set zoom to 100%")
             .clicked()
         {
             app.command(CommandId::ActualSize);
         }
-        if ui
-            .button("Reset")
-            .on_hover_text("Reset view rotation and mirror")
-            .clicked()
-        {
+        if ui.button("Reset").on_hover_text("Reset view").clicked() {
             app.command(CommandId::ResetView);
         }
     });
@@ -531,6 +632,51 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
         "Mirror Off"
     };
     ui.label(format!("Rot: {:.0}° | {}", angle_deg, mirror_state));
+}
+
+// ── Navigator helper functions ──
+
+/// Convert a canvas‑space position to navigator preview coordinates.
+pub(crate) fn canvas_to_navigator(
+    canvas_pos: egui::Vec2,
+    paper_rect: egui::Rect,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> egui::Pos2 {
+    let pct_x = if canvas_width > 0 {
+        canvas_pos.x / canvas_width as f32
+    } else {
+        0.0
+    };
+    let pct_y = if canvas_height > 0 {
+        canvas_pos.y / canvas_height as f32
+    } else {
+        0.0
+    };
+    egui::pos2(
+        paper_rect.min.x + pct_x * paper_rect.width(),
+        paper_rect.min.y + pct_y * paper_rect.height(),
+    )
+}
+
+/// Convert navigator preview coordinates to canvas‑space position (clamped to canvas bounds).
+pub(crate) fn navigator_to_canvas(
+    nav_pos: egui::Pos2,
+    paper_rect: egui::Rect,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> egui::Vec2 {
+    let pct_x = if paper_rect.width() > 0.0 {
+        ((nav_pos.x - paper_rect.min.x) / paper_rect.width()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let pct_y = if paper_rect.height() > 0.0 {
+        ((nav_pos.y - paper_rect.min.y) / paper_rect.height()).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    egui::Vec2::new(pct_x * canvas_width as f32, pct_y * canvas_height as f32)
 }
 
 pub(crate) fn draw_color_wheel_content(app: &mut PaintApp, ui: &mut egui::Ui) {

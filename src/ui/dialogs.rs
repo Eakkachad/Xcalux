@@ -1114,5 +1114,6 @@ fn draw_panel_layout_settings(app: &mut PaintApp, ctx: &egui::Context) {
         });
     if close {
         app.show_panel_layout_settings = false;
+        crate::preferences::save_workspace_layout(app);
     }
 }

@@ -477,10 +477,20 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                         }
                         panel.visible = true;
                     }
+                    crate::preferences::save_workspace_layout(app);
                     ui.close_menu();
                 }
                 if ui.button("Panel Layout...").clicked() {
                     app.show_panel_layout_settings = true;
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui.button("Save Workspace").clicked() {
+                    crate::preferences::save_workspace_layout(app);
+                    ui.close_menu();
+                }
+                if ui.button("Reset Workspace").clicked() {
+                    app.workspace_layout = Default::default();
                     ui.close_menu();
                 }
             });

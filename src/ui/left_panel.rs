@@ -133,10 +133,15 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 .workspace_layout
                                 .is_panel_at(PanelKind::ToolsAndPresets, PanelLocation::Left)
                             {
-                                let _tp_resp = panel_section(ui, "TOOLS / BRUSH PRESETS", |ui| {
+                                let tp_resp = panel_section(ui, "TOOLS / BRUSH PRESETS", |ui| {
                                     draw_tools_and_presets_content(app, ui, ctx);
                                 });
-                                _tp_resp.context_menu(|ui| {
+                                crate::ui::handle_panel_drag(
+                                    &tp_resp,
+                                    PanelKind::ToolsAndPresets,
+                                    app,
+                                );
+                                let _ = tp_resp.context_menu(|ui| {
                                     crate::ui::panel_location_menu(
                                         ui,
                                         PanelKind::ToolsAndPresets,
@@ -150,10 +155,15 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 .workspace_layout
                                 .is_panel_at(PanelKind::BrushSettings, PanelLocation::Left)
                             {
-                                let _bs_resp = panel_section(ui, "BRUSH SETTINGS", |ui| {
+                                let bs_resp = panel_section(ui, "BRUSH SETTINGS", |ui| {
                                     draw_brush_settings_content(app, ui, ctx);
                                 });
-                                _bs_resp.context_menu(|ui| {
+                                crate::ui::handle_panel_drag(
+                                    &bs_resp,
+                                    PanelKind::BrushSettings,
+                                    app,
+                                );
+                                let _ = bs_resp.context_menu(|ui| {
                                     crate::ui::panel_location_menu(
                                         ui,
                                         PanelKind::BrushSettings,
@@ -167,10 +177,11 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 .workspace_layout
                                 .is_panel_at(PanelKind::ToolOptions, PanelLocation::Left)
                             {
-                                let _to_resp = panel_section(ui, "TOOL OPTIONS", |ui| {
+                                let to_resp = panel_section(ui, "TOOL OPTIONS", |ui| {
                                     draw_tool_options_content(app, ui, ctx);
                                 });
-                                _to_resp.context_menu(|ui| {
+                                crate::ui::handle_panel_drag(&to_resp, PanelKind::ToolOptions, app);
+                                let _ = to_resp.context_menu(|ui| {
                                     crate::ui::panel_location_menu(ui, PanelKind::ToolOptions, app)
                                 });
                             } // is_panel_at ToolOptions
@@ -180,10 +191,11 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 .workspace_layout
                                 .is_panel_at(PanelKind::Stabilizer, PanelLocation::Left)
                             {
-                                let _st_resp = panel_section(ui, "STABILIZER", |ui| {
+                                let st_resp = panel_section(ui, "STABILIZER", |ui| {
                                     draw_stabilizer_content(app, ui, ctx);
                                 });
-                                _st_resp.context_menu(|ui| {
+                                crate::ui::handle_panel_drag(&st_resp, PanelKind::Stabilizer, app);
+                                let _ = st_resp.context_menu(|ui| {
                                     crate::ui::panel_location_menu(ui, PanelKind::Stabilizer, app)
                                 });
                             } // is_panel_at Stabilizer
@@ -193,11 +205,11 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 .workspace_layout
                                 .is_panel_at(PanelKind::Symmetry, PanelLocation::Left)
                             {
-                                let _sy_resp =
-                                    panel_section(ui, "SYMMETRY / DRAWING GUIDE", |ui| {
-                                        draw_symmetry_content(app, ui, ctx);
-                                    });
-                                _sy_resp.context_menu(|ui| {
+                                let sy_resp = panel_section(ui, "SYMMETRY / DRAWING GUIDE", |ui| {
+                                    draw_symmetry_content(app, ui, ctx);
+                                });
+                                crate::ui::handle_panel_drag(&sy_resp, PanelKind::Symmetry, app);
+                                let _ = sy_resp.context_menu(|ui| {
                                     crate::ui::panel_location_menu(ui, PanelKind::Symmetry, app)
                                 });
                             } // is_panel_at Symmetry
@@ -207,10 +219,15 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 .workspace_layout
                                 .is_panel_at(PanelKind::AdvancedDebug, PanelLocation::Left)
                             {
-                                let _ad_resp = panel_section(ui, "ADVANCED / DEBUG", |ui| {
+                                let ad_resp = panel_section(ui, "ADVANCED / DEBUG", |ui| {
                                     draw_advanced_debug_content(app, ui, ctx);
                                 });
-                                _ad_resp.context_menu(|ui| {
+                                crate::ui::handle_panel_drag(
+                                    &ad_resp,
+                                    PanelKind::AdvancedDebug,
+                                    app,
+                                );
+                                let _ = ad_resp.context_menu(|ui| {
                                     crate::ui::panel_location_menu(
                                         ui,
                                         PanelKind::AdvancedDebug,
@@ -2205,7 +2222,7 @@ pub fn render_floating_left_panels(app: &mut PaintApp, ctx: &egui::Context) {
             | PanelKind::AdvancedDebug => PanelLocation::Left,
             _ => PanelLocation::Right,
         };
-        egui::Window::new(&title)
+        let window_resp = egui::Window::new(&title)
             .vscroll(true)
             .resizable(true)
             .min_size([200.0, 200.0])
@@ -2245,5 +2262,25 @@ pub fn render_floating_left_panels(app: &mut PaintApp, ctx: &egui::Context) {
                     _ => {}
                 }
             });
+        // Drag-to-dock detection for floating windows
+        if let Some(resp) = window_resp {
+            if resp.response.dragged() || resp.response.drag_started() {
+                app.floating_drag_panel = Some(crate::ui::layout::FloatingDragState { kind });
+            }
+            if resp.response.drag_stopped() {
+                app.floating_drag_panel = None;
+                let screen_rect = ctx.input(|i| i.screen_rect());
+                let drop_zone_width = 40.0;
+                if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    if pos.x <= screen_rect.min.x + drop_zone_width {
+                        app.workspace_layout
+                            .set_panel_location(kind, PanelLocation::Left);
+                    } else if pos.x >= screen_rect.max.x - drop_zone_width {
+                        app.workspace_layout
+                            .set_panel_location(kind, PanelLocation::Right);
+                    }
+                }
+            }
+        }
     }
 }

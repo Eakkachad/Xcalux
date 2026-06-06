@@ -246,6 +246,8 @@ pub struct PaintApp {
 
     // Layout state for resizable / collapsible side panels
     pub workspace_layout: crate::ui::layout::WorkspaceLayout,
+    pub(crate) panel_drag: Option<crate::ui::layout::PanelDragState>,
+    pub(crate) floating_drag_panel: Option<crate::ui::layout::FloatingDragState>,
 
     // Brush symmetry (Phase 12)
     pub symmetry_mode: SymmetryMode,
@@ -1007,6 +1009,8 @@ impl PaintApp {
             quick_bar_visible: true,
             show_tool_options: true,
             layer_panel_on_left: false,
+            panel_drag: None,
+            floating_drag_panel: None,
             workspace_layout: Default::default(),
             symmetry_mode: SymmetryMode::None,
             symmetry_center: egui::Pos2::new(0.0, 0.0),
@@ -1099,8 +1103,9 @@ impl PaintApp {
             app.show_recovery_dialog = true;
         }
 
-        // Load saved user preferences
+        // Load saved user preferences and workspace layout
         crate::preferences::load_preferences(&mut app, &cc.egui_ctx);
+        crate::preferences::load_workspace_layout(&mut app);
 
         app
     }
@@ -3649,6 +3654,8 @@ impl PaintApp {
 
 impl eframe::App for PaintApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Save workspace layout before exit
+        crate::preferences::save_workspace_layout(self);
         // Drop the InputManager (and its inner octotablet Manager) before the window closes.
         // This ensures the window handle remains valid for the lifetime of the tablet connection.
         self.input_manager.take();
@@ -3660,6 +3667,16 @@ impl eframe::App for PaintApp {
             self.toggle_fullscreen_requested = false;
             let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+        }
+
+        // Clean up stale panel drag state (detached but never drag_stopped)
+        if self
+            .panel_drag
+            .as_ref()
+            .map(|d| d.detached)
+            .unwrap_or(false)
+        {
+            self.panel_drag = None;
         }
 
         // Record frame time for the performance HUD
@@ -4179,6 +4196,8 @@ impl eframe::App for PaintApp {
                 // Handle selection tool dragging
                 if pointer_down
                     && matches!(self.active_tool, ToolId::RectSelect | ToolId::EllipseSelect)
+                    && self.panel_drag.is_none()
+                    && self.floating_drag_panel.is_none()
                 {
                     if let Some(ptr_pos) = response.hover_pos() {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
@@ -4203,7 +4222,11 @@ impl eframe::App for PaintApp {
                 }
 
                 // Handle lasso dragging
-                if pointer_down && matches!(self.active_tool, ToolId::Lasso) {
+                if pointer_down
+                    && matches!(self.active_tool, ToolId::Lasso)
+                    && self.panel_drag.is_none()
+                    && self.floating_drag_panel.is_none()
+                {
                     if let Some(ptr_pos) = response.hover_pos() {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         if !self.is_selecting {
@@ -4340,7 +4363,11 @@ impl eframe::App for PaintApp {
                 }
 
                 // Handle gradient tool drag
-                if pointer_down && matches!(self.active_tool, ToolId::Gradient) {
+                if pointer_down
+                    && matches!(self.active_tool, ToolId::Gradient)
+                    && self.panel_drag.is_none()
+                    && self.floating_drag_panel.is_none()
+                {
                     if let Some(ptr_pos) = response.hover_pos() {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         if !self.gradient_dragging {
@@ -4772,6 +4799,8 @@ impl eframe::App for PaintApp {
                         ToolId::Brush | ToolId::Eraser | ToolId::VectorPen
                     )
                     && !self.is_active_layer_locked()
+                    && self.panel_drag.is_none()
+                    && self.floating_drag_panel.is_none()
                 {
                     if let Some(ptr_pos) = response.hover_pos() {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
@@ -6969,6 +6998,8 @@ mod tests {
             blur_radius: 3.0,
 
             show_about_dialog: false,
+            panel_drag: None,
+            floating_drag_panel: None,
             workspace_layout: Default::default(),
         };
 
@@ -7195,6 +7226,8 @@ mod tests {
             blur_radius: 3.0,
 
             show_about_dialog: false,
+            panel_drag: None,
+            floating_drag_panel: None,
             workspace_layout: Default::default(),
         };
 
