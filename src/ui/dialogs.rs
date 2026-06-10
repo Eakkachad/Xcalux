@@ -174,7 +174,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
     }
 
     // 2. EXPORT PNG DIALOG
-    if app.show_export_png_dialog {
+    if app.export_dialogs.show_export_png_dialog {
         let mut close = false;
         let mut do_export = false;
         egui::Window::new("Export PNG")
@@ -191,19 +191,19 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     .spacing([12.0, 8.0])
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.text_edit_singleline(&mut app.export_png_path);
+                            ui.text_edit_singleline(&mut app.export_dialogs.export_png_path);
                             if ui.button("Browse...").clicked() {
                                 if let Some(path) = rfd::FileDialog::new()
                                     .add_filter("PNG Image", &["png"])
                                     .save_file()
                                 {
-                                    app.export_png_path = path.to_string_lossy().to_string();
+                                    app.export_dialogs.export_png_path = path.to_string_lossy().to_string();
                                 }
                             }
                         });
                         ui.end_row();
                         ui.label("Background:");
-                        let mut bg_val = match app.export_png_options.background {
+                        let mut bg_val = match app.export_dialogs.export_png_options.background {
                             crate::export::png::ExportBackground::Transparent => 0,
                             crate::export::png::ExportBackground::White => 1,
                         };
@@ -213,7 +213,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                                 ui.selectable_value(&mut bg_val, 0, "Transparent").changed();
                                 if ui.selectable_value(&mut bg_val, 1, "White").changed() {}
                             });
-                        app.export_png_options.background = if bg_val == 0 {
+                        app.export_dialogs.export_png_options.background = if bg_val == 0 {
                             crate::export::png::ExportBackground::Transparent
                         } else {
                             crate::export::png::ExportBackground::White
@@ -221,7 +221,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                         ui.end_row();
                         ui.label("Scale:");
                         ui.add(
-                            egui::Slider::new(&mut app.export_png_options.scale, 0.1..=4.0)
+                            egui::Slider::new(&mut app.export_dialogs.export_png_options.scale, 0.1..=4.0)
                                 .text("x"),
                         );
                         ui.end_row();
@@ -237,27 +237,27 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 });
             });
         if do_export {
-            let path = std::path::Path::new(&app.export_png_path).to_path_buf();
+            let path = std::path::Path::new(&app.export_dialogs.export_png_path).to_path_buf();
             let layers = app.layers.clone();
             let layer_order = app.layer_order.clone();
             let w = app.canvas_width;
             let h = app.canvas_height;
-            let options = app.export_png_options.clone();
+            let options = app.export_dialogs.export_png_options.clone();
             std::thread::spawn(move || {
                 match crate::export::png::export_png(&path, &layers, &layer_order, w, h, &options) {
                     Ok(()) => log::info!("Exported PNG to {:?}", path),
                     Err(e) => log::error!("PNG export failed: {:?}", e),
                 }
             });
-            app.show_export_png_dialog = false;
+            app.export_dialogs.show_export_png_dialog = false;
         }
         if close {
-            app.show_export_png_dialog = false;
+            app.export_dialogs.show_export_png_dialog = false;
         }
     }
 
     // 2b. EXPORT ORA DIALOG
-    if app.show_export_ora_dialog {
+    if app.export_dialogs.show_export_ora_dialog {
         let mut close = false;
         let mut do_export = false;
         egui::Window::new("Export OpenRaster")
@@ -271,13 +271,13 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("File path:");
-                    ui.text_edit_singleline(&mut app.export_ora_path);
+                    ui.text_edit_singleline(&mut app.export_dialogs.export_ora_path);
                     if ui.button("Browse...").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("OpenRaster Image", &["ora"])
                             .save_file()
                         {
-                            app.export_ora_path = path.to_string_lossy().to_string();
+                            app.export_dialogs.export_ora_path = path.to_string_lossy().to_string();
                         }
                     }
                 });
@@ -300,7 +300,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 });
             });
         if do_export {
-            let path = std::path::Path::new(&app.export_ora_path).to_path_buf();
+            let path = std::path::Path::new(&app.export_dialogs.export_ora_path).to_path_buf();
             let layers = app.layers.clone();
             let layer_order = app.layer_order.clone();
             let w = app.canvas_width;
@@ -311,15 +311,15 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     Err(e) => log::error!("ORA export failed: {:?}", e),
                 }
             });
-            app.show_export_ora_dialog = false;
+            app.export_dialogs.show_export_ora_dialog = false;
         }
         if close {
-            app.show_export_ora_dialog = false;
+            app.export_dialogs.show_export_ora_dialog = false;
         }
     }
 
     // 2c. IMPORT ORA DIALOG
-    if app.show_import_ora_dialog {
+    if app.export_dialogs.show_import_ora_dialog {
         let mut close = false;
         let mut do_import = false;
         egui::Window::new("Import OpenRaster")
@@ -333,13 +333,13 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("File path:");
-                    ui.text_edit_singleline(&mut app.import_ora_path);
+                    ui.text_edit_singleline(&mut app.export_dialogs.import_ora_path);
                     if ui.button("Browse...").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("OpenRaster Image", &["ora"])
                             .pick_file()
                         {
-                            app.import_ora_path = path.to_string_lossy().to_string();
+                            app.export_dialogs.import_ora_path = path.to_string_lossy().to_string();
                         }
                     }
                 });
@@ -360,7 +360,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 });
             });
         if do_import {
-            let path = std::path::Path::new(&app.import_ora_path).to_path_buf();
+            let path = std::path::Path::new(&app.export_dialogs.import_ora_path).to_path_buf();
             match crate::export::ora::import_ora(&path) {
                 Ok(imported) => {
                     app.canvas_width = imported.width;
@@ -378,10 +378,10 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     log::error!("ORA import failed: {:?}", e);
                 }
             }
-            app.show_import_ora_dialog = false;
+            app.export_dialogs.show_import_ora_dialog = false;
         }
         if close {
-            app.show_import_ora_dialog = false;
+            app.export_dialogs.show_import_ora_dialog = false;
         }
     }
 
@@ -550,7 +550,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
     }
 
     // 4. GROW SELECTION DIALOG
-    if app.show_grow_dialog {
+    if app.selection_ops.show_grow_dialog {
         let mut close = false;
         let mut grow_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Grow Selection")
@@ -559,14 +559,14 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Grow selection by:");
-                    ui.add(egui::DragValue::new(&mut app.grow_pixels).clamp_range(1..=100));
+                    ui.add(egui::DragValue::new(&mut app.selection_ops.grow_pixels).clamp_range(1..=100));
                     ui.label("pixels");
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Grow").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
-                        let grow_px = app.grow_pixels;
+                        let grow_px = app.selection_ops.grow_pixels;
                         selection::grow_selection(
                             &mut app.selection_mask,
                             grow_px,
@@ -587,12 +587,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             app.history.push_command(cmd);
         }
         if close {
-            app.show_grow_dialog = false;
+            app.selection_ops.show_grow_dialog = false;
         }
     }
 
     // 5. SHRINK SELECTION DIALOG
-    if app.show_shrink_dialog {
+    if app.selection_ops.show_shrink_dialog {
         let mut close = false;
         let mut shrink_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Shrink Selection")
@@ -601,14 +601,14 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Shrink selection by:");
-                    ui.add(egui::DragValue::new(&mut app.shrink_pixels).clamp_range(1..=100));
+                    ui.add(egui::DragValue::new(&mut app.selection_ops.shrink_pixels).clamp_range(1..=100));
                     ui.label("pixels");
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Shrink").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
-                        let shrink_px = app.shrink_pixels;
+                        let shrink_px = app.selection_ops.shrink_pixels;
                         selection::shrink_selection(
                             &mut app.selection_mask,
                             shrink_px,
@@ -629,12 +629,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             app.history.push_command(cmd);
         }
         if close {
-            app.show_shrink_dialog = false;
+            app.selection_ops.show_shrink_dialog = false;
         }
     }
 
     // 6. FEATHER SELECTION DIALOG
-    if app.show_feather_dialog {
+    if app.selection_ops.show_feather_dialog {
         let mut close = false;
         let mut feather_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Feather Selection")
@@ -643,14 +643,14 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Feather radius:");
-                    ui.add(egui::DragValue::new(&mut app.feather_pixels).clamp_range(1..=100));
+                    ui.add(egui::DragValue::new(&mut app.selection_ops.feather_pixels).clamp_range(1..=100));
                     ui.label("pixels");
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Feather").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
-                        let feather_px = app.feather_pixels;
+                        let feather_px = app.selection_ops.feather_pixels;
                         selection::feather_selection(
                             &mut app.selection_mask,
                             feather_px,
@@ -671,7 +671,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             app.history.push_command(cmd);
         }
         if close {
-            app.show_feather_dialog = false;
+            app.selection_ops.show_feather_dialog = false;
         }
     }
 
@@ -1020,7 +1020,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
     }
 
     // 2e. EXPORT JPEG DIALOG
-    if app.show_export_jpeg_dialog {
+    if app.export_dialogs.show_export_jpeg_dialog {
         let mut close = false;
         let mut do_export = false;
         egui::Window::new("Export JPEG")
@@ -1038,20 +1038,20 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     .show(ui, |ui| {
                         ui.label("File path:");
                         ui.horizontal(|ui| {
-                            ui.text_edit_singleline(&mut app.export_jpeg_path);
+                            ui.text_edit_singleline(&mut app.export_dialogs.export_jpeg_path);
                             if ui.button("Browse...").clicked() {
                                 if let Some(path) = rfd::FileDialog::new()
                                     .add_filter("JPEG Image", &["jpg", "jpeg"])
                                     .save_file()
                                 {
-                                    app.export_jpeg_path = path.to_string_lossy().to_string();
+                                    app.export_dialogs.export_jpeg_path = path.to_string_lossy().to_string();
                                 }
                             }
                         });
                         ui.end_row();
 
                         ui.label("Quality:");
-                        ui.add(egui::Slider::new(&mut app.export_jpeg_quality, 1..=100));
+                        ui.add(egui::Slider::new(&mut app.export_dialogs.export_jpeg_quality, 1..=100));
                         ui.end_row();
                     });
                 ui.add_space(12.0);
@@ -1065,27 +1065,27 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 });
             });
         if do_export {
-            let path = std::path::Path::new(&app.export_jpeg_path).to_path_buf();
+            let path = std::path::Path::new(&app.export_dialogs.export_jpeg_path).to_path_buf();
             let layers = app.layers.clone();
             let layer_order = app.layer_order.clone();
             let w = app.canvas_width;
             let h = app.canvas_height;
-            let quality = app.export_jpeg_quality;
+            let quality = app.export_dialogs.export_jpeg_quality;
             std::thread::spawn(move || {
                 match crate::export::jpeg::export_jpeg(&path, &layers, &layer_order, w, h, quality) {
                     Ok(()) => log::info!("Exported JPEG to {:?}", path),
                     Err(e) => log::error!("JPEG export failed: {:?}", e),
                 }
             });
-            app.show_export_jpeg_dialog = false;
+            app.export_dialogs.show_export_jpeg_dialog = false;
         }
         if close {
-            app.show_export_jpeg_dialog = false;
+            app.export_dialogs.show_export_jpeg_dialog = false;
         }
     }
 
     // 8b. SMOOTH SELECTION DIALOG
-    if app.show_smooth_dialog {
+    if app.selection_ops.show_smooth_dialog {
         let mut close = false;
         let mut smooth_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Smooth Selection")
@@ -1094,14 +1094,14 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Smooth radius:");
-                    ui.add(egui::DragValue::new(&mut app.smooth_pixels).clamp_range(1..=100));
+                    ui.add(egui::DragValue::new(&mut app.selection_ops.smooth_pixels).clamp_range(1..=100));
                     ui.label("pixels");
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Smooth").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
-                        let smooth_px = app.smooth_pixels;
+                        let smooth_px = app.selection_ops.smooth_pixels;
                         selection::smooth_selection(
                             &mut app.selection_mask,
                             smooth_px,
@@ -1122,12 +1122,12 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             app.history.push_command(cmd);
         }
         if close {
-            app.show_smooth_dialog = false;
+            app.selection_ops.show_smooth_dialog = false;
         }
     }
 
     // 8c. BORDER SELECTION DIALOG
-    if app.show_border_dialog {
+    if app.selection_ops.show_border_dialog {
         let mut close = false;
         let mut border_cmd: Option<HistoryCommand> = None;
         egui::Window::new("Border Selection")
@@ -1136,14 +1136,14 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Border width:");
-                    ui.add(egui::DragValue::new(&mut app.border_pixels).clamp_range(1..=100));
+                    ui.add(egui::DragValue::new(&mut app.selection_ops.border_pixels).clamp_range(1..=100));
                     ui.label("pixels");
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Border").clicked() {
                         let old_mask = Box::new(app.selection_mask.clone());
-                        let border_px = app.border_pixels;
+                        let border_px = app.selection_ops.border_pixels;
                         selection::border_selection(
                             &mut app.selection_mask,
                             border_px,
@@ -1164,7 +1164,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             app.history.push_command(cmd);
         }
         if close {
-            app.show_border_dialog = false;
+            app.selection_ops.show_border_dialog = false;
         }
     }
 }

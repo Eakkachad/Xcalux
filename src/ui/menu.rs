@@ -100,22 +100,22 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.separator();
                 ui.menu_button("Export", |ui| {
                     if ui.button("Export PNG...").clicked() {
-                        app.show_export_png_dialog = true;
+                        app.export_dialogs.show_export_png_dialog = true;
                         ui.close_menu();
                     }
                     if ui.button("Export JPEG...").clicked() {
-                        app.show_export_jpeg_dialog = true;
+                        app.export_dialogs.show_export_jpeg_dialog = true;
                         ui.close_menu();
                     }
                     if ui.button("Export OpenRaster (.ora)...").clicked() {
-                        app.show_export_ora_dialog = true;
+                        app.export_dialogs.show_export_ora_dialog = true;
                         ui.close_menu();
                     }
                 });
                 ui.separator();
                 ui.menu_button("Import", |ui| {
                     if ui.button("Import OpenRaster (.ora)...").clicked() {
-                        app.show_import_ora_dialog = true;
+                        app.export_dialogs.show_import_ora_dialog = true;
                         ui.close_menu();
                     }
                 });

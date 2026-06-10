@@ -89,6 +89,99 @@ pub struct BrushPreset {
     pub density: f32,
 }
 
+// ── State Decomposition: sub-structs grouping dialog/operation state ──
+
+#[derive(Clone)]
+pub struct ExportDialogState {
+    pub show_export_png_dialog: bool,
+    pub export_png_options: crate::export::png::ExportPngOptions,
+    pub export_png_path: String,
+    pub show_export_jpeg_dialog: bool,
+    pub export_jpeg_path: String,
+    pub export_jpeg_quality: u8,
+    pub show_export_ora_dialog: bool,
+    pub export_ora_path: String,
+    pub show_import_ora_dialog: bool,
+    pub import_ora_path: String,
+}
+
+impl Default for ExportDialogState {
+    fn default() -> Self {
+        Self {
+            show_export_png_dialog: false,
+            export_png_options: crate::export::png::ExportPngOptions::default(),
+            export_png_path: "export.png".to_string(),
+            show_export_jpeg_dialog: false,
+            export_jpeg_path: "export.jpg".to_string(),
+            export_jpeg_quality: 90,
+            show_export_ora_dialog: false,
+            export_ora_path: "export.ora".to_string(),
+            show_import_ora_dialog: false,
+            import_ora_path: "import.ora".to_string(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SelectionOperationState {
+    pub show_grow_dialog: bool,
+    pub show_shrink_dialog: bool,
+    pub show_feather_dialog: bool,
+    pub show_smooth_dialog: bool,
+    pub show_border_dialog: bool,
+    pub grow_pixels: i32,
+    pub shrink_pixels: i32,
+    pub feather_pixels: i32,
+    pub smooth_pixels: i32,
+    pub border_pixels: i32,
+}
+
+impl Default for SelectionOperationState {
+    fn default() -> Self {
+        Self {
+            show_grow_dialog: false,
+            show_shrink_dialog: false,
+            show_feather_dialog: false,
+            show_smooth_dialog: false,
+            show_border_dialog: false,
+            grow_pixels: 2,
+            shrink_pixels: 2,
+            feather_pixels: 4,
+            smooth_pixels: 4,
+            border_pixels: 4,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AdjustmentState {
+    pub show_brightness_contrast: bool,
+    pub brightness: f32,
+    pub contrast: f32,
+    pub show_hue_saturation: bool,
+    pub hue: f32,
+    pub saturation: f32,
+    pub lightness: f32,
+    pub show_gaussian_blur: bool,
+    pub blur_radius: f32,
+}
+
+impl Default for AdjustmentState {
+    fn default() -> Self {
+        Self {
+            show_brightness_contrast: false,
+            brightness: 0.0,
+            contrast: 0.0,
+            show_hue_saturation: false,
+            hue: 0.0,
+            saturation: 0.0,
+            lightness: 0.0,
+            show_gaussian_blur: false,
+            blur_radius: 3.0,
+        }
+    }
+}
+
 pub struct PaintApp {
     // Canvas layers and active index
     // Canvas layers and active index
@@ -216,19 +309,8 @@ pub struct PaintApp {
     #[allow(unused)]
     pub transform_state: transform_tool::TransformState,
 
-    // Export dialog
-    pub show_export_png_dialog: bool,
-    pub export_png_options: crate::export::png::ExportPngOptions,
-    pub export_png_path: String,
-    pub show_export_jpeg_dialog: bool,
-    pub export_jpeg_path: String,
-    pub export_jpeg_quality: u8,
-
-    // ORA export/import dialogs
-    pub show_export_ora_dialog: bool,
-    pub export_ora_path: String,
-    pub show_import_ora_dialog: bool,
-    pub import_ora_path: String,
+    // Export dialogs
+    pub export_dialogs: ExportDialogState,
 
     // Autosave
     pub autosave_enabled: bool,
@@ -266,17 +348,8 @@ pub struct PaintApp {
     pub pressure_response: crate::pressure::PressureCurve,
     pub show_pressure_calibration: bool,
 
-    // Selection modifications (Phase 12)
-    pub show_grow_dialog: bool,
-    pub show_shrink_dialog: bool,
-    pub show_feather_dialog: bool,
-    pub show_smooth_dialog: bool,
-    pub show_border_dialog: bool,
-    pub grow_pixels: i32,
-    pub shrink_pixels: i32,
-    pub feather_pixels: i32,
-    pub smooth_pixels: i32,
-    pub border_pixels: i32,
+    // Selection operations (Phase 12/20)
+    pub selection_ops: SelectionOperationState,
 
     // Color history
     pub color_history: Vec<[f32; 3]>,
@@ -284,8 +357,6 @@ pub struct PaintApp {
     pub color_wheel_drag_zone: Option<u8>,
 
     // Layer operations
-    #[allow(unused)]
-    pub show_layer_properties: bool,
     pub(crate) renaming_layer_id: Option<u32>,
     pub(crate) rename_layer_input: String,
 
@@ -348,15 +419,7 @@ pub struct PaintApp {
     pub(crate) ref_image_drag_offset: egui::Vec2,
 
     // Adjustment dialogs
-    pub show_brightness_contrast: bool,
-    pub brightness: f32,
-    pub contrast: f32,
-    pub show_hue_saturation: bool,
-    pub hue: f32,
-    pub saturation: f32,
-    pub lightness: f32,
-    pub show_gaussian_blur: bool,
-    pub blur_radius: f32,
+    pub adjustment: AdjustmentState,
 
     // About
     pub show_about_dialog: bool,
@@ -1000,16 +1063,7 @@ impl PaintApp {
             show_selection_overlay: false,
             selection_feather: 0.0,
             transform_state: transform_tool::TransformState::new(),
-            show_export_png_dialog: false,
-            export_png_options: crate::export::png::ExportPngOptions::default(),
-            export_png_path: "export.png".to_string(),
-            show_export_jpeg_dialog: false,
-            export_jpeg_path: "export.jpg".to_string(),
-            export_jpeg_quality: 90,
-            show_export_ora_dialog: false,
-            export_ora_path: "export.ora".to_string(),
-            show_import_ora_dialog: false,
-            import_ora_path: "import.ora".to_string(),
+            export_dialogs: ExportDialogState::default(),
             autosave_enabled: true,
             autosave_interval_secs: 180.0,
             autosave_path: ".autosave.arty".to_string(),
@@ -1033,20 +1087,10 @@ impl PaintApp {
             stroke_start_pos: None,
             pressure_response: crate::pressure::PressureCurve::new_linear(),
             show_pressure_calibration: false,
-            show_grow_dialog: false,
-            show_shrink_dialog: false,
-            show_feather_dialog: false,
-            show_smooth_dialog: false,
-            show_border_dialog: false,
-            grow_pixels: 2,
-            shrink_pixels: 2,
-            feather_pixels: 4,
-            smooth_pixels: 4,
-            border_pixels: 4,
+            selection_ops: SelectionOperationState::default(),
             color_history: Vec::with_capacity(12),
             color_history_max: 12,
             color_wheel_drag_zone: None,
-            show_layer_properties: false,
             renaming_layer_id: None,
             rename_layer_input: String::new(),
             show_shortcut_editor: false,
@@ -1095,15 +1139,7 @@ impl PaintApp {
             ref_image_dragging: None,
             ref_image_drag_offset: egui::Vec2::ZERO,
 
-            show_brightness_contrast: false,
-            brightness: 0.0,
-            contrast: 0.0,
-            show_hue_saturation: false,
-            hue: 0.0,
-            saturation: 0.0,
-            lightness: 0.0,
-            show_gaussian_blur: false,
-            blur_radius: 3.0,
+            adjustment: AdjustmentState::default(),
 
             show_about_dialog: false,
         };
@@ -2056,9 +2092,9 @@ impl PaintApp {
                 self.document_modified = false;
                 self.cleanup_autosave();
             }
-            CommandId::ExportPng => self.show_export_png_dialog = true,
-            CommandId::ExportJpeg => self.show_export_jpeg_dialog = true,
-            CommandId::ExportOra => self.show_export_ora_dialog = true,
+            CommandId::ExportPng => self.export_dialogs.show_export_png_dialog = true,
+            CommandId::ExportJpeg => self.export_dialogs.show_export_jpeg_dialog = true,
+            CommandId::ExportOra => self.export_dialogs.show_export_ora_dialog = true,
             CommandId::ImportImageAsLayer => {}
             CommandId::ImportReferenceImage => {}
             CommandId::ImportBrushPreset => {}
@@ -2310,7 +2346,7 @@ impl PaintApp {
                 let old_mask = Box::new(self.selection_mask.clone());
                 crate::tools::selection::grow_selection(
                     &mut self.selection_mask,
-                    self.grow_pixels,
+                    self.selection_ops.grow_pixels,
                     self.canvas_width as i32,
                     self.canvas_height as i32,
                 );
@@ -2322,7 +2358,7 @@ impl PaintApp {
                 let old_mask = Box::new(self.selection_mask.clone());
                 crate::tools::selection::shrink_selection(
                     &mut self.selection_mask,
-                    self.shrink_pixels,
+                    self.selection_ops.shrink_pixels,
                     self.canvas_width as i32,
                     self.canvas_height as i32,
                 );
@@ -2334,7 +2370,7 @@ impl PaintApp {
                 let old_mask = Box::new(self.selection_mask.clone());
                 crate::tools::selection::feather_selection(
                     &mut self.selection_mask,
-                    self.feather_pixels as i32,
+                    self.selection_ops.feather_pixels as i32,
                     self.canvas_width as i32,
                     self.canvas_height as i32,
                 );
@@ -2342,8 +2378,8 @@ impl PaintApp {
                 self.history
                     .push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
             }
-            CommandId::SelectionSmooth => self.show_smooth_dialog = true,
-            CommandId::SelectionBorder => self.show_border_dialog = true,
+            CommandId::SelectionSmooth => self.selection_ops.show_smooth_dialog = true,
+            CommandId::SelectionBorder => self.selection_ops.show_border_dialog = true,
             CommandId::TransformSelection => {
                 self.active_tool = ToolId::Transform;
                 self.start_transform();
@@ -2399,9 +2435,9 @@ impl PaintApp {
             CommandId::OpenConfigFolder => {}
 
             // Filters & Adjustments
-            CommandId::AdjustBrightnessContrast => self.show_brightness_contrast = true,
-            CommandId::AdjustHueSaturation => self.show_hue_saturation = true,
-            CommandId::FilterGaussianBlur => self.show_gaussian_blur = true,
+            CommandId::AdjustBrightnessContrast => self.adjustment.show_brightness_contrast = true,
+            CommandId::AdjustHueSaturation => self.adjustment.show_hue_saturation = true,
+            CommandId::FilterGaussianBlur => self.adjustment.show_gaussian_blur = true,
 
             // Tools
             CommandId::ToolBrush => self.active_tool = ToolId::Brush,
@@ -3117,8 +3153,8 @@ impl PaintApp {
     }
 
     fn adjust_brightness_contrast(&mut self) {
-        let b = self.brightness;
-        let c = self.contrast;
+        let b = self.adjustment.brightness;
+        let c = self.adjustment.contrast;
         self.apply_adjustment(|pix| {
             // Convert from u16 [0,32768] to f32 [0,1], apply, convert back
             for i in 0..3 {
@@ -3131,9 +3167,9 @@ impl PaintApp {
     }
 
     fn adjust_hue_saturation(&mut self) {
-        let h_shift = self.hue;
-        let s_scale = 1.0 + self.saturation;
-        let l_shift = self.lightness;
+        let h_shift = self.adjustment.hue;
+        let s_scale = 1.0 + self.adjustment.saturation;
+        let l_shift = self.adjustment.lightness;
         self.apply_adjustment(|pix| {
             let r = pix[0] as f32 / 32768.0;
             let g = pix[1] as f32 / 32768.0;
@@ -3150,7 +3186,7 @@ impl PaintApp {
     }
 
     fn filter_gaussian_blur(&mut self) {
-        let radius = self.blur_radius.max(0.5) as usize;
+        let radius = self.adjustment.blur_radius.max(0.5) as usize;
         if radius == 0 {
             return;
         }
@@ -6126,79 +6162,79 @@ impl eframe::App for PaintApp {
         // =============================================================
         // ADJUSTMENT DIALOGS
         // =============================================================
-        if self.show_brightness_contrast {
+        if self.adjustment.show_brightness_contrast {
             let mut open = true;
             egui::Window::new("Brightness / Contrast")
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Brightness:");
-                        ui.add(egui::Slider::new(&mut self.brightness, -0.5..=0.5));
+                        ui.add(egui::Slider::new(&mut self.adjustment.brightness, -0.5..=0.5));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Contrast:");
-                        ui.add(egui::Slider::new(&mut self.contrast, -0.5..=0.5));
+                        ui.add(egui::Slider::new(&mut self.adjustment.contrast, -0.5..=0.5));
                     });
                     if ui.button("Apply").clicked() {
                         self.adjust_brightness_contrast();
-                        self.show_brightness_contrast = false;
+                        self.adjustment.show_brightness_contrast = false;
                     }
                     if ui.button("Cancel").clicked() {
-                        self.show_brightness_contrast = false;
+                        self.adjustment.show_brightness_contrast = false;
                     }
                 });
             if !open {
-                self.show_brightness_contrast = false;
+                self.adjustment.show_brightness_contrast = false;
             }
         }
-        if self.show_hue_saturation {
+        if self.adjustment.show_hue_saturation {
             let mut open = true;
             egui::Window::new("Hue / Saturation")
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Hue:");
-                        ui.add(egui::Slider::new(&mut self.hue, -1.0..=1.0));
+                        ui.add(egui::Slider::new(&mut self.adjustment.hue, -1.0..=1.0));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Saturation:");
-                        ui.add(egui::Slider::new(&mut self.saturation, -0.5..=0.5));
+                        ui.add(egui::Slider::new(&mut self.adjustment.saturation, -0.5..=0.5));
                     });
                     ui.horizontal(|ui| {
                         ui.label("Lightness:");
-                        ui.add(egui::Slider::new(&mut self.lightness, -0.5..=0.5));
+                        ui.add(egui::Slider::new(&mut self.adjustment.lightness, -0.5..=0.5));
                     });
                     if ui.button("Apply").clicked() {
                         self.adjust_hue_saturation();
-                        self.show_hue_saturation = false;
+                        self.adjustment.show_hue_saturation = false;
                     }
                     if ui.button("Cancel").clicked() {
-                        self.show_hue_saturation = false;
+                        self.adjustment.show_hue_saturation = false;
                     }
                 });
             if !open {
-                self.show_hue_saturation = false;
+                self.adjustment.show_hue_saturation = false;
             }
         }
-        if self.show_gaussian_blur {
+        if self.adjustment.show_gaussian_blur {
             let mut open = true;
             egui::Window::new("Gaussian Blur")
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Radius:");
-                        ui.add(egui::Slider::new(&mut self.blur_radius, 0.5..=20.0));
+                        ui.add(egui::Slider::new(&mut self.adjustment.blur_radius, 0.5..=20.0));
                     });
                     if ui.button("Apply").clicked() {
                         self.filter_gaussian_blur();
-                        self.show_gaussian_blur = false;
+                        self.adjustment.show_gaussian_blur = false;
                     }
                     if ui.button("Cancel").clicked() {
-                        self.show_gaussian_blur = false;
+                        self.adjustment.show_gaussian_blur = false;
                     }
                 });
             if !open {
-                self.show_gaussian_blur = false;
+                self.adjustment.show_gaussian_blur = false;
             }
         }
     }
@@ -6961,16 +6997,7 @@ mod tests {
             show_selection_overlay: false,
             selection_feather: 0.0,
             transform_state: transform_tool::TransformState::new(),
-            show_export_png_dialog: false,
-            export_png_options: crate::export::png::ExportPngOptions::default(),
-            export_png_path: String::new(),
-            show_export_jpeg_dialog: false,
-            export_jpeg_path: String::new(),
-            export_jpeg_quality: 90,
-            show_export_ora_dialog: false,
-            export_ora_path: String::new(),
-            show_import_ora_dialog: false,
-            import_ora_path: String::new(),
+            export_dialogs: ExportDialogState::default(),
             autosave_enabled: false,
             autosave_interval_secs: 0.0,
             autosave_path: String::new(),
@@ -6991,20 +7018,10 @@ mod tests {
             stroke_start_pos: None,
             pressure_response: crate::pressure::PressureCurve::new_linear(),
             show_pressure_calibration: false,
-            show_grow_dialog: false,
-            show_shrink_dialog: false,
-            show_feather_dialog: false,
-            show_smooth_dialog: false,
-            show_border_dialog: false,
-            grow_pixels: 0,
-            shrink_pixels: 0,
-            feather_pixels: 0,
-            smooth_pixels: 0,
-            border_pixels: 0,
+            selection_ops: SelectionOperationState::default(),
             color_history: Vec::new(),
             color_history_max: 12,
             color_wheel_drag_zone: None,
-            show_layer_properties: false,
             renaming_layer_id: None,
             rename_layer_input: String::new(),
             show_shortcut_editor: false,
@@ -7048,16 +7065,7 @@ mod tests {
             ref_image_dragging: None,
             ref_image_drag_offset: Vec2::ZERO,
 
-            show_brightness_contrast: false,
-            brightness: 0.0,
-            contrast: 0.0,
-            show_hue_saturation: false,
-            hue: 0.0,
-            saturation: 0.0,
-            lightness: 0.0,
-            show_gaussian_blur: false,
-            blur_radius: 3.0,
-
+            adjustment: AdjustmentState::default(),
             show_about_dialog: false,
             panel_drag: None,
             floating_drag_panel: None,
@@ -7087,7 +7095,7 @@ mod tests {
         let h = active_brush.get(BrushSetting::ColorH).base_value;
         let s = active_brush.get(BrushSetting::ColorS).base_value;
         let v = active_brush.get(BrushSetting::ColorV).base_value;
-        assert!((h - 0.3333).abs() < 1e-2);
+        assert!((h - 0.3333).abs() < 1e-4);
         assert!((s - 1.0).abs() < 1e-4);
         assert!((v - 1.0).abs() < 1e-4);
     }
@@ -7199,16 +7207,7 @@ mod tests {
             show_selection_overlay: false,
             selection_feather: 0.0,
             transform_state: transform_tool::TransformState::new(),
-            show_export_png_dialog: false,
-            export_png_options: crate::export::png::ExportPngOptions::default(),
-            export_png_path: String::new(),
-            show_export_jpeg_dialog: false,
-            export_jpeg_path: String::new(),
-            export_jpeg_quality: 90,
-            show_export_ora_dialog: false,
-            export_ora_path: String::new(),
-            show_import_ora_dialog: false,
-            import_ora_path: String::new(),
+            export_dialogs: ExportDialogState::default(),
             autosave_enabled: false,
             autosave_interval_secs: 0.0,
             autosave_path: String::new(),
@@ -7229,20 +7228,10 @@ mod tests {
             stroke_start_pos: None,
             pressure_response: crate::pressure::PressureCurve::new_linear(),
             show_pressure_calibration: false,
-            show_grow_dialog: false,
-            show_shrink_dialog: false,
-            show_feather_dialog: false,
-            show_smooth_dialog: false,
-            show_border_dialog: false,
-            grow_pixels: 0,
-            shrink_pixels: 0,
-            feather_pixels: 0,
-            smooth_pixels: 0,
-            border_pixels: 0,
+            selection_ops: SelectionOperationState::default(),
             color_history: Vec::new(),
             color_history_max: 12,
             color_wheel_drag_zone: None,
-            show_layer_properties: false,
             renaming_layer_id: None,
             rename_layer_input: String::new(),
             show_shortcut_editor: false,
@@ -7286,16 +7275,7 @@ mod tests {
             ref_image_dragging: None,
             ref_image_drag_offset: Vec2::ZERO,
 
-            show_brightness_contrast: false,
-            brightness: 0.0,
-            contrast: 0.0,
-            show_hue_saturation: false,
-            hue: 0.0,
-            saturation: 0.0,
-            lightness: 0.0,
-            show_gaussian_blur: false,
-            blur_radius: 3.0,
-
+            adjustment: AdjustmentState::default(),
             show_about_dialog: false,
             panel_drag: None,
             floating_drag_panel: None,
