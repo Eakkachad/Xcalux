@@ -12,32 +12,99 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     ui.close_menu();
                 }
                 ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Path:");
-                    ui.text_edit_singleline(&mut app.document_path);
-                });
-                if ui.button("Open Canvas").clicked() {
-                    let path = std::path::PathBuf::from(&app.document_path);
-                    match crate::save::load_document(&path) {
-                        Ok(loaded_doc) => {
-                            app.load_from_document(loaded_doc);
-                            log::info!("Loaded document successfully from {:?}", path);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to load document: {:?}", e);
+                if ui.button("Open Canvas...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Arty Canvas", &["arty"])
+                        .pick_file()
+                    {
+                        let path_str = path.to_string_lossy().to_string();
+                        match crate::save::load_document(&path) {
+                            Ok(loaded_doc) => {
+                                app.load_from_document(loaded_doc);
+                                app.document_path = path_str.clone();
+                                app.add_recent_file(path_str);
+                                log::info!("Loaded document successfully from {:?}", path);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to load document: {:?}", e);
+                            }
                         }
                     }
                     ui.close_menu();
                 }
+                ui.menu_button("Recent Files", |ui| {
+                    if app.recent_files.is_empty() {
+                        ui.label("No recent files");
+                    } else {
+                        for path_str in app.recent_files.clone() {
+                            let filename = std::path::Path::new(&path_str)
+                                .file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_else(|| path_str.clone());
+                            if ui.button(&filename).on_hover_text(&path_str).clicked() {
+                                let path = std::path::PathBuf::from(&path_str);
+                                match crate::save::load_document(&path) {
+                                    Ok(loaded_doc) => {
+                                        app.load_from_document(loaded_doc);
+                                        app.document_path = path_str.clone();
+                                        app.add_recent_file(path_str);
+                                        log::info!("Loaded document successfully from {:?}", path);
+                                    }
+                                    Err(e) => {
+                                        log::error!("Failed to load document: {:?}", e);
+                                    }
+                                }
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Clear Recent Files").clicked() {
+                            app.recent_files.clear();
+                            crate::preferences::save_preferences(app);
+                            ui.close_menu();
+                        }
+                    }
+                });
                 if ui.button("Save Canvas").clicked() {
-                    app.save_canvas(std::path::Path::new(&app.document_path));
-                    app.document_modified = false;
+                    if app.document_path.is_empty() || app.document_path == "canvas.arty" {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Arty Canvas", &["arty"])
+                            .save_file()
+                        {
+                            let path_str = path.to_string_lossy().to_string();
+                            app.document_path = path_str.clone();
+                            app.save_canvas(std::path::Path::new(&app.document_path));
+                            app.document_modified = false;
+                            app.add_recent_file(path_str);
+                        }
+                    } else {
+                        app.save_canvas(std::path::Path::new(&app.document_path));
+                        app.document_modified = false;
+                        app.add_recent_file(app.document_path.clone());
+                    }
+                    ui.close_menu();
+                }
+                if ui.button("Save Canvas As...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Arty Canvas", &["arty"])
+                        .save_file()
+                    {
+                        let path_str = path.to_string_lossy().to_string();
+                        app.document_path = path_str.clone();
+                        app.save_canvas(std::path::Path::new(&app.document_path));
+                        app.document_modified = false;
+                        app.add_recent_file(path_str);
+                    }
                     ui.close_menu();
                 }
                 ui.separator();
                 ui.menu_button("Export", |ui| {
                     if ui.button("Export PNG...").clicked() {
                         app.show_export_png_dialog = true;
+                        ui.close_menu();
+                    }
+                    if ui.button("Export JPEG...").clicked() {
+                        app.show_export_jpeg_dialog = true;
                         ui.close_menu();
                     }
                     if ui.button("Export OpenRaster (.ora)...").clicked() {
@@ -346,6 +413,14 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 }
                 if ui.button("Feather Selection...").clicked() {
                     app.command(CommandId::SelectionFeather);
+                    ui.close_menu();
+                }
+                if ui.button("Smooth Selection...").clicked() {
+                    app.command(CommandId::SelectionSmooth);
+                    ui.close_menu();
+                }
+                if ui.button("Border Selection...").clicked() {
+                    app.command(CommandId::SelectionBorder);
                     ui.close_menu();
                 }
             });

@@ -83,85 +83,85 @@ pub struct SystemVolumeLabel<const N: usize = 0> {
     pub volume_label: [crate::base::Char16; N],
 }
 
-pub type ProtocolOpen = unsafe extern "efiapi" fn(
+pub type ProtocolOpen = eficall! {fn(
     *mut Protocol,
     *mut *mut Protocol,
     *mut crate::base::Char16,
     u64,
     u64,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolClose = unsafe extern "efiapi" fn(
+pub type ProtocolClose = eficall! {fn(
     *mut Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolDelete = unsafe extern "efiapi" fn(
+pub type ProtocolDelete = eficall! {fn(
     *mut Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolRead = unsafe extern "efiapi" fn(
-    *mut Protocol,
-    *mut usize,
-    *mut core::ffi::c_void,
-) -> crate::base::Status;
-
-pub type ProtocolWrite = unsafe extern "efiapi" fn(
+pub type ProtocolRead = eficall! {fn(
     *mut Protocol,
     *mut usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolGetPosition = unsafe extern "efiapi" fn(
+pub type ProtocolWrite = eficall! {fn(
+    *mut Protocol,
+    *mut usize,
+    *mut core::ffi::c_void,
+) -> crate::base::Status};
+
+pub type ProtocolGetPosition = eficall! {fn(
     *mut Protocol,
     *mut u64,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolSetPosition = unsafe extern "efiapi" fn(
+pub type ProtocolSetPosition = eficall! {fn(
     *mut Protocol,
     u64,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolGetInfo = unsafe extern "efiapi" fn(
+pub type ProtocolGetInfo = eficall! {fn(
     *mut Protocol,
     *mut crate::base::Guid,
     *mut usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolSetInfo = unsafe extern "efiapi" fn(
+pub type ProtocolSetInfo = eficall! {fn(
     *mut Protocol,
     *mut crate::base::Guid,
     usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolFlush = unsafe extern "efiapi" fn(
+pub type ProtocolFlush = eficall! {fn(
     *mut Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolOpenEx = unsafe extern "efiapi" fn(
+pub type ProtocolOpenEx = eficall! {fn(
     *mut Protocol,
     *mut *mut Protocol,
     *mut crate::base::Char16,
     u64,
     u64,
     *mut IoToken,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolReadEx = unsafe extern "efiapi" fn(
+pub type ProtocolReadEx = eficall! {fn(
     *mut Protocol,
     *mut IoToken,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolWriteEx = unsafe extern "efiapi" fn(
+pub type ProtocolWriteEx = eficall! {fn(
     *mut Protocol,
     *mut IoToken,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolFlushEx = unsafe extern "efiapi" fn(
+pub type ProtocolFlushEx = eficall! {fn(
     *mut Protocol,
     *mut IoToken,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

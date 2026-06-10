@@ -1,11 +1,12 @@
-#[cfg(feature = "quick-xml")]
-use quick_xml::de::DeError;
 use static_assertions::assert_impl_all;
 use std::{convert::Infallible, error, fmt, io, sync::Arc};
-use zbus_names::{Error as NamesError, OwnedErrorName};
-use zvariant::Error as VariantError;
+use zbus_names::{Error as NamesError, InterfaceName, OwnedErrorName};
+use zvariant::{Error as VariantError, ObjectPath};
 
-use crate::{fdo, Message, MessageType};
+use crate::{
+    fdo,
+    message::{Message, Type},
+};
 
 /// The error type for `zbus`.
 ///
@@ -18,9 +19,6 @@ pub enum Error {
     InterfaceNotFound,
     /// Invalid D-Bus address.
     Address(String),
-    /// An I/O error.
-    #[deprecated(note = "Use `Error::InputOutput` instead")]
-    Io(io::Error),
     /// An I/O error.
     InputOutput(Arc<io::Error>),
     /// Invalid message field.
@@ -40,7 +38,7 @@ pub enum Error {
     /// A D-Bus method error reply.
     // According to the spec, there can be all kinds of details in D-Bus errors but nobody adds
     // anything more than a string description.
-    MethodError(OwnedErrorName, Option<String>, Arc<Message>),
+    MethodError(OwnedErrorName, Option<String>, Message),
     /// A required field is missing in the message headers.
     MissingField,
     /// Invalid D-Bus GUID.
@@ -49,13 +47,6 @@ pub enum Error {
     Unsupported,
     /// A [`fdo::Error`] transformed into [`Error`].
     FDO(Box<fdo::Error>),
-    #[cfg(feature = "xml")]
-    /// An XML error
-    SerdeXml(serde_xml_rs::Error),
-    #[cfg(feature = "quick-xml")]
-    /// An XML error from quick_xml
-    QuickXml(DeError),
-    NoBodySignature,
     /// The requested name was already claimed by another peer.
     NameTaken,
     /// Invalid [match rule][MR] string.
@@ -66,6 +57,10 @@ pub enum Error {
     Failure(String),
     /// A required parameter was missing.
     MissingParameter(&'static str),
+    /// Serial number in the message header is 0 (which is invalid).
+    InvalidSerial,
+    /// The given interface already exists at the given path.
+    InterfaceExists(InterfaceName<'static>, ObjectPath<'static>),
 }
 
 assert_impl_all!(Error: Send, Sync, Unpin);
@@ -82,22 +77,17 @@ impl PartialEq for Error {
             (Self::MethodError(_, _, _), Self::MethodError(_, _, _)) => true,
             (Self::MissingField, Self::MissingField) => true,
             (Self::InvalidGUID, Self::InvalidGUID) => true,
+            (Self::InvalidSerial, Self::InvalidSerial) => true,
             (Self::Unsupported, Self::Unsupported) => true,
             (Self::FDO(s), Self::FDO(o)) => s == o,
-            (Self::NoBodySignature, Self::NoBodySignature) => true,
             (Self::InvalidField, Self::InvalidField) => true,
             (Self::InvalidMatchRule, Self::InvalidMatchRule) => true,
             (Self::Variant(s), Self::Variant(o)) => s == o,
             (Self::Names(s), Self::Names(o)) => s == o,
             (Self::NameTaken, Self::NameTaken) => true,
-            #[allow(deprecated)]
-            (Error::Io(_), Self::Io(_)) => false,
             (Error::InputOutput(_), Self::InputOutput(_)) => false,
-            #[cfg(feature = "xml")]
-            (Self::SerdeXml(_), Self::SerdeXml(_)) => false,
-            #[cfg(feature = "quick-xml")]
-            (Self::QuickXml(_), Self::QuickXml(_)) => false,
             (Self::Failure(s1), Self::Failure(s2)) => s1 == s2,
+            (Self::InterfaceExists(s1, s2), Self::InterfaceExists(o1, o2)) => s1 == o1 && s2 == o2,
             (_, _) => false,
         }
     }
@@ -108,8 +98,6 @@ impl error::Error for Error {
         match self {
             Error::InterfaceNotFound => None,
             Error::Address(_) => None,
-            #[allow(deprecated)]
-            Error::Io(e) => Some(e),
             Error::InputOutput(e) => Some(e),
             Error::ExcessData => None,
             Error::Handshake(_) => None,
@@ -121,17 +109,14 @@ impl error::Error for Error {
             Error::InvalidGUID => None,
             Error::Unsupported => None,
             Error::FDO(e) => Some(e),
-            #[cfg(feature = "xml")]
-            Error::SerdeXml(e) => Some(e),
-            #[cfg(feature = "quick-xml")]
-            Error::QuickXml(e) => Some(e),
-            Error::NoBodySignature => None,
             Error::InvalidField => None,
             Error::MissingField => None,
             Error::NameTaken => None,
             Error::InvalidMatchRule => None,
             Error::Failure(_) => None,
             Error::MissingParameter(_) => None,
+            Error::InvalidSerial => None,
+            Error::InterfaceExists(_, _) => None,
         }
     }
 }
@@ -142,8 +127,6 @@ impl fmt::Display for Error {
             Error::InterfaceNotFound => write!(f, "Interface not found"),
             Error::Address(e) => write!(f, "address error: {e}"),
             Error::ExcessData => write!(f, "excess data"),
-            #[allow(deprecated)]
-            Error::Io(e) => write!(f, "I/O error: {e}"),
             Error::InputOutput(e) => write!(f, "I/O error: {e}"),
             Error::Handshake(e) => write!(f, "D-Bus handshake failed: {e}"),
             Error::IncorrectEndian => write!(f, "incorrect endian"),
@@ -161,17 +144,14 @@ impl fmt::Display for Error {
             Error::InvalidGUID => write!(f, "Invalid GUID"),
             Error::Unsupported => write!(f, "Connection support is lacking"),
             Error::FDO(e) => write!(f, "{e}"),
-            #[cfg(feature = "xml")]
-            Error::SerdeXml(e) => write!(f, "XML error: {}", e),
-            #[cfg(feature = "quick-xml")]
-            Error::QuickXml(e) => write!(f, "XML error: {e}"),
-            Error::NoBodySignature => write!(f, "missing body signature in the message"),
             Error::NameTaken => write!(f, "name already taken on the bus"),
             Error::InvalidMatchRule => write!(f, "Invalid match rule string"),
             Error::Failure(e) => write!(f, "{e}"),
             Error::MissingParameter(p) => {
                 write!(f, "Parameter `{}` was not specified but it is required", p)
             }
+            Error::InvalidSerial => write!(f, "Serial number in the message header is 0"),
+            Error::InterfaceExists(i, p) => write!(f, "Interface `{i}` already exists at `{p}`"),
         }
     }
 }
@@ -182,8 +162,6 @@ impl Clone for Error {
             Error::InterfaceNotFound => Error::InterfaceNotFound,
             Error::Address(e) => Error::Address(e.clone()),
             Error::ExcessData => Error::ExcessData,
-            #[allow(deprecated)]
-            Error::Io(e) => Error::Io(io::Error::new(e.kind(), e.to_string())),
             Error::InputOutput(e) => Error::InputOutput(e.clone()),
             Error::Handshake(e) => Error::Handshake(e.clone()),
             Error::IncorrectEndian => Error::IncorrectEndian,
@@ -198,16 +176,12 @@ impl Clone for Error {
             Error::InvalidGUID => Error::InvalidGUID,
             Error::Unsupported => Error::Unsupported,
             Error::FDO(e) => Error::FDO(e.clone()),
-            #[cfg(feature = "xml")]
-            Error::SerdeXml(e) => Error::Failure(e.to_string()),
-            #[cfg(feature = "quick-xml")]
-            // Until https://github.com/tafia/quick-xml/pull/521 is merged and released.
-            Error::QuickXml(e) => Error::QuickXml(e.clone()),
-            Error::NoBodySignature => Error::NoBodySignature,
             Error::NameTaken => Error::NameTaken,
             Error::InvalidMatchRule => Error::InvalidMatchRule,
             Error::Failure(e) => Error::Failure(e.clone()),
             Error::MissingParameter(p) => Error::MissingParameter(p),
+            Error::InvalidSerial => Error::InvalidSerial,
+            Error::InterfaceExists(i, p) => Error::InterfaceExists(i.clone(), p.clone()),
         }
     }
 }
@@ -249,20 +223,6 @@ impl From<fdo::Error> for Error {
     }
 }
 
-#[cfg(feature = "xml")]
-impl From<serde_xml_rs::Error> for Error {
-    fn from(val: serde_xml_rs::Error) -> Self {
-        Error::SerdeXml(val)
-    }
-}
-
-#[cfg(feature = "quick-xml")]
-impl From<DeError> for Error {
-    fn from(val: DeError) -> Self {
-        Error::QuickXml(val)
-    }
-}
-
 impl From<Infallible> for Error {
     fn from(i: Infallible) -> Self {
         match i {}
@@ -272,27 +232,16 @@ impl From<Infallible> for Error {
 // For messages that are D-Bus error returns
 impl From<Message> for Error {
     fn from(message: Message) -> Error {
-        Self::from(Arc::new(message))
-    }
-}
-
-impl From<Arc<Message>> for Error {
-    fn from(message: Arc<Message>) -> Error {
         // FIXME: Instead of checking this, we should have Method as trait and specific types for
         // each message type.
-        let header = match message.header() {
-            Ok(header) => header,
-            Err(e) => {
-                return e;
-            }
-        };
-        if header.primary().msg_type() != MessageType::Error {
+        let header = message.header();
+        if header.primary().msg_type() != Type::Error {
             return Error::InvalidReply;
         }
 
-        if let Ok(Some(name)) = header.error_name() {
+        if let Some(name) = header.error_name() {
             let name = name.to_owned().into();
-            match message.body_unchecked::<&str>() {
+            match message.body().deserialize_unchecked::<&str>() {
                 Ok(detail) => Error::MethodError(name, Some(String::from(detail)), message),
                 Err(_) => Error::MethodError(name, None, message),
             }

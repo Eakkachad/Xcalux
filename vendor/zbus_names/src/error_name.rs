@@ -1,10 +1,12 @@
-use crate::{utils::impl_try_from, Error, Result};
+use crate::{
+    utils::{impl_str_basic, impl_try_from},
+    Error, Result,
+};
 use serde::{de, Deserialize, Serialize};
 use static_assertions::assert_impl_all;
 use std::{
     borrow::{Borrow, Cow},
-    convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     ops::Deref,
     sync::Arc,
 };
@@ -17,7 +19,6 @@ use zvariant::{NoneValue, OwnedValue, Str, Type, Value};
 /// # Examples
 ///
 /// ```
-/// use core::convert::TryFrom;
 /// use zbus_names::ErrorName;
 ///
 /// // Valid error names.
@@ -46,8 +47,10 @@ pub struct ErrorName<'name>(Str<'name>);
 
 assert_impl_all!(ErrorName<'_>: Send, Sync, Unpin);
 
+impl_str_basic!(ErrorName<'_>);
+
 impl<'name> ErrorName<'name> {
-    /// A borrowed clone (never allocates, unlike clone).
+    /// This is faster than `Clone::clone` when `self` contains owned data.
     pub fn as_ref(&self) -> ErrorName<'_> {
         ErrorName(self.0.as_ref())
     }
@@ -241,12 +244,12 @@ impl<'name> NoneValue for ErrorName<'name> {
 }
 
 /// Owned sibling of [`ErrorName`].
-#[derive(
-    Clone, Debug, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue,
-)]
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue)]
 pub struct OwnedErrorName(#[serde(borrow)] ErrorName<'static>);
 
 assert_impl_all!(OwnedErrorName: Send, Sync, Unpin);
+
+impl_str_basic!(OwnedErrorName);
 
 impl OwnedErrorName {
     /// Convert to the inner `ErrorName`, consuming `self`.
@@ -274,7 +277,7 @@ impl Borrow<str> for OwnedErrorName {
     }
 }
 
-impl From<OwnedErrorName> for ErrorName<'static> {
+impl From<OwnedErrorName> for ErrorName<'_> {
     fn from(o: OwnedErrorName) -> Self {
         o.into_inner()
     }
@@ -292,7 +295,7 @@ impl From<ErrorName<'_>> for OwnedErrorName {
     }
 }
 
-impl From<OwnedErrorName> for Str<'static> {
+impl From<OwnedErrorName> for Str<'_> {
     fn from(value: OwnedErrorName) -> Self {
         value.into_inner().0
     }
@@ -321,9 +324,17 @@ impl PartialEq<ErrorName<'_>> for OwnedErrorName {
     }
 }
 
+impl Debug for OwnedErrorName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OwnedErrorName")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+
 impl Display for OwnedErrorName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        ErrorName::from(self).fmt(f)
+        Display::fmt(&ErrorName::from(self), f)
     }
 }
 

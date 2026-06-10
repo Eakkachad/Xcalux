@@ -1,5 +1,4 @@
 use std::{
-    convert::TryInto,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -13,8 +12,9 @@ use static_assertions::assert_impl_all;
 use tracing::warn;
 
 use crate::{
-    AsyncDrop, Connection, ConnectionInner, MatchRule, Message, MessageSequence, OwnedMatchRule,
-    Result,
+    connection::ConnectionInner,
+    message::{Message, Sequence},
+    AsyncDrop, Connection, MatchRule, OwnedMatchRule, Result,
 };
 
 /// A [`stream::Stream`] implementation that yields [`Message`] items.
@@ -64,7 +64,7 @@ impl MessageStream {
     /// # zbus::block_on(async {
     /// let conn = Connection::session().await?;
     /// let rule = MatchRule::builder()
-    ///     .msg_type(zbus::MessageType::Signal)
+    ///     .msg_type(zbus::message::Type::Signal)
     ///     .sender("org.freedesktop.DBus")?
     ///     .interface("org.freedesktop.DBus")?
     ///     .member("NameOwnerChanged")?
@@ -165,7 +165,7 @@ impl MessageStream {
     }
 
     pub(crate) fn for_subscription_channel(
-        msg_receiver: ActiveReceiver<Result<Arc<Message>>>,
+        msg_receiver: ActiveReceiver<Result<Message>>,
         rule: Option<OwnedMatchRule>,
         conn: &Connection,
     ) -> Self {
@@ -182,7 +182,7 @@ impl MessageStream {
 }
 
 impl stream::Stream for MessageStream {
-    type Item = Result<Arc<Message>>;
+    type Item = Result<Message>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
@@ -192,8 +192,8 @@ impl stream::Stream for MessageStream {
 }
 
 impl OrderedStream for MessageStream {
-    type Data = Result<Arc<Message>>;
-    type Ordering = MessageSequence;
+    type Data = Result<Message>;
+    type Ordering = Sequence;
 
     fn poll_next_before(
         self: Pin<&mut Self>,
@@ -204,7 +204,7 @@ impl OrderedStream for MessageStream {
 
         match stream::Stream::poll_next(Pin::new(this), cx) {
             Poll::Pending if before.is_some() => {
-                // Assume the provided MessageSequence in before was obtained from a Message
+                // Assume the provided Sequence in before was obtained from a Message
                 // associated with our Connection (because that's the only supported use case).
                 // Because there is only one socket-reader task, any messages that would have been
                 // ordered before that message would have already been sitting in the broadcast
@@ -222,7 +222,7 @@ impl OrderedStream for MessageStream {
                 data: Ok(msg),
             }),
             Poll::Ready(Some(Err(e))) => Poll::Ready(PollResult::Item {
-                ordering: MessageSequence::LAST,
+                ordering: Sequence::LAST,
                 data: Err(e),
             }),
             Poll::Ready(None) => Poll::Ready(PollResult::Terminated),
@@ -274,7 +274,7 @@ impl From<&MessageStream> for Connection {
 #[derive(Clone, Debug)]
 struct Inner {
     conn_inner: Arc<ConnectionInner>,
-    msg_receiver: ActiveReceiver<Result<Arc<Message>>>,
+    msg_receiver: ActiveReceiver<Result<Message>>,
     match_rule: Option<OwnedMatchRule>,
 }
 

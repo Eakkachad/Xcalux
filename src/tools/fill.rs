@@ -246,6 +246,7 @@ fn is_seed_same_as_fill(target: [u16; 4], fill: [u16; 4], options: &FillOptions)
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn flood_fill(
     layer: &mut Layer,
     all_layers: &[&Layer],
@@ -272,6 +273,8 @@ pub fn flood_fill(
             return Vec::new();
         }
     }
+
+    let ref_layer = all_layers.iter().find(|l| l.id == layer.id).copied().unwrap_or(layer);
 
     let mut visited: std::collections::HashMap<(i32, i32), [u64; 64]> =
         std::collections::HashMap::new();
@@ -307,7 +310,7 @@ pub fn flood_fill(
         if is_visited(&visited, cx, cy) {
             continue;
         }
-        let factor = match is_fillable(all_layers, layer, cx, cy, target_color, options) {
+        let factor = match is_fillable(all_layers, ref_layer, cx, cy, target_color, options) {
             Some(f) => f,
             None => continue,
         };
@@ -323,7 +326,7 @@ pub fn flood_fill(
             if is_visited(&visited, nx, cy) {
                 break;
             }
-            let f = match is_fillable(all_layers, layer, nx, cy, target_color, options) {
+            let f = match is_fillable(all_layers, ref_layer, nx, cy, target_color, options) {
                 Some(val) => val,
                 None => break,
             };
@@ -343,7 +346,7 @@ pub fn flood_fill(
             if is_visited(&visited, nx, cy) {
                 break;
             }
-            let f = match is_fillable(all_layers, layer, nx, cy, target_color, options) {
+            let f = match is_fillable(all_layers, ref_layer, nx, cy, target_color, options) {
                 Some(val) => val,
                 None => break,
             };
@@ -362,7 +365,7 @@ pub fn flood_fill(
             } else if x == right {
                 right_factor
             } else {
-                is_fillable(all_layers, layer, x, cy, target_color, options).unwrap_or(1.0)
+                is_fillable(all_layers, ref_layer, x, cy, target_color, options).unwrap_or(1.0)
             };
             pixels_to_fill.push(((x, cy), f));
             mark_visited(&mut visited, x, cy);
@@ -373,7 +376,7 @@ pub fn flood_fill(
             let ny = cy - 1;
             let mut in_span = false;
             for x in left..=right {
-                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options)
+                let fillable = is_fillable(all_layers, ref_layer, x, ny, target_color, options)
                     .is_some()
                     && (!options.respect_selection
                         || !selection.is_active
@@ -395,7 +398,7 @@ pub fn flood_fill(
             let ny = cy + 1;
             let mut in_span = false;
             for x in left..=right {
-                let fillable = is_fillable(all_layers, layer, x, ny, target_color, options)
+                let fillable = is_fillable(all_layers, ref_layer, x, ny, target_color, options)
                     .is_some()
                     && (!options.respect_selection
                         || !selection.is_active
@@ -418,29 +421,18 @@ pub fn flood_fill(
     for ((x, y), f) in pixels_to_fill {
         let mut color = fill_color;
         color[3] = (fill_color[3] as f32 * f) as u16;
-        set_pixel(layer, x, y, color, options, canvas_width, canvas_height);
-
-        if options.expand_px > 0 {
-            for dy in -(options.expand_px as i32)..=options.expand_px as i32 {
-                for dx in -(options.expand_px as i32)..=options.expand_px as i32 {
-                    let nx = x + dx;
-                    let ny = y + dy;
-                    if nx >= 0 && nx < canvas_width && ny >= 0 && ny < canvas_height {
-                        let tx = nx.div_euclid(64);
-                        let ty = ny.div_euclid(64);
-                        if !dirty_tiles.contains(&(tx, ty)) {
-                            dirty_tiles.push((tx, ty));
-                        }
-                    }
-                }
-            }
-        } else {
-            let tx = x.div_euclid(64);
-            let ty = y.div_euclid(64);
-            if !dirty_tiles.contains(&(tx, ty)) {
-                dirty_tiles.push((tx, ty));
-            }
-        }
+        set_pixel(
+            layer,
+            all_layers,
+            x,
+            y,
+            color,
+            target_color,
+            options,
+            canvas_width,
+            canvas_height,
+            &mut dirty_tiles,
+        );
     }
 
     dirty_tiles
@@ -448,12 +440,15 @@ pub fn flood_fill(
 
 fn set_pixel(
     layer: &mut Layer,
+    all_layers: &[&Layer],
     x: i32,
     y: i32,
     color: [u16; 4],
+    target_color: [u16; 4],
     options: &FillOptions,
     canvas_width: i32,
     canvas_height: i32,
+    dirty_tiles: &mut Vec<(i32, i32)>,
 ) {
     if x < 0 || x >= canvas_width || y < 0 || y >= canvas_height {
         return;
@@ -474,23 +469,88 @@ fn set_pixel(
     }
 
     if options.expand_px > 0 {
-        for dy in -(options.expand_px as i32)..=(options.expand_px as i32) {
-            for dx in -(options.expand_px as i32)..=(options.expand_px as i32) {
-                let nx = x + dx;
-                let ny = y + dy;
-                if nx >= 0 && nx < canvas_width && ny >= 0 && ny < canvas_height {
-                    let ntx = nx.div_euclid(64);
-                    let nty = ny.div_euclid(64);
-                    let nlx = nx.rem_euclid(64) as usize;
-                    let nly = ny.rem_euclid(64) as usize;
-                    let ntile = layer.tiles.entry((ntx, nty)).or_default();
-                    ntile.pixels[nly][nlx] = blend_colors(color, ntile.pixels[nly][nlx]);
-                    ntile.is_dirty = true;
+        if let Some(ref_layer) = all_layers.iter().find(|l| l.id == layer.id).copied() {
+            for dy in -(options.expand_px as i32)..=(options.expand_px as i32) {
+                for dx in -(options.expand_px as i32)..=(options.expand_px as i32) {
+                    if dx * dx + dy * dy > (options.expand_px as i32) * (options.expand_px as i32) {
+                        continue;
+                    }
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_width && ny >= 0 && ny < canvas_height {
+                        if is_fillable(all_layers, ref_layer, nx, ny, target_color, options).is_some() {
+                            let ntx = nx.div_euclid(64);
+                            let nty = ny.div_euclid(64);
+                            let nlx = nx.rem_euclid(64) as usize;
+                            let nly = ny.rem_euclid(64) as usize;
+                            let ntile = layer.tiles.entry((ntx, nty)).or_default();
+                            ntile.pixels[nly][nlx] = blend_colors(color, ntile.pixels[nly][nlx]);
+                            ntile.is_dirty = true;
+                            if !dirty_tiles.contains(&(ntx, nty)) {
+                                dirty_tiles.push((ntx, nty));
+                            }
+                        }
+                    }
                 }
             }
         }
     } else {
         tile.pixels[ly][lx] = blend_colors(color, tile.pixels[ly][lx]);
         tile.is_dirty = true;
+        if !dirty_tiles.contains(&(tx, ty)) {
+            dirty_tiles.push((tx, ty));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fill_expansion_boundaries() {
+        let mut layer = Layer::new(1, "Test Layer".to_string());
+        // Setup a vertical boundary line at x=10 (from y=0..200)
+        // Everything is transparent initially.
+        for y in 0..200i32 {
+            let ty = y.div_euclid(64);
+            let ly = y.rem_euclid(64) as usize;
+            let tile = layer.tiles.entry((0, ty)).or_default();
+            tile.pixels[ly][10] = [0, 0, 0, 32768];
+        }
+
+        let cloned_layer = layer.clone();
+        let layers_ref = vec![&cloned_layer];
+        let selection = SelectionMask::new();
+        
+        let mut options = FillOptions::default();
+        options.expand_px = 1; // expansion enabled
+        options.tolerance = 32;
+
+        let fill_color = [32768, 0, 0, 32768]; // Red
+
+        // Fill starting at (5, 5) which is to the left of the line
+        flood_fill(
+            &mut layer,
+            &layers_ref,
+            &selection,
+            5,
+            5,
+            fill_color,
+            &options,
+            200,
+            200,
+        );
+
+        let final_tile = layer.tiles.get(&(0, 0)).unwrap();
+
+        // The filled area should reach x=9
+        assert_eq!(final_tile.pixels[5][9], fill_color, "Pixel x=9 should be filled with red");
+
+        // The line at x=10 should NOT be overwritten (it should still be black)
+        assert_eq!(final_tile.pixels[5][10], [0, 0, 0, 32768], "Line at x=10 should remain black");
+
+        // The pixel past the line (x=11) should NOT be filled (it should remain transparent)
+        assert_eq!(final_tile.pixels[5][11], [0, 0, 0, 0], "Pixel at x=11 should remain transparent");
     }
 }

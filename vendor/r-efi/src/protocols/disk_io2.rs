@@ -21,32 +21,32 @@ pub struct Token {
     transaction_status: crate::base::Status,
 }
 
-pub type ProtocolCancel = unsafe extern "efiapi" fn(
+pub type ProtocolCancel = eficall! {fn(
     *mut Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolReadDiskEx = unsafe extern "efiapi" fn(
+pub type ProtocolReadDiskEx = eficall! {fn(
     *mut Protocol,
     u32,
     u64,
     *mut Token,
     usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolWriteDiskEx = unsafe extern "efiapi" fn(
+pub type ProtocolWriteDiskEx = eficall! {fn(
     *mut Protocol,
     u32,
     u64,
     *mut Token,
     usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolFlushDiskEx = unsafe extern "efiapi" fn(
+pub type ProtocolFlushDiskEx = eficall! {fn(
     *mut Protocol,
     *mut Token,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

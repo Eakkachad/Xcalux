@@ -44,7 +44,7 @@ impl Dir {
 
     /// Opens the given path as with `fcntl::openat`.
     pub fn openat<P: ?Sized + NixPath>(
-        dirfd: RawFd,
+        dirfd: Option<RawFd>,
         path: &P,
         oflag: OFlag,
         mode: sys::stat::Mode,
@@ -59,7 +59,7 @@ impl Dir {
         Dir::from_fd(fd.into_raw_fd())
     }
 
-    /// Converts from a file descriptor, closing it on success or failure.
+    /// Converts from a file descriptor, closing it on failure.
     #[doc(alias("fdopendir"))]
     pub fn from_fd(fd: RawFd) -> Result<Self> {
         let d = ptr::NonNull::new(unsafe { libc::fdopendir(fd) }).ok_or_else(
@@ -224,16 +224,14 @@ impl Entry {
     #[allow(clippy::unnecessary_cast)]
     pub fn ino(&self) -> u64 {
         cfg_if! {
-            if #[cfg(any(target_os = "android",
+            if #[cfg(any(target_os = "aix",
                          target_os = "emscripten",
                          target_os = "fuchsia",
                          target_os = "haiku",
-                         target_os = "illumos",
-                         target_os = "ios",
-                         target_os = "l4re",
-                         target_os = "linux",
-                         target_os = "macos",
-                         target_os = "solaris"))] {
+                         target_os = "hurd",
+                         solarish,
+                         linux_android,
+                         apple_targets))] {
                 self.0.d_ino as u64
             } else {
                 u64::from(self.0.d_fileno)
@@ -243,7 +241,7 @@ impl Entry {
 
     /// Returns the bare file name of this directory entry without any other leading path component.
     pub fn file_name(&self) -> &ffi::CStr {
-        unsafe { ::std::ffi::CStr::from_ptr(self.0.d_name.as_ptr()) }
+        unsafe { ffi::CStr::from_ptr(self.0.d_name.as_ptr()) }
     }
 
     /// Returns the type of this directory entry, if known.
@@ -252,11 +250,7 @@ impl Entry {
     /// notably, some Linux filesystems don't implement this. The caller should use `stat` or
     /// `fstat` if this returns `None`.
     pub fn file_type(&self) -> Option<Type> {
-        #[cfg(not(any(
-            target_os = "illumos",
-            target_os = "solaris",
-            target_os = "haiku"
-        )))]
+        #[cfg(not(any(solarish, target_os = "aix", target_os = "haiku")))]
         match self.0.d_type {
             libc::DT_FIFO => Some(Type::Fifo),
             libc::DT_CHR => Some(Type::CharacterDevice),
@@ -269,11 +263,7 @@ impl Entry {
         }
 
         // illumos, Solaris, and Haiku systems do not have the d_type member at all:
-        #[cfg(any(
-            target_os = "illumos",
-            target_os = "solaris",
-            target_os = "haiku"
-        ))]
+        #[cfg(any(solarish, target_os = "aix", target_os = "haiku"))]
         None
     }
 }

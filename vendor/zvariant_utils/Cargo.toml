@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
-rust-version = "1.60"
+edition = "2021"
+rust-version = "1.75"
 name = "zvariant_utils"
-version = "1.0.1"
+version = "2.1.0"
 authors = [
     "Zeeshan Ali Khan <zeeshanak@gnome.org>",
     "turbocooler <turbocooler@cocaine.ninja>",
@@ -33,16 +33,15 @@ categories = [
 ]
 license = "MIT"
 repository = "https://github.com/dbus2/zbus/"
-resolver = "2"
 
 [dependencies.proc-macro2]
-version = "1.0"
+version = "1.0.81"
 
 [dependencies.quote]
-version = "1.0.21"
+version = "1.0.36"
 
 [dependencies.syn]
-version = "1.0.103"
+version = "2.0.64"
 features = [
     "extra-traits",
     "full",

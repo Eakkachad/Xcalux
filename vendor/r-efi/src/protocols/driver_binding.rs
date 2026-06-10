@@ -12,24 +12,24 @@ pub const PROTOCOL_GUID: crate::base::Guid = crate::base::Guid::from_fields(
     &[0x0c, 0x09, 0x26, 0x1e, 0x9f, 0x71],
 );
 
-pub type ProtocolSupported = unsafe extern "efiapi" fn(
+pub type ProtocolSupported = eficall! {fn(
     *mut Protocol,
     crate::base::Handle,
     *mut crate::protocols::device_path::Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolStart = unsafe extern "efiapi" fn(
+pub type ProtocolStart = eficall! {fn(
     *mut Protocol,
     crate::base::Handle,
     *mut crate::protocols::device_path::Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolStop = unsafe extern "efiapi" fn(
+pub type ProtocolStop = eficall! {fn(
     *mut Protocol,
     crate::base::Handle,
     usize,
     *mut crate::base::Handle,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

@@ -57,21 +57,21 @@ pub struct ProcessorInformation {
     pub extended_information: ExtendedProcessorInformation,
 }
 
-pub type ApProcedure = unsafe extern "efiapi" fn(*mut core::ffi::c_void);
+pub type ApProcedure = eficall! {fn(*mut core::ffi::c_void)};
 
-pub type GetNumberOfProcessors = unsafe extern "efiapi" fn(
+pub type GetNumberOfProcessors = eficall! {fn(
     *mut Protocol,
     *mut usize,
     *mut usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type GetProcessorInfo = unsafe extern "efiapi" fn(
+pub type GetProcessorInfo = eficall! {fn(
     *mut Protocol,
     usize,
     *mut ProcessorInformation,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type StartupAllAps = unsafe extern "efiapi" fn(
+pub type StartupAllAps = eficall! {fn(
     *mut Protocol,
     ApProcedure,
     crate::base::Boolean,
@@ -79,9 +79,9 @@ pub type StartupAllAps = unsafe extern "efiapi" fn(
     usize,
     *mut core::ffi::c_void,
     *mut *mut usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type StartupThisAp = unsafe extern "efiapi" fn(
+pub type StartupThisAp = eficall! {fn(
     *mut Protocol,
     ApProcedure,
     usize,
@@ -89,25 +89,25 @@ pub type StartupThisAp = unsafe extern "efiapi" fn(
     usize,
     *mut core::ffi::c_void,
     *mut crate::base::Boolean,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type SwitchBsp = unsafe extern "efiapi" fn(
+pub type SwitchBsp = eficall! {fn(
     *mut Protocol,
     usize,
     crate::base::Boolean,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type EnableDisableAp = unsafe extern "efiapi" fn(
+pub type EnableDisableAp = eficall! {fn(
     *mut Protocol,
     usize,
     crate::base::Boolean,
     *mut u32,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type WhoAmI = unsafe extern "efiapi" fn(
+pub type WhoAmI = eficall! {fn(
     *mut Protocol,
     *mut usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

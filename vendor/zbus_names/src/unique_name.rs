@@ -1,10 +1,12 @@
-use crate::{utils::impl_try_from, Error, Result};
+use crate::{
+    utils::{impl_str_basic, impl_try_from},
+    Error, Result,
+};
 use serde::{de, Deserialize, Serialize};
 use static_assertions::assert_impl_all;
 use std::{
     borrow::{Borrow, Cow},
-    convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     ops::Deref,
     sync::Arc,
 };
@@ -15,7 +17,6 @@ use zvariant::{NoneValue, OwnedValue, Str, Type, Value};
 /// # Examples
 ///
 /// ```
-/// use core::convert::TryFrom;
 /// use zbus_names::UniqueName;
 ///
 /// // Valid unique names.
@@ -41,8 +42,10 @@ pub struct UniqueName<'name>(Str<'name>);
 
 assert_impl_all!(UniqueName<'_>: Send, Sync, Unpin);
 
+impl_str_basic!(UniqueName<'_>);
+
 impl<'name> UniqueName<'name> {
-    /// A borrowed clone (never allocates, unlike clone).
+    /// This is faster than `Clone::clone` when `self` contains owned data.
     pub fn as_ref(&self) -> UniqueName<'_> {
         UniqueName(self.0.as_ref())
     }
@@ -233,12 +236,12 @@ impl<'name> NoneValue for UniqueName<'name> {
 }
 
 /// Owned sibling of [`UniqueName`].
-#[derive(
-    Clone, Debug, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue,
-)]
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue)]
 pub struct OwnedUniqueName(#[serde(borrow)] UniqueName<'static>);
 
 assert_impl_all!(OwnedUniqueName: Send, Sync, Unpin);
+
+impl_str_basic!(OwnedUniqueName);
 
 impl OwnedUniqueName {
     /// Convert to the inner `UniqueName`, consuming `self`.
@@ -266,7 +269,7 @@ impl Borrow<str> for OwnedUniqueName {
     }
 }
 
-impl From<OwnedUniqueName> for UniqueName<'static> {
+impl From<OwnedUniqueName> for UniqueName<'_> {
     fn from(o: OwnedUniqueName) -> Self {
         o.into_inner()
     }
@@ -291,7 +294,7 @@ impl_try_from! {
     try_from: [&'s str, String, Arc<str>, Cow<'s, str>, Str<'s>],
 }
 
-impl From<OwnedUniqueName> for Str<'static> {
+impl From<OwnedUniqueName> for Str<'_> {
     fn from(value: OwnedUniqueName) -> Self {
         value.into_inner().0
     }
@@ -328,8 +331,16 @@ impl NoneValue for OwnedUniqueName {
     }
 }
 
+impl Debug for OwnedUniqueName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OwnedUniqueName")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+
 impl Display for OwnedUniqueName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        UniqueName::from(self).fmt(f)
+        Display::fmt(&UniqueName::from(self), f)
     }
 }

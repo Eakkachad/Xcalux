@@ -1,4 +1,4 @@
-use core::{convert::TryFrom, fmt::Debug, str};
+use core::{fmt::Debug, str};
 use serde::{
     de::{self, Deserialize, Deserializer, Visitor},
     ser::{Serialize, Serializer},
@@ -6,7 +6,7 @@ use serde::{
 use static_assertions::assert_impl_all;
 use std::borrow::Cow;
 
-use crate::{Basic, EncodingFormat, Error, Result, Signature, Str, Type};
+use crate::{serialized::Format, Basic, Error, Result, Signature, Str, Type};
 
 /// String that identifies objects at a given destination on the D-Bus bus.
 ///
@@ -15,7 +15,6 @@ use crate::{Basic, EncodingFormat, Error, Result, Signature, Str, Type};
 /// # Examples
 ///
 /// ```
-/// use core::convert::TryFrom;
 /// use zvariant::ObjectPath;
 ///
 /// // Valid object paths
@@ -33,13 +32,13 @@ use crate::{Basic, EncodingFormat, Error, Result, Signature, Str, Type};
 /// ObjectPath::try_from("/end/with/slash/").unwrap_err();
 /// ObjectPath::try_from("/ha.d").unwrap_err();
 /// ```
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(PartialEq, Eq, Hash, Clone, PartialOrd, Ord)]
 pub struct ObjectPath<'a>(Str<'a>);
 
 assert_impl_all!(ObjectPath<'_>: Send, Sync, Unpin);
 
 impl<'a> ObjectPath<'a> {
-    /// A borrowed clone (this never allocates, unlike clone).
+    /// This is faster than `Clone::clone` when `self` contains owned data.
     pub fn as_ref(&self) -> ObjectPath<'_> {
         ObjectPath(self.0.as_ref())
     }
@@ -117,7 +116,7 @@ impl<'a> ObjectPath<'a> {
 
 impl std::default::Default for ObjectPath<'_> {
     fn default() -> Self {
-        ObjectPath::from_str_unchecked("/")
+        ObjectPath::from_static_str_unchecked("/")
     }
 }
 
@@ -125,11 +124,11 @@ impl<'a> Basic for ObjectPath<'a> {
     const SIGNATURE_CHAR: char = 'o';
     const SIGNATURE_STR: &'static str = "o";
 
-    fn alignment(format: EncodingFormat) -> usize {
+    fn alignment(format: Format) -> usize {
         match format {
-            EncodingFormat::DBus => <&str>::alignment(format),
+            Format::DBus => <&str>::alignment(format),
             #[cfg(feature = "gvariant")]
-            EncodingFormat::GVariant => 1,
+            Format::GVariant => 1,
         }
     }
 }
@@ -313,6 +312,15 @@ impl OwnedObjectPath {
     }
 }
 
+impl Basic for OwnedObjectPath {
+    const SIGNATURE_CHAR: char = ObjectPath::SIGNATURE_CHAR;
+    const SIGNATURE_STR: &'static str = ObjectPath::SIGNATURE_STR;
+
+    fn alignment(format: Format) -> usize {
+        ObjectPath::alignment(format)
+    }
+}
+
 impl std::ops::Deref for OwnedObjectPath {
     type Target = ObjectPath<'static>;
 
@@ -327,7 +335,7 @@ impl std::convert::From<OwnedObjectPath> for ObjectPath<'static> {
     }
 }
 
-impl std::convert::From<OwnedObjectPath> for crate::Value<'static> {
+impl std::convert::From<OwnedObjectPath> for crate::Value<'_> {
     fn from(o: OwnedObjectPath) -> Self {
         o.into_inner().into()
     }

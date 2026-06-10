@@ -5,7 +5,7 @@
 This crate provides API for encoding/decoding of data to/from [D-Bus wire format][dwf]. This binary
 wire format is simple and very efficient and hence useful outside of D-Bus context as well. A
 modified form of this format, [GVariant] is very commonly used for efficient storage of arbitrary
-data and is also supported by this crate.
+data and is also supported by this crate (if you enable `gvariant` cargo feature).
 
 Since version 2.0, the API is [serde]-based and hence you'll find it very intuitive if you're
 already familiar with serde. If you're not familiar with serde, you may want to first read its
@@ -19,35 +19,34 @@ Serialization and deserialization is achieved through the [toplevel functions]:
 
 ```rust
 use std::collections::HashMap;
-use zvariant::{EncodingContext as Context, from_slice, to_bytes, Type};
+use zvariant::{serialized::Context, to_bytes, Type, LE};
 use serde::{Deserialize, Serialize};
-use byteorder::LE;
 
 // All serialization and deserialization API, needs a context.
-let ctxt = Context::<LE>::new_dbus(0);
+let ctxt = Context::new_dbus(LE, 0);
 // You can also use the more efficient GVariant format:
-// let ctxt = Context::<LE>::new_gvariant(0);
+// let ctxt = Context::new_gvariant(LE, 0);
 
 // i16
 let encoded = to_bytes(ctxt, &42i16).unwrap();
-let decoded: i16 = from_slice(&encoded, ctxt).unwrap();
+let decoded: i16 = encoded.deserialize().unwrap().0;
 assert_eq!(decoded, 42);
 
 // strings
 let encoded = to_bytes(ctxt, &"hello").unwrap();
-let decoded: &str = from_slice(&encoded, ctxt).unwrap();
+let decoded: &str = encoded.deserialize().unwrap().0;
 assert_eq!(decoded, "hello");
 
 // tuples
 let t = ("hello", 42i32, true);
 let encoded = to_bytes(ctxt, &t).unwrap();
-let decoded: (&str, i32, bool) = from_slice(&encoded, ctxt).unwrap();
+let decoded: (&str, i32, bool) = encoded.deserialize().unwrap().0;
 assert_eq!(decoded, t);
 
 // Vec
 let v = vec!["hello", "world!"];
 let encoded = to_bytes(ctxt, &v).unwrap();
-let decoded: Vec<&str> = from_slice(&encoded, ctxt).unwrap();
+let decoded: Vec<&str> = encoded.deserialize().unwrap().0;
 assert_eq!(decoded, v);
 
 // Dictionary
@@ -55,7 +54,7 @@ let mut map: HashMap<i64, &str> = HashMap::new();
 map.insert(1, "123");
 map.insert(2, "456");
 let encoded = to_bytes(ctxt, &map).unwrap();
-let decoded: HashMap<i64, &str> = from_slice(&encoded, ctxt).unwrap();
+let decoded: HashMap<i64, &str> = encoded.deserialize().unwrap().0;
 assert_eq!(decoded[&1], "123");
 assert_eq!(decoded[&2], "456");
 
@@ -73,9 +72,9 @@ let s = Struct {
     field2: i64::max_value(),
     field3: "hello",
 };
-let ctxt = Context::<LE>::new_dbus(0);
+let ctxt = Context::new_dbus(LE, 0);
 let encoded = to_bytes(ctxt, &s).unwrap();
-let decoded: Struct = from_slice(&encoded, ctxt).unwrap();
+let decoded: Struct = encoded.deserialize().unwrap().0;
 assert_eq!(decoded, s);
 
 // It can handle enums too, just that all variants must have the same number and types of fields.
@@ -98,11 +97,14 @@ let e = Enum::Variant3 {
     f3: "hello",
 };
 let encoded = to_bytes(ctxt, &e).unwrap();
-let decoded: Enum = from_slice(&encoded, ctxt).unwrap();
+let decoded: Enum = encoded.deserialize().unwrap().0;
 assert_eq!(decoded, e);
 
-#[derive(Deserialize, Serialize, Type, PartialEq, Debug)]
-// W/o `repr` spec, `u32` is assumed.
+// Enum encoding can be adjusted by using the `serde_repr` crate
+// and by annotating the representation of the enum with `repr`.
+use serde_repr::{Serialize_repr, Deserialize_repr};
+
+#[derive(Deserialize_repr, Serialize_repr, Type, PartialEq, Debug)]
 #[repr(u8)]
 enum UnitEnum {
     Variant1,
@@ -112,7 +114,7 @@ enum UnitEnum {
 
 assert_eq!(UnitEnum::signature(), "y");
 let encoded = to_bytes(ctxt, &UnitEnum::Variant2).unwrap();
-let e: UnitEnum = from_slice(&encoded, ctxt).unwrap();
+let e: UnitEnum = encoded.deserialize().unwrap().0;
 assert_eq!(e, UnitEnum::Variant2);
 
 // Unit enums can also be (de)serialized as strings.
@@ -127,7 +129,7 @@ enum StrEnum {
 assert_eq!(StrEnum::signature(), "s");
 ```
 
-Apart from the obvious requirement of [`EncodingContext`] instance by the main serialization and
+Apart from the obvious requirement of [`serialized::Context`] instance by the main serialization and
 deserialization API, the type being serialized or deserialized must also implement `Type`
 trait in addition to [`Serialize`] or [`Deserialize`], respectively. Please refer to [`Type`
 module documentation] for more details.
@@ -160,15 +162,19 @@ accomplish. However, community contribution can change that. 😊
 
 | Feature | Description |
 | ---     | ----------- |
+| gvariant | Enable [GVariant] format support |
 | arrayvec | Implement `Type` for [`arrayvec::ArrayVec`] and [`arrayvec::ArrayString`] |
 | enumflags2 | Implement `Type` for [`enumflags2::BitFlags`]`<F>` |
+| option-as-array | Enable `Option<T>` (de)serialization using array encoding |
+
+`gvariant` features conflicts with `option-as-array` and hence should not be enabled together.
 
 [dwf]: https://dbus.freedesktop.org/doc/dbus-specification.html#message-protocol-marshaling
 [GVariant]: https://developer.gnome.org/documentation/specifications/gvariant-specification-1.0.html
 [serde]: https://crates.io/crates/serde
 [tutorial]: https://serde.rs/
 [toplevel functions]: https://docs.rs/zvariant/latest/zvariant/#functions
-[`EncodingContext`]: https://docs.rs/zvariant/latest/zvariant/struct.EncodingContext.html
+[`serialized::Context`]: https://docs.rs/zvariant/latest/serialized/struct.Context.html
 [`Serialize`]: https://docs.serde.rs/serde/trait.Serialize.html
 [`Deserialize`]: https://docs.serde.rs/serde/de/trait.Deserialize.html
 [`Type` module documentation]: https://docs.rs/zvariant/latest/zvariant/trait.Type.html

@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
-rust-version = "1.64"
+edition = "2021"
+rust-version = "1.75"
 name = "zvariant"
-version = "3.15.2"
+version = "4.2.0"
 authors = ["Zeeshan Ali Khan <zeeshanak@gnome.org>"]
 description = "D-Bus & GVariant encoding & decoding"
 readme = "README.md"
@@ -30,7 +30,6 @@ categories = [
 ]
 license = "MIT"
 repository = "https://github.com/dbus2/zbus/"
-resolver = "2"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -43,72 +42,75 @@ name = "benchmarks"
 harness = false
 
 [dependencies.arrayvec]
-version = "0.7.2"
+version = "0.7.4"
 features = ["serde"]
 optional = true
 
-[dependencies.byteorder]
-version = "1.4.3"
-
 [dependencies.chrono]
-version = "0.4.23"
+version = "0.4.38"
 features = ["serde"]
 optional = true
 default-features = false
 
+[dependencies.endi]
+version = "1.1.0"
+
 [dependencies.enumflags2]
-version = "0.7.7"
+version = "0.7.9"
 features = ["serde"]
 optional = true
 
-[dependencies.libc]
-version = "0.2.137"
+[dependencies.heapless]
+version = "0.8.0"
+features = ["serde"]
+optional = true
 
 [dependencies.serde]
-version = "1.0"
+version = "1.0.200"
 features = ["derive"]
 
 [dependencies.serde_bytes]
-version = "0.11"
+version = "0.11.14"
 optional = true
 
 [dependencies.static_assertions]
 version = "1.1.0"
 
 [dependencies.time]
-version = "0.3.16"
+version = "0.3.36"
 features = ["serde"]
 optional = true
 
 [dependencies.url]
-version = "2.3.1"
+version = "2.5.0"
 features = ["serde"]
 optional = true
 
 [dependencies.uuid]
-version = "1.2.1"
+version = "1.8.0"
 features = ["serde"]
 optional = true
 
 [dependencies.zvariant_derive]
-version = "=3.15.2"
+version = "=4.2.0"
 
 [dev-dependencies.criterion]
-version = "0.4"
+version = "0.5.1"
 
 [dev-dependencies.glib]
-version = "0.17.9"
+version = "0.20.0"
 
 [dev-dependencies.rand]
 version = "0.8.5"
 
 [dev-dependencies.serde_json]
-version = "1.0"
+version = "1.0.116"
 
 [dev-dependencies.serde_repr]
-version = "0.1.9"
+version = "0.1.19"
 
 [features]
-default = ["gvariant"]
+default = []
 gvariant = []
+option-as-array = []
 ostree-tests = ["gvariant"]

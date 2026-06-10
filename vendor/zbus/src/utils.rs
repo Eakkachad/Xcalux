@@ -17,6 +17,7 @@ pub(crate) fn padding_for_n_bytes(value: usize, align: usize) -> usize {
 /// type alias.  This is currently required because the macros for properties expect a Result
 /// return value, but the macro-generated `receive_` functions need to refer to the actual
 /// type without the associated error.
+#[doc(hidden)]
 pub trait ResultAdapter {
     type Ok;
     type Err;
@@ -36,13 +37,19 @@ pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
 #[cfg(feature = "tokio")]
 #[doc(hidden)]
 pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    static TOKIO_RT: once_cell::sync::Lazy<tokio::runtime::Runtime> =
-        once_cell::sync::Lazy::new(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_io()
-                .enable_time()
-                .build()
-                .expect("launch of single-threaded tokio runtime")
-        });
-    TOKIO_RT.block_on(future)
+    use std::sync::OnceLock;
+    static TOKIO_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    let runtime = TOKIO_RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .expect("launch of single-threaded tokio runtime")
+    });
+    runtime.block_on(future)
+}
+
+// If we're running inside a Flatpak sandbox.
+pub(crate) fn is_flatpak() -> bool {
+    std::env::var("FLATPAK_ID").is_ok()
 }

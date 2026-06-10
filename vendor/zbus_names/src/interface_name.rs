@@ -1,10 +1,12 @@
-use crate::{utils::impl_try_from, Error, Result};
+use crate::{
+    utils::{impl_str_basic, impl_try_from},
+    Error, Result,
+};
 use serde::{de, Deserialize, Serialize};
 use static_assertions::assert_impl_all;
 use std::{
     borrow::{Borrow, Cow},
-    convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     ops::Deref,
     sync::Arc,
 };
@@ -15,7 +17,6 @@ use zvariant::{NoneValue, OwnedValue, Str, Type, Value};
 /// # Examples
 ///
 /// ```
-/// use core::convert::TryFrom;
 /// use zbus_names::InterfaceName;
 ///
 /// // Valid interface names.
@@ -42,10 +43,12 @@ use zvariant::{NoneValue, OwnedValue, Str, Type, Value};
 )]
 pub struct InterfaceName<'name>(Str<'name>);
 
+impl_str_basic!(InterfaceName<'_>);
+
 assert_impl_all!(InterfaceName<'_>: Send, Sync, Unpin);
 
 impl<'name> InterfaceName<'name> {
-    /// A borrowed clone (never allocates, unlike clone).
+    /// This is faster than `Clone::clone` when `self` contains owned data.
     pub fn as_ref(&self) -> InterfaceName<'_> {
         InterfaceName(self.0.as_ref())
     }
@@ -239,12 +242,12 @@ impl<'name> NoneValue for InterfaceName<'name> {
 }
 
 /// Owned sibling of [`InterfaceName`].
-#[derive(
-    Clone, Debug, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue,
-)]
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue)]
 pub struct OwnedInterfaceName(#[serde(borrow)] InterfaceName<'static>);
 
 assert_impl_all!(OwnedInterfaceName: Send, Sync, Unpin);
+
+impl_str_basic!(OwnedInterfaceName);
 
 impl OwnedInterfaceName {
     /// Convert to the inner `InterfaceName`, consuming `self`.
@@ -272,7 +275,7 @@ impl Borrow<str> for OwnedInterfaceName {
     }
 }
 
-impl From<OwnedInterfaceName> for InterfaceName<'static> {
+impl From<OwnedInterfaceName> for InterfaceName<'_> {
     fn from(o: OwnedInterfaceName) -> Self {
         o.into_inner()
     }
@@ -290,7 +293,7 @@ impl From<InterfaceName<'_>> for OwnedInterfaceName {
     }
 }
 
-impl From<OwnedInterfaceName> for Str<'static> {
+impl From<OwnedInterfaceName> for Str<'_> {
     fn from(value: OwnedInterfaceName) -> Self {
         value.into_inner().0
     }
@@ -319,9 +322,17 @@ impl PartialEq<InterfaceName<'_>> for OwnedInterfaceName {
     }
 }
 
+impl Debug for OwnedInterfaceName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OwnedInterfaceName")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+
 impl Display for OwnedInterfaceName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        InterfaceName::from(self).fmt(f)
+        Display::fmt(&InterfaceName::from(self), f)
     }
 }
 

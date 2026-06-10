@@ -1,6 +1,6 @@
 use serde::{de, ser};
 use static_assertions::assert_impl_all;
-use std::{convert::Infallible, error, fmt, result, sync::Arc};
+use std::{convert::Infallible, error, fmt, io, result, sync::Arc};
 
 /// Enum representing the max depth exceeded error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,10 +40,7 @@ pub enum Error {
     Message(String),
 
     /// Wrapper for [`std::io::Error`](https://doc.rust-lang.org/std/io/struct.Error.html)
-    #[deprecated(note = "Use `Error::InputOutput` instead")]
-    Io(std::io::Error),
-    /// Wrapper for [`std::io::Error`](https://doc.rust-lang.org/std/io/struct.Error.html)
-    InputOutput(Arc<std::io::Error>),
+    InputOutput(Arc<io::Error>),
     /// Type conversions errors.
     IncorrectType,
     /// Wrapper for [`std::str::Utf8Error`](https://doc.rust-lang.org/std/str/struct.Utf8Error.html)
@@ -55,7 +52,7 @@ pub enum Error {
     /// Missing framing offset at the end of a GVariant-encoded container,
     MissingFramingOffset,
     /// The type (signature as first argument) being (de)serialized is not supported by the format.
-    IncompatibleFormat(crate::Signature<'static>, crate::EncodingFormat),
+    IncompatibleFormat(crate::Signature<'static>, crate::serialized::Format),
     /// The provided signature (first argument) was not valid for reading as the requested type.
     /// Details on the expected signatures are in the second argument.
     SignatureMismatch(crate::Signature<'static>, String),
@@ -85,8 +82,6 @@ impl PartialEq for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            #[allow(deprecated)]
-            Error::Io(e) => Some(e),
             Error::InputOutput(e) => Some(e),
             Error::Utf8(e) => Some(e),
             _ => None,
@@ -98,8 +93,6 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Message(s) => write!(f, "{s}"),
-            #[allow(deprecated)]
-            Error::Io(e) => e.fmt(f),
             Error::InputOutput(e) => e.fmt(f),
             Error::IncorrectType => write!(f, "incorrect type"),
             Error::Utf8(e) => write!(f, "{e}"),
@@ -130,8 +123,6 @@ impl Clone for Error {
     fn clone(&self) -> Self {
         match self {
             Error::Message(s) => Error::Message(s.clone()),
-            #[allow(deprecated)]
-            Error::Io(e) => Error::Message(e.to_string()),
             Error::InputOutput(e) => Error::InputOutput(e.clone()),
             Error::IncorrectType => Error::IncorrectType,
             Error::Utf8(e) => Error::Utf8(*e),
@@ -173,6 +164,12 @@ impl ser::Error for Error {
         T: fmt::Display,
     {
         Error::Message(msg.to_string())
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(val: io::Error) -> Self {
+        Error::InputOutput(Arc::new(val))
     }
 }
 

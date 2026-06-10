@@ -1,10 +1,12 @@
-use crate::{utils::impl_try_from, Error, Result};
+use crate::{
+    utils::{impl_str_basic, impl_try_from},
+    Error, Result,
+};
 use serde::{de, Deserialize, Serialize};
 use static_assertions::assert_impl_all;
 use std::{
     borrow::{Borrow, Cow},
-    convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     ops::Deref,
     sync::Arc,
 };
@@ -15,7 +17,6 @@ use zvariant::{NoneValue, OwnedValue, Str, Type, Value};
 /// # Examples
 ///
 /// ```
-/// use core::convert::TryFrom;
 /// use zbus_names::WellKnownName;
 ///
 /// // Valid well-known names.
@@ -40,10 +41,12 @@ use zvariant::{NoneValue, OwnedValue, Str, Type, Value};
 )]
 pub struct WellKnownName<'name>(Str<'name>);
 
+impl_str_basic!(WellKnownName<'_>);
+
 assert_impl_all!(WellKnownName<'_>: Send, Sync, Unpin);
 
 impl<'name> WellKnownName<'name> {
-    /// A borrowed clone (never allocates, unlike clone).
+    /// This is faster than `Clone::clone` when `self` contains owned data.
     pub fn as_ref(&self) -> WellKnownName<'_> {
         WellKnownName(self.0.as_ref())
     }
@@ -234,9 +237,7 @@ impl<'name> NoneValue for WellKnownName<'name> {
 }
 
 /// Owned sibling of [`WellKnownName`].
-#[derive(
-    Clone, Debug, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue,
-)]
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue)]
 pub struct OwnedWellKnownName(#[serde(borrow)] WellKnownName<'static>);
 
 assert_impl_all!(OwnedWellKnownName: Send, Sync, Unpin);
@@ -252,6 +253,8 @@ impl OwnedWellKnownName {
         &self.0
     }
 }
+
+impl_str_basic!(OwnedWellKnownName);
 
 impl Deref for OwnedWellKnownName {
     type Target = WellKnownName<'static>;
@@ -273,13 +276,21 @@ impl AsRef<str> for OwnedWellKnownName {
     }
 }
 
-impl Display for OwnedWellKnownName {
+impl Debug for OwnedWellKnownName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        WellKnownName::from(self).fmt(f)
+        f.debug_tuple("OwnedWellKnownName")
+            .field(&self.as_str())
+            .finish()
     }
 }
 
-impl From<OwnedWellKnownName> for WellKnownName<'static> {
+impl Display for OwnedWellKnownName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&WellKnownName::from(self), f)
+    }
+}
+
+impl From<OwnedWellKnownName> for WellKnownName<'_> {
     fn from(name: OwnedWellKnownName) -> Self {
         name.into_inner()
     }
@@ -304,7 +315,7 @@ impl_try_from! {
     try_from: [&'s str, String, Arc<str>, Cow<'s, str>, Str<'s>],
 }
 
-impl From<OwnedWellKnownName> for Str<'static> {
+impl From<OwnedWellKnownName> for Str<'_> {
     fn from(value: OwnedWellKnownName) -> Self {
         value.into_inner().0
     }

@@ -68,7 +68,7 @@ pub const ATTRIBUTE_OPERATION_MAXIMUM: AttributeOperation = 0x00000005;
 
 pub const PASS_THROUGH_BAR: u8 = 0xff;
 
-pub type ProtocolPollIoMem = unsafe extern "efiapi" fn(
+pub type ProtocolPollIoMem = eficall! {fn(
     *mut Protocol,
     Width,
     u8,
@@ -77,26 +77,26 @@ pub type ProtocolPollIoMem = unsafe extern "efiapi" fn(
     u64,
     u64,
     *mut u64,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolIoMem = unsafe extern "efiapi" fn(
+pub type ProtocolIoMem = eficall! {fn(
     *mut Protocol,
     Width,
     u8,
     u64,
     usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolConfig = unsafe extern "efiapi" fn(
+pub type ProtocolConfig = eficall! {fn(
     *mut Protocol,
     Width,
     u32,
     usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolCopyMem = unsafe extern "efiapi" fn(
+pub type ProtocolCopyMem = eficall! {fn(
     *mut Protocol,
     Width,
     u8,
@@ -104,70 +104,70 @@ pub type ProtocolCopyMem = unsafe extern "efiapi" fn(
     u8,
     u64,
     usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolMap = unsafe extern "efiapi" fn(
+pub type ProtocolMap = eficall! {fn(
     *mut Protocol,
     Operation,
     *mut core::ffi::c_void,
     *mut usize,
     *mut crate::base::PhysicalAddress,
     *mut *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolUnmap = unsafe extern "efiapi" fn(
+pub type ProtocolUnmap = eficall! {fn(
     *mut Protocol,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolAllocateBuffer = unsafe extern "efiapi" fn(
+pub type ProtocolAllocateBuffer = eficall! {fn(
     *mut Protocol,
     crate::system::AllocateType,
     crate::system::MemoryType,
     usize,
     *mut *mut core::ffi::c_void,
     Attribute,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolFreeBuffer = unsafe extern "efiapi" fn(
+pub type ProtocolFreeBuffer = eficall! {fn(
     *mut Protocol,
     usize,
     *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolFlush = unsafe extern "efiapi" fn(
+pub type ProtocolFlush = eficall! {fn(
     *mut Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolGetLocation = unsafe extern "efiapi" fn(
+pub type ProtocolGetLocation = eficall! {fn(
     *mut Protocol,
     *mut usize,
     *mut usize,
     *mut usize,
     *mut usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolAttributes = unsafe extern "efiapi" fn(
+pub type ProtocolAttributes = eficall! {fn(
     *mut Protocol,
     AttributeOperation,
     Attribute,
     *mut Attribute,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolGetBarAttributes = unsafe extern "efiapi" fn(
+pub type ProtocolGetBarAttributes = eficall! {fn(
     *mut Protocol,
     u8,
     *mut Attribute,
     *mut *mut core::ffi::c_void,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolSetBarAttributes = unsafe extern "efiapi" fn(
+pub type ProtocolSetBarAttributes = eficall! {fn(
     *mut Protocol,
     Attribute,
     u8,
     *mut u64,
     *mut u64,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Access {

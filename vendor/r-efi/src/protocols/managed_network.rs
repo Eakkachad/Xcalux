@@ -91,48 +91,48 @@ pub struct FragmentData {
     pub fragment_buffer: *mut core::ffi::c_void,
 }
 
-pub type ProtocolGetModeData = unsafe extern "efiapi" fn(
+pub type ProtocolGetModeData = eficall! {fn(
     *mut Protocol,
     *mut ConfigData,
     *mut crate::protocols::simple_network::Mode,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolConfigure = unsafe extern "efiapi" fn(
+pub type ProtocolConfigure = eficall! {fn(
     *mut Protocol,
     *mut ConfigData,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolMcastIpToMac = unsafe extern "efiapi" fn(
+pub type ProtocolMcastIpToMac = eficall! {fn(
     *mut Protocol,
     crate::base::Boolean,
     *mut crate::base::IpAddress,
     *mut crate::base::MacAddress,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolGroups = unsafe extern "efiapi" fn(
+pub type ProtocolGroups = eficall! {fn(
     *mut Protocol,
     crate::base::Boolean,
     *mut crate::base::MacAddress,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolTransmit = unsafe extern "efiapi" fn(
+pub type ProtocolTransmit = eficall! {fn(
     *mut Protocol,
     *mut CompletionToken,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolReceive = unsafe extern "efiapi" fn(
+pub type ProtocolReceive = eficall! {fn(
     *mut Protocol,
     *mut CompletionToken,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolCancel = unsafe extern "efiapi" fn(
+pub type ProtocolCancel = eficall! {fn(
     *mut Protocol,
     *mut CompletionToken,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolPoll = unsafe extern "efiapi" fn(
+pub type ProtocolPoll = eficall! {fn(
     *mut Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

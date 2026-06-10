@@ -19,11 +19,11 @@ pub struct Properties {
     pub end_value: u64,
 }
 
-pub type ProtocolGetTimestamp = unsafe extern "efiapi" fn() -> u64;
+pub type ProtocolGetTimestamp = eficall! {fn() -> u64};
 
-pub type ProtocolGetProperties = unsafe extern "efiapi" fn(
+pub type ProtocolGetProperties = eficall! {fn(
     *mut Properties,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

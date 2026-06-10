@@ -20,15 +20,15 @@ pub struct InputKey {
     pub unicode_char: crate::base::Char16,
 }
 
-pub type ProtocolReset = unsafe extern "efiapi" fn(
+pub type ProtocolReset = eficall! {fn(
     *mut Protocol,
     crate::base::Boolean,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolReadKeyStroke = unsafe extern "efiapi" fn(
+pub type ProtocolReadKeyStroke = eficall! {fn(
     *mut Protocol,
     *mut InputKey,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

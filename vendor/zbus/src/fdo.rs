@@ -17,14 +17,15 @@ use zvariant::{
 };
 
 use crate::{
-    dbus_interface, dbus_proxy, DBusError, Guid, MessageHeader, ObjectServer, SignalContext,
+    interface, message::Header, object_server::SignalContext, proxy, DBusError, ObjectServer,
+    OwnedGuid,
 };
 
 #[rustfmt::skip]
 macro_rules! gen_introspectable_proxy {
     ($gen_async:literal, $gen_blocking:literal) => {
         /// Proxy for the `org.freedesktop.DBus.Introspectable` interface.
-        #[dbus_proxy(
+        #[proxy(
             interface = "org.freedesktop.DBus.Introspectable",
             default_path = "/",
             gen_async = $gen_async,
@@ -46,14 +47,14 @@ assert_impl_all!(IntrospectableProxy<'_>: Send, Sync, Unpin);
 /// [ObjectServer](crate::ObjectServer).
 pub(crate) struct Introspectable;
 
-#[dbus_interface(name = "org.freedesktop.DBus.Introspectable")]
+#[interface(name = "org.freedesktop.DBus.Introspectable")]
 impl Introspectable {
     async fn introspect(
         &self,
         #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(header)] header: MessageHeader<'_>,
+        #[zbus(header)] header: Header<'_>,
     ) -> Result<String> {
-        let path = header.path()?.ok_or(crate::Error::MissingField)?;
+        let path = header.path().ok_or(crate::Error::MissingField)?;
         let root = server.root().read().await;
         let node = root
             .get_child(path)
@@ -67,9 +68,8 @@ impl Introspectable {
 macro_rules! gen_properties_proxy {
     ($gen_async:literal, $gen_blocking:literal) => {
         /// Proxy for the `org.freedesktop.DBus.Properties` interface.
-        #[dbus_proxy(
+        #[proxy(
             interface = "org.freedesktop.DBus.Properties",
-            assume_defaults = true,
             gen_async = $gen_async,
             gen_blocking = $gen_blocking,
         )]
@@ -92,10 +92,10 @@ macro_rules! gen_properties_proxy {
             /// Get all properties.
             async fn get_all(
                 &self,
-                interface_name: InterfaceName<'_>,
+                interface_name: Optional<InterfaceName<'_>>,
             ) -> Result<HashMap<String, OwnedValue>>;
 
-            #[dbus_proxy(signal)]
+            #[zbus(signal)]
             async fn properties_changed(
                 &self,
                 interface_name: InterfaceName<'_>,
@@ -111,21 +111,21 @@ assert_impl_all!(PropertiesProxy<'_>: Send, Sync, Unpin);
 
 /// Server-side implementation for the `org.freedesktop.DBus.Properties` interface.
 /// This interface is implemented automatically for any object registered to the
-/// [ObjectServer](crate::ObjectServer).
+/// [ObjectServer].
 pub struct Properties;
 
 assert_impl_all!(Properties: Send, Sync, Unpin);
 
-#[dbus_interface(name = "org.freedesktop.DBus.Properties")]
+#[interface(name = "org.freedesktop.DBus.Properties")]
 impl Properties {
     async fn get(
         &self,
         interface_name: InterfaceName<'_>,
         property_name: &str,
         #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(header)] header: MessageHeader<'_>,
+        #[zbus(header)] header: Header<'_>,
     ) -> Result<OwnedValue> {
-        let path = header.path()?.ok_or(crate::Error::MissingField)?;
+        let path = header.path().ok_or(crate::Error::MissingField)?;
         let root = server.root().read().await;
         let iface = root
             .get_child(path)
@@ -134,7 +134,7 @@ impl Properties {
                 Error::UnknownInterface(format!("Unknown interface '{interface_name}'"))
             })?;
 
-        let res = iface.read().await.get(property_name).await;
+        let res = iface.instance.read().await.get(property_name).await;
         res.unwrap_or_else(|| {
             Err(Error::UnknownProperty(format!(
                 "Unknown property '{property_name}'"
@@ -148,10 +148,10 @@ impl Properties {
         property_name: &str,
         value: Value<'_>,
         #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(header)] header: MessageHeader<'_>,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_context)] ctxt: SignalContext<'_>,
     ) -> Result<()> {
-        let path = header.path()?.ok_or(crate::Error::MissingField)?;
+        let path = header.path().ok_or(crate::Error::MissingField)?;
         let root = server.root().read().await;
         let iface = root
             .get_child(path)
@@ -160,18 +160,24 @@ impl Properties {
                 Error::UnknownInterface(format!("Unknown interface '{interface_name}'"))
             })?;
 
-        match iface.read().await.set(property_name, &value, &ctxt) {
-            zbus::DispatchResult::RequiresMut => {}
-            zbus::DispatchResult::NotFound => {
+        match iface
+            .instance
+            .read()
+            .await
+            .set(property_name, &value, &ctxt)
+        {
+            zbus::object_server::DispatchResult::RequiresMut => {}
+            zbus::object_server::DispatchResult::NotFound => {
                 return Err(Error::UnknownProperty(format!(
                     "Unknown property '{property_name}'"
                 )));
             }
-            zbus::DispatchResult::Async(f) => {
+            zbus::object_server::DispatchResult::Async(f) => {
                 return f.await.map_err(Into::into);
             }
         }
         let res = iface
+            .instance
             .write()
             .await
             .set_mut(property_name, &value, &ctxt)
@@ -187,9 +193,9 @@ impl Properties {
         &self,
         interface_name: InterfaceName<'_>,
         #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(header)] header: MessageHeader<'_>,
+        #[zbus(header)] header: Header<'_>,
     ) -> Result<HashMap<String, OwnedValue>> {
-        let path = header.path()?.ok_or(crate::Error::MissingField)?;
+        let path = header.path().ok_or(crate::Error::MissingField)?;
         let root = server.root().read().await;
         let iface = root
             .get_child(path)
@@ -198,12 +204,12 @@ impl Properties {
                 Error::UnknownInterface(format!("Unknown interface '{interface_name}'"))
             })?;
 
-        let res = iface.read().await.get_all().await;
+        let res = iface.instance.read().await.get_all().await?;
         Ok(res)
     }
 
     /// Emits the `org.freedesktop.DBus.Properties.PropertiesChanged` signal.
-    #[dbus_interface(signal)]
+    #[zbus(signal)]
     #[rustfmt::skip]
     pub async fn properties_changed(
         ctxt: &SignalContext<'_>,
@@ -225,9 +231,8 @@ macro_rules! gen_object_manager_proxy {
         /// **NB:** Changes to properties on existing interfaces are not reported using this interface.
         /// Please use [`PropertiesProxy::receive_properties_changed`] to monitor changes to properties on
         /// objects.
-        #[dbus_proxy(
+        #[proxy(
             interface = "org.freedesktop.DBus.ObjectManager",
-            assume_defaults = true,
             gen_async = $gen_async,
             gen_blocking = $gen_blocking,
         )]
@@ -245,7 +250,7 @@ macro_rules! gen_object_manager_proxy {
             /// This signal is emitted when either a new object is added or when an existing object gains
             /// one or more interfaces. The `interfaces_and_properties` argument contains a map with the
             /// interfaces and properties (if any) that have been added to the given object path.
-            #[dbus_proxy(signal)]
+            #[zbus(signal)]
             fn interfaces_added(
                 &self,
                 object_path: ObjectPath<'_>,
@@ -254,7 +259,7 @@ macro_rules! gen_object_manager_proxy {
 
             /// This signal is emitted whenever an object is removed or it loses one or more interfaces.
             /// The `interfaces` parameters contains a list of the interfaces that were removed.
-            #[dbus_proxy(signal)]
+            #[zbus(signal)]
             fn interfaces_removed(
                 &self,
                 object_path: ObjectPath<'_>,
@@ -284,26 +289,26 @@ assert_impl_all!(ObjectManagerProxy<'_>: Send, Sync, Unpin);
 #[derive(Debug, Clone)]
 pub struct ObjectManager;
 
-#[dbus_interface(name = "org.freedesktop.DBus.ObjectManager")]
+#[interface(name = "org.freedesktop.DBus.ObjectManager")]
 impl ObjectManager {
     async fn get_managed_objects(
         &self,
         #[zbus(object_server)] server: &ObjectServer,
-        #[zbus(header)] header: MessageHeader<'_>,
+        #[zbus(header)] header: Header<'_>,
     ) -> Result<ManagedObjects> {
-        let path = header.path()?.ok_or(crate::Error::MissingField)?;
+        let path = header.path().ok_or(crate::Error::MissingField)?;
         let root = server.root().read().await;
         let node = root
             .get_child(path)
             .ok_or_else(|| Error::UnknownObject(format!("Unknown object '{path}'")))?;
 
-        Ok(node.get_managed_objects().await)
+        node.get_managed_objects().await
     }
 
     /// This signal is emitted when either a new object is added or when an existing object gains
     /// one or more interfaces. The `interfaces_and_properties` argument contains a map with the
     /// interfaces and properties (if any) that have been added to the given object path.
-    #[dbus_interface(signal)]
+    #[zbus(signal)]
     pub async fn interfaces_added(
         ctxt: &SignalContext<'_>,
         object_path: &ObjectPath<'_>,
@@ -312,7 +317,7 @@ impl ObjectManager {
 
     /// This signal is emitted whenever an object is removed or it loses one or more interfaces.
     /// The `interfaces` parameters contains a list of the interfaces that were removed.
-    #[dbus_interface(signal)]
+    #[zbus(signal)]
     pub async fn interfaces_removed(
         ctxt: &SignalContext<'_>,
         object_path: &ObjectPath<'_>,
@@ -324,9 +329,8 @@ impl ObjectManager {
 macro_rules! gen_peer_proxy {
     ($gen_async:literal, $gen_blocking:literal) => {
         /// Proxy for the `org.freedesktop.DBus.Peer` interface.
-        #[dbus_proxy(
+        #[proxy(
             interface = "org.freedesktop.DBus.Peer",
-            assume_defaults = true,
             gen_async = $gen_async,
             gen_blocking = $gen_blocking,
         )]
@@ -353,7 +357,7 @@ pub(crate) struct Peer;
 /// Server-side implementation for the `org.freedesktop.DBus.Peer` interface.
 /// This interface is implemented automatically for any object registered to the
 /// [ObjectServer](crate::ObjectServer).
-#[dbus_interface(name = "org.freedesktop.DBus.Peer")]
+#[interface(name = "org.freedesktop.DBus.Peer")]
 impl Peer {
     fn ping(&self) {}
 
@@ -381,18 +385,39 @@ impl Peer {
 macro_rules! gen_monitoring_proxy {
     ($gen_async:literal, $gen_blocking:literal) => {
         /// Proxy for the `org.freedesktop.DBus.Monitoring` interface.
-        #[dbus_proxy(
+        #[proxy(
             interface = "org.freedesktop.DBus.Monitoring",
             default_service = "org.freedesktop.DBus",
             default_path = "/org/freedesktop/DBus",
-            assume_defaults = true,
             gen_async = $gen_async,
             gen_blocking = $gen_blocking,
         )]
         trait Monitoring {
             /// Converts the connection into a monitor connection which can be used as a
             /// debugging/monitoring tool.
-            fn become_monitor(&self, n1: &[&str], n2: u32) -> Result<()>;
+            ///
+            /// After this call successfully returns, sending any messages on the bus will result
+            /// in an error. This is why this method takes ownership of `self`, since there is not
+            /// much use for the proxy anymore. It is highly recommended to convert the underlying
+            /// [`Connection`] to a [`MessageStream`] and iterate over messages from the stream,
+            /// after this call.
+            ///
+            /// See [the spec] for details on all the implications and caveats.
+            /// 
+            /// # Arguments
+            ///
+            /// * `match_rules` - A list of match rules describing the messages you want to receive.
+            ///   An empty list means you are want to receive all messages going through the bus.
+            /// * `flags` - This argument is currently unused by the bus. Just pass a `0`.
+            ///
+            /// [the spec]: https://dbus.freedesktop.org/doc/dbus-specification.html#bus-messages-become-monitor
+            /// [`Connection`]: https://docs.rs/zbus/latest/zbus/connection/struct.Connection.html
+            /// [`MessageStream`]: https://docs.rs/zbus/latest/zbus/struct.MessageStream.html
+            fn become_monitor(
+                self,
+                match_rules: &[crate::MatchRule<'_>],
+                flags: u32,
+            ) -> Result<()>;
         }
     };
 }
@@ -404,11 +429,10 @@ assert_impl_all!(MonitoringProxy<'_>: Send, Sync, Unpin);
 macro_rules! gen_stats_proxy {
     ($gen_async:literal, $gen_blocking:literal) => {
         /// Proxy for the `org.freedesktop.DBus.Debug.Stats` interface.
-        #[dbus_proxy(
+        #[proxy(
             interface = "org.freedesktop.DBus.Debug.Stats",
             default_service = "org.freedesktop.DBus",
             default_path = "/org/freedesktop/DBus",
-            assume_defaults = true,
             gen_async = $gen_async,
             gen_blocking = $gen_blocking,
         )]
@@ -417,10 +441,18 @@ macro_rules! gen_stats_proxy {
             fn get_stats(&self) -> Result<Vec<HashMap<String, OwnedValue>>>;
 
             /// GetConnectionStats (undocumented)
-            fn get_connection_stats(&self, n1: &str) -> Result<Vec<HashMap<String, OwnedValue>>>;
+            fn get_connection_stats(&self, name: BusName<'_>) -> Result<Vec<HashMap<String, OwnedValue>>>;
 
             /// GetAllMatchRules (undocumented)
-            fn get_all_match_rules(&self) -> Result<Vec<HashMap<String, Vec<String>>>>;
+            fn get_all_match_rules(&self) -> 
+                Result<
+                    Vec<
+                        HashMap<
+                            crate::names::OwnedUniqueName,
+                            Vec<crate::OwnedMatchRule>,
+                        >
+                    >
+                >;
         }
     };
 }
@@ -533,27 +565,21 @@ assert_impl_all!(ReleaseNameReply: Send, Sync, Unpin);
 #[zvariant(signature = "a{sv}")]
 pub struct ConnectionCredentials {
     #[zvariant(rename = "UnixUserID")]
-    #[deprecated(since = "3.13.0", note = "Use `unix_user_id` method")]
-    pub unix_user_id: Option<u32>,
+    pub(crate) unix_user_id: Option<u32>,
 
     #[zvariant(rename = "UnixGroupIDs")]
-    #[deprecated(since = "3.13.0", note = "Use `unix_group_ids` method")]
-    pub unix_group_ids: Option<Vec<u32>>,
+    pub(crate) unix_group_ids: Option<Vec<u32>>,
 
     #[zvariant(rename = "ProcessID")]
-    #[deprecated(since = "3.13.0", note = "Use `process_id` method")]
-    pub process_id: Option<u32>,
+    pub(crate) process_id: Option<u32>,
 
     #[zvariant(rename = "WindowsSID")]
-    #[deprecated(since = "3.13.0", note = "Use `windows_sid` method")]
-    pub windows_sid: Option<String>,
+    pub(crate) windows_sid: Option<String>,
 
     #[zvariant(rename = "LinuxSecurityLabel")]
-    #[deprecated(since = "3.13.0", note = "Use `linux_security_label` method")]
-    pub linux_security_label: Option<Vec<u8>>,
+    pub(crate) linux_security_label: Option<Vec<u8>>,
 }
 
-#[allow(deprecated)]
 impl ConnectionCredentials {
     /// The numeric Unix user ID, as defined by POSIX.
     pub fn unix_user_id(&self) -> Option<u32> {
@@ -670,19 +696,16 @@ impl ConnectionCredentials {
 macro_rules! gen_dbus_proxy {
     ($gen_async:literal, $gen_blocking:literal) => {
         /// Proxy for the `org.freedesktop.DBus` interface.
-        #[dbus_proxy(
-            assume_defaults = true,
+        #[proxy(
+            default_service = "org.freedesktop.DBus",
+            default_path = "/org/freedesktop/DBus",
             interface = "org.freedesktop.DBus",
             gen_async = $gen_async,
             gen_blocking = $gen_blocking,
         )]
         trait DBus {
             /// Adds a match rule to match messages going through the message bus
-            #[deprecated(since = "3.5.0", note = "Use `add_match_rule` instead")]
-            fn add_match(&self, rule: &str) -> Result<()>;
-
-            /// Adds a match rule to match messages going through the message bus
-            #[dbus_proxy(name = "AddMatch")]
+            #[zbus(name = "AddMatch")]
             fn add_match_rule(&self, rule: crate::MatchRule<'_>) -> Result<()>;
 
             /// Returns auditing data used by Solaris ADT, in an unspecified binary format.
@@ -695,21 +718,21 @@ macro_rules! gen_dbus_proxy {
             ) -> Result<ConnectionCredentials>;
 
             /// Returns the security context used by SELinux, in an unspecified format.
-            #[dbus_proxy(name = "GetConnectionSELinuxSecurityContext")]
+            #[zbus(name = "GetConnectionSELinuxSecurityContext")]
             fn get_connection_selinux_security_context(
                 &self,
                 bus_name: BusName<'_>,
             ) -> Result<Vec<u8>>;
 
             /// Returns the Unix process ID of the process connected to the server.
-            #[dbus_proxy(name = "GetConnectionUnixProcessID")]
+            #[zbus(name = "GetConnectionUnixProcessID")]
             fn get_connection_unix_process_id(&self, bus_name: BusName<'_>) -> Result<u32>;
 
             /// Returns the Unix user ID of the process connected to the server.
             fn get_connection_unix_user(&self, bus_name: BusName<'_>) -> Result<u32>;
 
             /// Gets the unique ID of the bus.
-            fn get_id(&self) -> Result<Guid>;
+            fn get_id(&self) -> Result<OwnedGuid>;
 
             /// Returns the unique connection name of the primary owner of the name given.
             fn get_name_owner(&self, name: BusName<'_>) -> Result<OwnedUniqueName>;
@@ -736,11 +759,7 @@ macro_rules! gen_dbus_proxy {
             fn reload_config(&self) -> Result<()>;
 
             /// Removes the first rule that matches.
-            #[deprecated(since = "3.5.0", note = "Use `remove_match_rule` instead")]
-            fn remove_match(&self, rule: &str) -> Result<()>;
-
-            /// Removes the first rule that matches.
-            #[dbus_proxy(name = "RemoveMatch")]
+            #[zbus(name = "RemoveMatch")]
             fn remove_match_rule(&self, rule: crate::MatchRule<'_>) -> Result<()>;
 
             /// Ask the message bus to assign the given name to the method caller.
@@ -761,7 +780,7 @@ macro_rules! gen_dbus_proxy {
             /// This signal indicates that the owner of a name has
             /// changed. It's also the signal to use to detect the appearance
             /// of new names on the bus.
-            #[dbus_proxy(signal)]
+            #[zbus(signal)]
             fn name_owner_changed(
                 &self,
                 name: BusName<'_>,
@@ -770,16 +789,16 @@ macro_rules! gen_dbus_proxy {
             );
 
             /// This signal is sent to a specific application when it loses ownership of a name.
-            #[dbus_proxy(signal)]
+            #[zbus(signal)]
             fn name_lost(&self, name: BusName<'_>);
 
             /// This signal is sent to a specific application when it gains ownership of a name.
-            #[dbus_proxy(signal)]
+            #[zbus(signal)]
             fn name_acquired(&self, name: BusName<'_>);
 
             /// This property lists abstract “features” provided by the message bus, and can be used by
             /// clients to detect the capabilities of the message bus with which they are communicating.
-            #[dbus_proxy(property)]
+            #[zbus(property)]
             fn features(&self) -> Result<Vec<String>>;
 
             /// This property lists interfaces provided by the `/org/freedesktop/DBus` object, and can be
@@ -794,7 +813,7 @@ macro_rules! gen_dbus_proxy {
             /// `org.freedesktop.DBus` was successful. The standard `org.freedesktop.DBus.Peer` and
             /// `org.freedesktop.DBus.Introspectable` interfaces are not included in the value of this
             /// property either, because they do not indicate features of the message bus implementation.
-            #[dbus_proxy(property)]
+            #[zbus(property)]
             fn interfaces(&self) -> Result<Vec<OwnedInterfaceName>>;
         }
     };
@@ -805,11 +824,11 @@ assert_impl_all!(DBusProxy<'_>: Send, Sync, Unpin);
 
 /// Errors from <https://gitlab.freedesktop.org/dbus/dbus/-/blob/master/dbus/dbus-protocol.h>
 #[derive(Clone, Debug, DBusError, PartialEq)]
-#[dbus_error(prefix = "org.freedesktop.DBus.Error", impl_display = true)]
+#[zbus(prefix = "org.freedesktop.DBus.Error", impl_display = true)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum Error {
-    /// Unknown or fall-through ZBus error.
-    #[dbus_error(zbus_error)]
+    /// Unknown or fall-through zbus error.
+    #[zbus(error)]
     ZBus(zbus::Error),
 
     /// A generic error; "something went wrong" - see the error message for more.
@@ -895,51 +914,51 @@ pub enum Error {
     MatchRuleInvalid(String),
 
     /// While starting a new process, the exec() call failed.
-    #[dbus_error(name = "Spawn.ExecFailed")]
+    #[zbus(name = "Spawn.ExecFailed")]
     SpawnExecFailed(String),
 
     /// While starting a new process, the fork() call failed.
-    #[dbus_error(name = "Spawn.ForkFailed")]
+    #[zbus(name = "Spawn.ForkFailed")]
     SpawnForkFailed(String),
 
     /// While starting a new process, the child exited with a status code.
-    #[dbus_error(name = "Spawn.ChildExited")]
+    #[zbus(name = "Spawn.ChildExited")]
     SpawnChildExited(String),
 
     /// While starting a new process, the child exited on a signal.
-    #[dbus_error(name = "Spawn.ChildSignaled")]
+    #[zbus(name = "Spawn.ChildSignaled")]
     SpawnChildSignaled(String),
 
     /// While starting a new process, something went wrong.
-    #[dbus_error(name = "Spawn.Failed")]
+    #[zbus(name = "Spawn.Failed")]
     SpawnFailed(String),
 
     /// We failed to setup the environment correctly.
-    #[dbus_error(name = "Spawn.FailedToSetup")]
+    #[zbus(name = "Spawn.FailedToSetup")]
     SpawnFailedToSetup(String),
 
     /// We failed to setup the config parser correctly.
-    #[dbus_error(name = "Spawn.ConfigInvalid")]
+    #[zbus(name = "Spawn.ConfigInvalid")]
     SpawnConfigInvalid(String),
 
     /// Bus name was not valid.
-    #[dbus_error(name = "Spawn.ServiceNotValid")]
+    #[zbus(name = "Spawn.ServiceNotValid")]
     SpawnServiceNotValid(String),
 
     /// Service file not found in system-services directory.
-    #[dbus_error(name = "Spawn.ServiceNotFound")]
+    #[zbus(name = "Spawn.ServiceNotFound")]
     SpawnServiceNotFound(String),
 
     /// Permissions are incorrect on the setuid helper.
-    #[dbus_error(name = "Spawn.PermissionsInvalid")]
+    #[zbus(name = "Spawn.PermissionsInvalid")]
     SpawnPermissionsInvalid(String),
 
     /// Service file invalid (Name, User or Exec missing).
-    #[dbus_error(name = "Spawn.FileInvalid")]
+    #[zbus(name = "Spawn.FileInvalid")]
     SpawnFileInvalid(String),
 
     /// There was not enough memory to complete the operation.
-    #[dbus_error(name = "Spawn.NoMemory")]
+    #[zbus(name = "Spawn.NoMemory")]
     SpawnNoMemory(String),
 
     /// Tried to get a UNIX process ID and it wasn't available.
@@ -981,24 +1000,25 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
-    use crate::{fdo, DBusError, Error, Message};
+    use crate::{fdo, message::Message, DBusError, Error};
     use futures_util::StreamExt;
     use ntest::timeout;
-    use std::convert::TryInto;
     use test_log::test;
     use tokio::runtime;
     use zbus_names::WellKnownName;
 
     #[test]
     fn error_from_zerror() {
-        let m = Message::method(Some(":1.2"), None::<()>, "/", None::<()>, "foo", &()).unwrap();
-        let m = Message::method_error(
-            None::<()>,
-            &m,
-            "org.freedesktop.DBus.Error.TimedOut",
-            &("so long"),
-        )
-        .unwrap();
+        let m = Message::method("/", "foo")
+            .unwrap()
+            .destination(":1.2")
+            .unwrap()
+            .build(&())
+            .unwrap();
+        let m = Message::method_error(&m, "org.freedesktop.DBus.Error.TimedOut")
+            .unwrap()
+            .build(&("so long"))
+            .unwrap();
         let e: Error = m.into();
         let e: fdo::Error = e.into();
         assert_eq!(e, fdo::Error::TimedOut("so long".to_string()),);
@@ -1074,5 +1094,67 @@ mod tests {
                 let v = changed.get().await.ok();
                 dbg!(v)
             });
+    }
+
+    #[test]
+    #[timeout(15000)]
+    fn no_object_manager_signals_before_hello() {
+        use zbus::blocking;
+        // We were emitting `InterfacesAdded` signals before `Hello` was called, which is wrong and
+        // results in us getting disconnected by the bus. This test case ensures we don't do that
+        // and also that the signals are eventually emitted.
+
+        // Let's first create an interator to get the signals (it has to be another connection).
+        let conn = blocking::Connection::session().unwrap();
+        let mut iterator = blocking::MessageIterator::for_match_rule(
+            zbus::MatchRule::builder()
+                .msg_type(zbus::MessageType::Signal)
+                .interface("org.freedesktop.DBus.ObjectManager")
+                .unwrap()
+                .path("/org/zbus/NoObjectManagerSignalsBeforeHello")
+                .unwrap()
+                .build(),
+            &conn,
+            None,
+        )
+        .unwrap();
+
+        // Now create the service side.
+        struct TestObj;
+        #[super::interface(name = "org.zbus.TestObj")]
+        impl TestObj {
+            #[zbus(property)]
+            fn test(&self) -> String {
+                "test".into()
+            }
+        }
+        let _conn = blocking::connection::Builder::session()
+            .unwrap()
+            .name("org.zbus.NoObjectManagerSignalsBeforeHello")
+            .unwrap()
+            .serve_at("/org/zbus/NoObjectManagerSignalsBeforeHello/Obj", TestObj)
+            .unwrap()
+            .serve_at(
+                "/org/zbus/NoObjectManagerSignalsBeforeHello",
+                super::ObjectManager,
+            )
+            .unwrap()
+            .build()
+            .unwrap();
+
+        // Let's see if the `InterfacesAdded` signal was emitted.
+        let msg = iterator.next().unwrap().unwrap();
+        let signal = super::InterfacesAdded::from_message(msg).unwrap();
+        assert_eq!(
+            signal.args().unwrap().interfaces_and_properties,
+            vec![(
+                "org.zbus.TestObj",
+                vec![("Test", zvariant::Value::new("test"))]
+                    .into_iter()
+                    .collect()
+            )]
+            .into_iter()
+            .collect()
+        );
     }
 }

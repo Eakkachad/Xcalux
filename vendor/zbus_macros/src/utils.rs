@@ -1,4 +1,6 @@
-use proc_macro2::TokenStream;
+use std::fmt::Display;
+
+use proc_macro2::{Span, TokenStream};
 use proc_macro_crate::{crate_name, FoundCrate};
 use quote::{format_ident, quote};
 use syn::{Attribute, FnArg, Ident, Pat, PatIdent, PatType};
@@ -27,7 +29,7 @@ pub fn pat_ident(pat: &PatType) -> Option<&Ident> {
 }
 
 pub fn get_doc_attrs(attrs: &[Attribute]) -> Vec<&Attribute> {
-    attrs.iter().filter(|x| x.path.is_ident("doc")).collect()
+    attrs.iter().filter(|x| x.path().is_ident("doc")).collect()
 }
 
 // Convert to pascal case, assuming snake case.
@@ -50,4 +52,45 @@ pub fn pascal_case(s: &str) -> String {
 
 pub fn is_blank(s: &str) -> bool {
     s.trim().is_empty()
+}
+
+/// Standard annotation `org.freedesktop.DBus.Property.EmitsChangedSignal`.
+///
+/// See <https://dbus.freedesktop.org/doc/dbus-specification.html#introspection-format>.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub enum PropertyEmitsChangedSignal {
+    #[default]
+    True,
+    Invalidates,
+    Const,
+    False,
+}
+
+impl Display for PropertyEmitsChangedSignal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let emits_changed_signal = match self {
+            PropertyEmitsChangedSignal::True => "true",
+            PropertyEmitsChangedSignal::Const => "const",
+            PropertyEmitsChangedSignal::False => "false",
+            PropertyEmitsChangedSignal::Invalidates => "invalidates",
+        };
+        write!(f, "{}", emits_changed_signal)
+    }
+}
+
+impl PropertyEmitsChangedSignal {
+    pub fn parse(s: &str, span: Span) -> syn::Result<Self> {
+        use PropertyEmitsChangedSignal::*;
+
+        match s {
+            "true" => Ok(True),
+            "invalidates" => Ok(Invalidates),
+            "const" => Ok(Const),
+            "false" => Ok(False),
+            other => Err(syn::Error::new(
+                span,
+                format!("invalid value \"{other}\" for attribute `property(emits_changed_signal)`"),
+            )),
+        }
+    }
 }

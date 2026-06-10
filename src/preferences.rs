@@ -43,7 +43,7 @@ pub fn save_preferences(app: &PaintApp) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let toml_content = format!(
+    let mut toml_content = format!(
         "theme = {:?}\n\
          ui_scale = {:.1}\n\
          canvas_bg = {:?}\n\
@@ -55,6 +55,18 @@ pub fn save_preferences(app: &PaintApp) {
         app.pref_autosave_enabled,
         app.pref_autosave_interval_mins
     );
+    let recent_files_toml = if app.recent_files.is_empty() {
+        "recent_files = []\n".to_string()
+    } else {
+        let mut s = "recent_files = [\n".to_string();
+        for file in &app.recent_files {
+            s.push_str(&format!("    {:?},\n", file));
+        }
+        s.push_str("]\n");
+        s
+    };
+    toml_content.push_str(&recent_files_toml);
+
     if let Err(e) = fs::write(&path, toml_content) {
         log::error!("Failed to write preferences to {:?}: {}", path, e);
     } else {
@@ -95,6 +107,14 @@ pub fn load_preferences(app: &mut PaintApp, ctx: &Context) {
                     let interval = interval as u32;
                     app.pref_autosave_interval_mins = interval;
                     app.autosave_interval_secs = (interval * 60) as f64;
+                }
+                if let Some(recent_array) = doc.get("recent_files").and_then(|i| i.as_array()) {
+                    app.recent_files.clear();
+                    for val in recent_array.iter() {
+                        if let Some(s) = val.as_str() {
+                            app.recent_files.push(s.to_string());
+                        }
+                    }
                 }
                 log::info!("Loaded preferences from {:?}", path);
             }

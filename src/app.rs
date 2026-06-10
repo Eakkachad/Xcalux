@@ -220,6 +220,9 @@ pub struct PaintApp {
     pub show_export_png_dialog: bool,
     pub export_png_options: crate::export::png::ExportPngOptions,
     pub export_png_path: String,
+    pub show_export_jpeg_dialog: bool,
+    pub export_jpeg_path: String,
+    pub export_jpeg_quality: u8,
 
     // ORA export/import dialogs
     pub show_export_ora_dialog: bool,
@@ -267,9 +270,13 @@ pub struct PaintApp {
     pub show_grow_dialog: bool,
     pub show_shrink_dialog: bool,
     pub show_feather_dialog: bool,
+    pub show_smooth_dialog: bool,
+    pub show_border_dialog: bool,
     pub grow_pixels: i32,
     pub shrink_pixels: i32,
     pub feather_pixels: i32,
+    pub smooth_pixels: i32,
+    pub border_pixels: i32,
 
     // Color history
     pub color_history: Vec<[f32; 3]>,
@@ -279,6 +286,8 @@ pub struct PaintApp {
     // Layer operations
     #[allow(unused)]
     pub show_layer_properties: bool,
+    pub(crate) renaming_layer_id: Option<u32>,
+    pub(crate) rename_layer_input: String,
 
     // Shortcut editor state
     pub show_shortcut_editor: bool,
@@ -290,6 +299,7 @@ pub struct PaintApp {
     // Autosave recovery
     pub show_recovery_dialog: bool,
     pub recovery_files: Vec<String>,
+    pub(crate) recent_files: Vec<String>,
 
     // Layer thumbnails cache (keyed by layer_id, regenerated when thumbnail_dirty)
     pub layer_thumbnails: ahash::AHashMap<u32, egui::ColorImage>,
@@ -993,6 +1003,9 @@ impl PaintApp {
             show_export_png_dialog: false,
             export_png_options: crate::export::png::ExportPngOptions::default(),
             export_png_path: "export.png".to_string(),
+            show_export_jpeg_dialog: false,
+            export_jpeg_path: "export.jpg".to_string(),
+            export_jpeg_quality: 90,
             show_export_ora_dialog: false,
             export_ora_path: "export.ora".to_string(),
             show_import_ora_dialog: false,
@@ -1023,13 +1036,19 @@ impl PaintApp {
             show_grow_dialog: false,
             show_shrink_dialog: false,
             show_feather_dialog: false,
+            show_smooth_dialog: false,
+            show_border_dialog: false,
             grow_pixels: 2,
             shrink_pixels: 2,
             feather_pixels: 4,
+            smooth_pixels: 4,
+            border_pixels: 4,
             color_history: Vec::with_capacity(12),
             color_history_max: 12,
             color_wheel_drag_zone: None,
             show_layer_properties: false,
+            renaming_layer_id: None,
+            rename_layer_input: String::new(),
             show_shortcut_editor: false,
             show_panel_layout_settings: false,
             shortcut_search: String::new(),
@@ -1037,6 +1056,7 @@ impl PaintApp {
             shortcut_listen_idx: None,
             show_recovery_dialog: false,
             recovery_files: Vec::new(),
+            recent_files: Vec::new(),
             layer_thumbnails: ahash::AHashMap::default(),
             thumbnail_textures: ahash::AHashMap::default(),
             thumbnail_regenerate_counter: 0,
@@ -1894,6 +1914,8 @@ impl PaintApp {
     /// Regenerate thumbnails for layers marked as `thumbnail_dirty`
     fn regenerate_dirty_thumbnails(&mut self) {
         let mut new_images: ahash::AHashMap<u32, egui::ColorImage> = ahash::AHashMap::default();
+        let mut regenerated_ids = Vec::new();
+        let mut count = 0;
         for id in &self.layer_order.clone() {
             if let Some(layer) = self.layers.get(id) {
                 if layer.thumbnail_dirty {
@@ -1907,15 +1929,20 @@ impl PaintApp {
                         // Invalidate egui texture cache to force reload on next frame!
                         self.thumbnail_textures.remove(id);
                     }
+                    regenerated_ids.push(*id);
+                    count += 1;
+                    if count >= 2 {
+                        break;
+                    }
                 }
             }
         }
         if !new_images.is_empty() {
             self.layer_thumbnails.extend(new_images);
         }
-        // Clear dirty flags after regeneration
-        for id in &self.layer_order.clone() {
-            if let Some(layer) = self.layers.get_mut(id) {
+        // Clear dirty flags ONLY for the ones we actually regenerated
+        for id in regenerated_ids {
+            if let Some(layer) = self.layers.get_mut(&id) {
                 layer.thumbnail_dirty = false;
             }
         }
@@ -1941,6 +1968,18 @@ impl PaintApp {
         } else {
             None
         }
+    }
+
+    pub(crate) fn add_recent_file(&mut self, path: String) {
+        if path.is_empty() || path.contains(".autosave") {
+            return;
+        }
+        self.recent_files.retain(|f| f != &path);
+        self.recent_files.insert(0, path);
+        if self.recent_files.len() > 10 {
+            self.recent_files.truncate(10);
+        }
+        crate::preferences::save_preferences(self);
     }
 
     pub fn load_from_document(&mut self, doc: crate::save::LoadedDocument) {
@@ -2018,7 +2057,7 @@ impl PaintApp {
                 self.cleanup_autosave();
             }
             CommandId::ExportPng => self.show_export_png_dialog = true,
-            CommandId::ExportJpeg => {}
+            CommandId::ExportJpeg => self.show_export_jpeg_dialog = true,
             CommandId::ExportOra => self.show_export_ora_dialog = true,
             CommandId::ImportImageAsLayer => {}
             CommandId::ImportReferenceImage => {}
@@ -2303,8 +2342,8 @@ impl PaintApp {
                 self.history
                     .push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
             }
-            CommandId::SelectionSmooth => {}
-            CommandId::SelectionBorder => {}
+            CommandId::SelectionSmooth => self.show_smooth_dialog = true,
+            CommandId::SelectionBorder => self.show_border_dialog = true,
             CommandId::TransformSelection => {
                 self.active_tool = ToolId::Transform;
                 self.start_transform();
@@ -2728,7 +2767,7 @@ impl PaintApp {
         }
     }
 
-    fn duplicate_active_layer(&mut self) {
+    pub(crate) fn duplicate_active_layer(&mut self) {
         let Some(source) = self.layers.get(&self.active_layer_id) else {
             return;
         };
@@ -2756,7 +2795,7 @@ impl PaintApp {
         self.active_layer_id = new_id;
     }
 
-    fn delete_active_layer(&mut self) {
+    pub(crate) fn delete_active_layer(&mut self) {
         if self.layer_order.len() <= 1 {
             return;
         }
@@ -2772,7 +2811,7 @@ impl PaintApp {
         }
     }
 
-    fn merge_down(&mut self) {
+    pub(crate) fn merge_down(&mut self) {
         let active_id = self.active_layer_id;
         let pos = match self.layer_order.iter().position(|&x| x == active_id) {
             Some(p) => p,
@@ -4551,10 +4590,9 @@ impl eframe::App for PaintApp {
                 }
 
                 // Handle color picker (eyedropper) tool click/drag
-                if (pointer_clicked || pointer_down)
-                    && matches!(self.active_tool, ToolId::ColorPicker)
-                {
-                    if let Some(ptr_pos) = response.hover_pos() {
+                let pick_trigger = pointer_clicked || response.drag_stopped();
+                if pick_trigger && matches!(self.active_tool, ToolId::ColorPicker) {
+                    if let Some(ptr_pos) = response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())) {
                         let world_pos = self.screen_to_world(ptr_pos, rect);
                         let px = world_pos.x as i32;
                         let py = world_pos.y as i32;
@@ -4876,6 +4914,9 @@ impl eframe::App for PaintApp {
                             self.stroke_start_pos = None;
                             (sx_raw, sy_raw)
                         };
+
+                        let sx = sx.clamp(0.0, self.canvas_width as f32);
+                        let sy = sy.clamp(0.0, self.canvas_height as f32);
 
                         // Remap pressure if it comes from real hardware
                         let pressure =
@@ -6062,19 +6103,23 @@ impl eframe::App for PaintApp {
 
                 // BRUSH CURSOR + COLOR PICKER CURSOR
                 if let Some(pos) = response.hover_pos() {
-                    ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-                    let radius =
-                        (self.brush_radius_log.exp() * self.viewport_zoom).clamp(1.0, 512.0);
-                    ui.painter().circle_stroke(
-                        pos,
-                        radius,
-                        egui::Stroke::new(1.0, Color32::from_black_alpha(220)),
-                    );
-                    ui.painter().circle_stroke(
-                        pos,
-                        radius + 1.0,
-                        egui::Stroke::new(1.0, Color32::from_white_alpha(180)),
-                    );
+                    if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
+                        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                        let radius =
+                            (self.brush_radius_log.exp() * self.viewport_zoom).clamp(1.0, 512.0);
+                        ui.painter().circle_stroke(
+                            pos,
+                            radius,
+                            egui::Stroke::new(1.0, Color32::from_black_alpha(220)),
+                        );
+                        ui.painter().circle_stroke(
+                            pos,
+                            radius + 1.0,
+                            egui::Stroke::new(1.0, Color32::from_white_alpha(180)),
+                        );
+                    } else {
+                        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                    }
                 }
             });
 
@@ -6381,9 +6426,9 @@ pub(crate) fn draw_hsv_color_wheel(
 
     let zone_for_point = |p: egui::Pos2| -> u8 {
         let dist = p.distance(center);
-        if box_rect.shrink(3.0).contains(p) {
+        if box_rect.shrink(1.0).contains(p) {
             2 // square
-        } else if dist >= inner_radius - 2.0 && dist <= outer_radius + 2.0 {
+        } else if dist >= inner_radius + 4.0 && dist <= outer_radius + 2.0 {
             1 // ring
         } else {
             0 // dead zone
@@ -6424,20 +6469,26 @@ pub(crate) fn draw_hsv_color_wheel(
                 if v < 0.20 {
                     v = 0.8;
                 }
-            } else {
+                
+                let (r, g, b) = hsv_to_rgb(h, s, v);
+                color[0] = r;
+                color[1] = g;
+                color[2] = b;
+                response.mark_changed();
+            } else if zone == 2 {
                 // Sat/Val square
                 let local_x = (to_mouse.x / half_side).clamp(-1.0, 1.0);
                 let local_y = (to_mouse.y / half_side).clamp(-1.0, 1.0);
 
                 s = (local_x * 0.5 + 0.5).clamp(0.0, 1.0);
                 v = (0.5 - local_y * 0.5).clamp(0.0, 1.0);
+                
+                let (r, g, b) = hsv_to_rgb(h, s, v);
+                color[0] = r;
+                color[1] = g;
+                color[2] = b;
+                response.mark_changed();
             }
-
-            let (r, g, b) = hsv_to_rgb(h, s, v);
-            color[0] = r;
-            color[1] = g;
-            color[2] = b;
-            response.mark_changed();
         }
     } else {
         *drag_zone = None;
@@ -6913,6 +6964,9 @@ mod tests {
             show_export_png_dialog: false,
             export_png_options: crate::export::png::ExportPngOptions::default(),
             export_png_path: String::new(),
+            show_export_jpeg_dialog: false,
+            export_jpeg_path: String::new(),
+            export_jpeg_quality: 90,
             show_export_ora_dialog: false,
             export_ora_path: String::new(),
             show_import_ora_dialog: false,
@@ -6940,13 +6994,19 @@ mod tests {
             show_grow_dialog: false,
             show_shrink_dialog: false,
             show_feather_dialog: false,
+            show_smooth_dialog: false,
+            show_border_dialog: false,
             grow_pixels: 0,
             shrink_pixels: 0,
             feather_pixels: 0,
+            smooth_pixels: 0,
+            border_pixels: 0,
             color_history: Vec::new(),
             color_history_max: 12,
             color_wheel_drag_zone: None,
             show_layer_properties: false,
+            renaming_layer_id: None,
+            rename_layer_input: String::new(),
             show_shortcut_editor: false,
             show_panel_layout_settings: false,
             shortcut_search: String::new(),
@@ -6954,6 +7014,7 @@ mod tests {
             shortcut_listen_idx: None,
             show_recovery_dialog: false,
             recovery_files: Vec::new(),
+            recent_files: Vec::new(),
             layer_thumbnails: ahash::AHashMap::default(),
             thumbnail_textures: ahash::AHashMap::default(),
             thumbnail_regenerate_counter: 0,
@@ -7141,6 +7202,9 @@ mod tests {
             show_export_png_dialog: false,
             export_png_options: crate::export::png::ExportPngOptions::default(),
             export_png_path: String::new(),
+            show_export_jpeg_dialog: false,
+            export_jpeg_path: String::new(),
+            export_jpeg_quality: 90,
             show_export_ora_dialog: false,
             export_ora_path: String::new(),
             show_import_ora_dialog: false,
@@ -7168,13 +7232,19 @@ mod tests {
             show_grow_dialog: false,
             show_shrink_dialog: false,
             show_feather_dialog: false,
+            show_smooth_dialog: false,
+            show_border_dialog: false,
             grow_pixels: 0,
             shrink_pixels: 0,
             feather_pixels: 0,
+            smooth_pixels: 0,
+            border_pixels: 0,
             color_history: Vec::new(),
             color_history_max: 12,
             color_wheel_drag_zone: None,
             show_layer_properties: false,
+            renaming_layer_id: None,
+            rename_layer_input: String::new(),
             show_shortcut_editor: false,
             show_panel_layout_settings: false,
             shortcut_search: String::new(),
@@ -7182,6 +7252,7 @@ mod tests {
             shortcut_listen_idx: None,
             show_recovery_dialog: false,
             recovery_files: Vec::new(),
+            recent_files: Vec::new(),
             layer_thumbnails: ahash::AHashMap::default(),
             thumbnail_textures: ahash::AHashMap::default(),
             thumbnail_regenerate_counter: 0,

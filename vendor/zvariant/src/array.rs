@@ -4,10 +4,7 @@ use serde::{
     ser::{Serialize, SerializeSeq, Serializer},
 };
 use static_assertions::assert_impl_all;
-use std::{
-    convert::{TryFrom, TryInto},
-    fmt::{Display, Write},
-};
+use std::fmt::{Display, Write};
 
 use crate::{
     value::{value_display_fmt, SignatureSeed},
@@ -20,7 +17,7 @@ use crate::{
 ///
 /// [`Value`]: enum.Value.html#variant.Array
 /// [`Vec`]: https://doc.rust-lang.org/std/vec/struct.Vec.html
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Hash, PartialEq, PartialOrd, Eq, Ord)]
 pub struct Array<'a> {
     element_signature: Signature<'a>,
     elements: Vec<Value<'a>>,
@@ -63,8 +60,21 @@ impl<'a> Array<'a> {
     }
 
     /// Get all the elements.
-    pub fn get(&self) -> &[Value<'a>] {
+    pub fn inner(&self) -> &[Value<'a>] {
         &self.elements
+    }
+
+    /// Get the value at the given index.
+    pub fn get<V>(&'a self, idx: usize) -> Result<Option<V>>
+    where
+        V: ?Sized + TryFrom<&'a Value<'a>>,
+        <V as TryFrom<&'a Value<'a>>>::Error: Into<crate::Error>,
+    {
+        self.elements
+            .get(idx)
+            .map(|v| v.downcast_ref::<V>())
+            .transpose()
+            .map_err(Into::into)
     }
 
     /// Get the number of elements.
@@ -96,12 +106,31 @@ impl<'a> Array<'a> {
         &self.element_signature
     }
 
-    pub(crate) fn to_owned(&self) -> Array<'static> {
-        Array {
+    pub(crate) fn try_to_owned(&self) -> Result<Array<'static>> {
+        Ok(Array {
             element_signature: self.element_signature.to_owned(),
-            elements: self.elements.iter().map(|v| v.to_owned().into()).collect(),
+            elements: self
+                .elements
+                .iter()
+                .map(|v| v.try_to_owned().map(Into::into))
+                .collect::<Result<_>>()?,
             signature: self.signature.to_owned(),
-        }
+        })
+    }
+
+    /// Tries to clone the `Array`.
+    pub fn try_clone(&self) -> crate::Result<Self> {
+        let elements = self
+            .elements
+            .iter()
+            .map(|v| v.try_clone())
+            .collect::<crate::Result<Vec<_>>>()?;
+
+        Ok(Self {
+            element_signature: self.element_signature.clone(),
+            elements,
+            signature: self.signature.clone(),
+        })
     }
 }
 
@@ -122,7 +151,7 @@ pub(crate) fn array_display_fmt(
             let bytes = leading
                 .iter()
                 .map(|v| {
-                    *v.downcast_ref::<u8>()
+                    v.downcast_ref::<u8>()
                         .expect("item must have a signature of a byte")
                 })
                 .collect::<Vec<_>>();
@@ -215,7 +244,7 @@ impl<'a> std::ops::Deref for Array<'a> {
     type Target = [Value<'a>];
 
     fn deref(&self) -> &Self::Target {
-        self.get()
+        self.inner()
     }
 }
 

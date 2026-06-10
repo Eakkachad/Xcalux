@@ -1,17 +1,19 @@
-use std::{convert::TryInto, ops::Deref};
+//! The object server API.
 
 use static_assertions::assert_impl_all;
 use zvariant::ObjectPath;
 
 use crate::{
-    utils::block_on, Error, Interface, InterfaceDeref, InterfaceDerefMut, Result, SignalContext,
+    object_server::{Interface, InterfaceDeref, InterfaceDerefMut, SignalContext},
+    utils::block_on,
+    Error, Result,
 };
 
 /// Wrapper over an interface, along with its corresponding `SignalContext`
 /// instance. A reference to the underlying interface may be obtained via
 /// [`InterfaceRef::get`] and [`InterfaceRef::get_mut`].
 pub struct InterfaceRef<I> {
-    azync: crate::InterfaceRef<I>,
+    azync: crate::object_server::InterfaceRef<I>,
 }
 
 impl<I> InterfaceRef<I>
@@ -39,13 +41,13 @@ where
     /// ```no_run
     /// # use std::error::Error;
     /// # use async_io::block_on;
-    /// # use zbus::{blocking::Connection, dbus_interface};
+    /// # use zbus::{blocking::Connection, interface};
     ///
     /// struct MyIface(u32);
     ///
-    /// #[dbus_interface(name = "org.myiface.MyIface")]
+    /// #[interface(name = "org.myiface.MyIface")]
     /// impl MyIface {
-    ///    #[dbus_interface(property)]
+    ///    #[zbus(property)]
     ///    fn count(&self) -> u32 {
     ///        self.0
     ///    }
@@ -82,8 +84,8 @@ where
 ///
 /// ```no_run
 /// # use std::error::Error;
-/// use zbus::{blocking::Connection, dbus_interface};
-/// use event_listener::Event;
+/// use zbus::{blocking::Connection, interface};
+/// use event_listener::{Event, Listener};
 ///
 /// struct Example {
 ///     // Interfaces are owned by the ObjectServer. They can have
@@ -97,14 +99,14 @@ where
 ///     }
 /// }
 ///
-/// #[dbus_interface(name = "org.myiface.Example")]
+/// #[interface(name = "org.myiface.Example")]
 /// impl Example {
 ///     // This will be the "Quit" D-Bus method.
 ///     fn quit(&mut self) {
 ///         self.quit_event.notify(1);
 ///     }
 ///
-///     // See `dbus_interface` documentation to learn
+///     // See `interface` documentation to learn
 ///     // how to expose properties & signals as well.
 /// }
 ///
@@ -138,9 +140,10 @@ impl ObjectServer {
     /// Register a D-Bus [`Interface`] at a given path. (see the example above)
     ///
     /// Typically you'd want your interfaces to be registered immediately after the associated
-    /// connection is established and therefore use [`zbus::blocking::ConnectionBuilder::serve_at`]
-    /// instead. However, there are situations where you'd need to register interfaces dynamically
-    /// and that's where this method becomes useful.
+    /// connection is established and therefore use
+    /// [`zbus::blocking::connection::Builder::serve_at`] instead. However, there are
+    /// situations where you'd need to register interfaces dynamically and that's where this
+    /// method becomes useful.
     ///
     /// If the interface already exists at this path, returns false.
     ///
@@ -186,13 +189,13 @@ impl ObjectServer {
     /// # use zbus::{
     /// #    SignalContext,
     /// #    blocking::Connection,
-    /// #    dbus_interface,
+    /// #    interface,
     /// # };
     /// #
     /// struct MyIface;
-    /// #[dbus_interface(name = "org.myiface.MyIface")]
+    /// #[interface(name = "org.myiface.MyIface")]
     /// impl MyIface {
-    ///     #[dbus_interface(signal)]
+    ///     #[zbus(signal)]
     ///     async fn emit_signal(ctxt: &SignalContext<'_>) -> zbus::Result<()>;
     /// }
     ///
@@ -227,14 +230,6 @@ impl ObjectServer {
     /// Get the underlying async ObjectServer, consuming `self`.
     pub fn into_inner(self) -> crate::ObjectServer {
         self.azync
-    }
-}
-
-impl Deref for ObjectServer {
-    type Target = crate::ObjectServer;
-
-    fn deref(&self) -> &Self::Target {
-        self.inner()
     }
 }
 

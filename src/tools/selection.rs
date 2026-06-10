@@ -464,9 +464,11 @@ pub fn magic_wand_select(
         let mut queue = VecDeque::new();
         queue.push_back((start_x, start_y));
         let mut visited_local = ahash::AHashSet::new();
-        visited_local.insert((start_x, start_y));
 
         while let Some((cx, cy)) = queue.pop_front() {
+            if visited_local.contains(&(cx, cy)) {
+                continue;
+            }
             let factor = match crate::tools::fill::is_fillable(
                 layers,
                 active_layer,
@@ -479,76 +481,114 @@ pub fn magic_wand_select(
                 None => continue,
             };
 
-            selected_pixels.insert((cx, cy), factor);
-
-            // Scan left
-            let mut scan_x = cx - 1;
-            while scan_x >= 0 && scan_x < canvas_width {
-                if visited_local.insert((scan_x, cy)) {
-                    if crate::tools::fill::is_fillable(
-                        layers,
-                        active_layer,
-                        scan_x,
-                        cy,
-                        target_color,
-                        options,
-                    )
-                    .is_some()
-                    {
-                        queue.push_back((scan_x, cy));
-                    } else {
-                        break;
-                    }
-                } else {
+            // Find left limit
+            let mut left = cx;
+            let mut left_factor = factor;
+            while left > 0 {
+                let nx = left - 1;
+                if visited_local.contains(&(nx, cy)) {
                     break;
                 }
-                scan_x -= 1;
-            }
-
-            // Scan right
-            let mut scan_x = cx + 1;
-            while scan_x < canvas_width {
-                if visited_local.insert((scan_x, cy)) {
-                    if crate::tools::fill::is_fillable(
-                        layers,
-                        active_layer,
-                        scan_x,
-                        cy,
-                        target_color,
-                        options,
-                    )
-                    .is_some()
-                    {
-                        queue.push_back((scan_x, cy));
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-                scan_x += 1;
-            }
-
-            // Check rows above and below
-            for &ny in &[cy - 1, cy + 1] {
-                if ny < 0 || ny >= canvas_height {
-                    continue;
-                }
-                if visited_local.contains(&(cx, ny)) {
-                    continue;
-                }
-                if crate::tools::fill::is_fillable(
+                let f = match crate::tools::fill::is_fillable(
                     layers,
                     active_layer,
-                    cx,
-                    ny,
+                    nx,
+                    cy,
                     target_color,
                     options,
-                )
-                .is_some()
-                    && visited_local.insert((cx, ny))
-                {
-                    queue.push_back((cx, ny));
+                ) {
+                    Some(val) => val,
+                    None => break,
+                };
+                left = nx;
+                left_factor = f;
+            }
+
+            // Find right limit
+            let mut right = cx;
+            let mut right_factor = factor;
+            while right < canvas_width - 1 {
+                let nx = right + 1;
+                if visited_local.contains(&(nx, cy)) {
+                    break;
+                }
+                let f = match crate::tools::fill::is_fillable(
+                    layers,
+                    active_layer,
+                    nx,
+                    cy,
+                    target_color,
+                    options,
+                ) {
+                    Some(val) => val,
+                    None => break,
+                };
+                right = nx;
+                right_factor = f;
+            }
+
+            // Mark visited and collect coordinates
+            for x in left..=right {
+                let f = if x == left {
+                    left_factor
+                } else if x == right {
+                    right_factor
+                } else {
+                    crate::tools::fill::is_fillable(layers, active_layer, x, cy, target_color, options).unwrap_or(1.0)
+                };
+                selected_pixels.insert((x, cy), f);
+                visited_local.insert((x, cy));
+            }
+
+            // Scan row above
+            if cy > 0 {
+                let ny = cy - 1;
+                let mut in_span = false;
+                for x in left..=right {
+                    let fillable = crate::tools::fill::is_fillable(
+                        layers,
+                        active_layer,
+                        x,
+                        ny,
+                        target_color,
+                        options,
+                    )
+                    .is_some()
+                        && !visited_local.contains(&(x, ny));
+                    if fillable {
+                        if !in_span {
+                            queue.push_back((x, ny));
+                            in_span = true;
+                        }
+                    } else {
+                        in_span = false;
+                    }
+                }
+            }
+
+            // Scan row below
+            if cy < canvas_height - 1 {
+                let ny = cy + 1;
+                let mut in_span = false;
+                for x in left..=right {
+                    let fillable = crate::tools::fill::is_fillable(
+                        layers,
+                        active_layer,
+                        x,
+                        ny,
+                        target_color,
+                        options,
+                    )
+                    .is_some()
+                        && !visited_local.contains(&(x, ny));
+                    if fillable {
+                        if !in_span {
+                            queue.push_back((x, ny));
+                            in_span = true;
+                        }
+                    } else {
+                        in_span = false;
+                    }
                 }
             }
         }
@@ -861,6 +901,132 @@ pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i3
     }
 }
 
+pub fn smooth_selection(mask: &mut SelectionMask, smooth_px: i32, canvas_w: i32, canvas_h: i32) {
+    if !mask.is_active || smooth_px <= 0 {
+        return;
+    }
+    let mut original = ahash::AHashMap::default();
+    for (&(tx, ty), tile) in &mask.tiles {
+        for ly in 0..64 {
+            for lx in 0..64 {
+                let val = tile[ly * 64 + lx];
+                if val > 0 {
+                    original.insert((tx * 64 + lx as i32, ty * 64 + ly as i32), val);
+                }
+            }
+        }
+    }
+
+    let mut roi = ahash::AHashSet::default();
+    for &(x, y) in original.keys() {
+        for dy in -smooth_px..=smooth_px {
+            for dx in -smooth_px..=smooth_px {
+                if dx * dx + dy * dy <= smooth_px * smooth_px {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_w && ny >= 0 && ny < canvas_h {
+                        roi.insert((nx, ny));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut smoothed = ahash::AHashMap::default();
+    for (x, y) in roi {
+        let mut sum = 0u32;
+        let mut count = 0u32;
+        for dy in -smooth_px..=smooth_px {
+            for dx in -smooth_px..=smooth_px {
+                if dx * dx + dy * dy <= smooth_px * smooth_px {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if nx >= 0 && nx < canvas_w && ny >= 0 && ny < canvas_h {
+                        let val = *original.get(&(nx, ny)).unwrap_or(&0);
+                        sum += val as u32;
+                    }
+                    count += 1;
+                }
+            }
+        }
+        let avg = (sum as f32 / count as f32).round() as u8;
+        if avg >= 128 {
+            smoothed.insert((x, y), 255);
+        }
+    }
+
+    mask.tiles.clear();
+    for ((x, y), val) in smoothed {
+        let tx = x.div_euclid(64);
+        let ty = y.div_euclid(64);
+        let lx = x.rem_euclid(64) as usize;
+        let ly = y.rem_euclid(64) as usize;
+        let tile = mask
+            .tiles
+            .entry((tx, ty))
+            .or_insert_with(|| Box::new([0u8; 4096]));
+        tile[ly * 64 + lx] = val;
+    }
+}
+
+pub fn border_selection(mask: &mut SelectionMask, border_px: i32, canvas_w: i32, canvas_h: i32) {
+    if !mask.is_active || border_px <= 0 {
+        return;
+    }
+    let grow_px = (border_px + 1) / 2;
+    let shrink_px = border_px / 2;
+
+    let mut grown_mask = mask.clone();
+    grow_selection(&mut grown_mask, grow_px, canvas_w, canvas_h);
+
+    let mut shrunken_mask = mask.clone();
+    shrink_selection(&mut shrunken_mask, shrink_px, canvas_w, canvas_h);
+
+    let mut diff_pixels = ahash::AHashMap::default();
+    for (&(tx, ty), tile) in &grown_mask.tiles {
+        for ly in 0..64 {
+            for lx in 0..64 {
+                let val = tile[ly * 64 + lx];
+                if val > 0 {
+                    let wx = tx * 64 + lx as i32;
+                    let wy = ty * 64 + ly as i32;
+                    diff_pixels.insert((wx, wy), val);
+                }
+            }
+        }
+    }
+
+    for (&(tx, ty), tile) in &shrunken_mask.tiles {
+        for ly in 0..64 {
+            for lx in 0..64 {
+                let val = tile[ly * 64 + lx];
+                if val > 0 {
+                    let wx = tx * 64 + lx as i32;
+                    let wy = ty * 64 + ly as i32;
+                    if let Some(entry) = diff_pixels.get_mut(&(wx, wy)) {
+                        *entry = entry.saturating_sub(val);
+                    }
+                }
+            }
+        }
+    }
+
+    mask.tiles.clear();
+    for ((x, y), val) in diff_pixels {
+        if val > 0 {
+            let tx = x.div_euclid(64);
+            let ty = y.div_euclid(64);
+            let lx = x.rem_euclid(64) as usize;
+            let ly = y.rem_euclid(64) as usize;
+            let tile = mask
+                .tiles
+                .entry((tx, ty))
+                .or_insert_with(|| Box::new([0u8; 4096]));
+            tile[ly * 64 + lx] = val;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -967,4 +1133,52 @@ mod tests {
         let grown = count_selected(&mask);
         assert!(grown > before, "Grow should expand");
     }
+
+    #[test]
+    fn test_magic_wand_basic() {
+        use crate::tools::fill::FillOptions;
+        let mut mask = SelectionMask::new();
+        let mut layer = Layer::new(1, "Layer 1".to_string());
+        // Put a solid red square in the center of tile (0, 0)
+        let tile = layer.tiles.entry((0, 0)).or_default();
+        for y in 10..20 {
+            for x in 10..20 {
+                tile.pixels[y][x] = [32768, 0, 0, 32768];
+            }
+        }
+        let layers_ref = vec![&layer];
+        let mut options = FillOptions::default();
+        options.expand_px = 0;
+        magic_wand_select(
+            &mut mask,
+            &layers_ref,
+            &layer,
+            15,
+            15,
+            &options,
+            SelectionMode::Replace,
+            200,
+            200,
+        );
+        let count = count_selected(&mask);
+        assert_eq!(count, 100, "Magic wand should select exactly the 100 contiguous red pixels");
+    }
+
+    #[test]
+    fn test_smooth_selection_contour() {
+        let mut mask = make_pixel_mask(100, 100, 10, 200, 200);
+        let _before = count_selected(&mask);
+        smooth_selection(&mut mask, 3, 200, 200);
+        let after = count_selected(&mask);
+        assert!(after > 0, "Smoothed selection should not be empty");
+    }
+
+    #[test]
+    fn test_border_selection_outline() {
+        let mut mask = make_pixel_mask(100, 100, 10, 200, 200);
+        border_selection(&mut mask, 4, 200, 200);
+        let count = count_selected(&mask);
+        assert!(count >= 100 && count <= 400, "Border pixels count should be in range: {}", count);
+    }
 }
+

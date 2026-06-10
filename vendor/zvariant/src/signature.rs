@@ -1,26 +1,28 @@
 use core::{
-    convert::TryFrom,
+    cmp::Ordering,
     fmt::{self, Debug, Display, Formatter},
-    panic, str,
+    hash::{Hash, Hasher},
+    str,
 };
 use serde::{
-    de::{Deserialize, Deserializer, Visitor},
+    de::{Deserialize, Deserializer},
     ser::{Serialize, Serializer},
 };
 use static_assertions::assert_impl_all;
 use std::{
+    borrow::Cow,
     ops::{Bound, RangeBounds},
     sync::Arc,
 };
 
-use crate::{signature_parser::SignatureParser, Basic, EncodingFormat, Error, Result, Type};
+use crate::{serialized::Format, signature_parser::SignatureParser, Basic, Error, Result, Type};
 
 // A data type similar to Cow and [`bytes::Bytes`] but unlike the former won't allow us to only keep
 // the owned bytes in Arc and latter doesn't have a notion of borrowed data and would require API
 // breakage.
 //
 // [`bytes::Bytes`]: https://docs.rs/bytes/0.5.6/bytes/struct.Bytes.html
-#[derive(PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, Clone)]
 enum Bytes<'b> {
     Borrowed(&'b [u8]),
     Static(&'static [u8]),
@@ -35,9 +37,18 @@ impl<'b> Bytes<'b> {
     fn owned(bytes: Vec<u8>) -> Self {
         Self::Owned(bytes.into())
     }
+
+    /// This is faster than `Clone::clone` when `self` contains owned data.
+    fn as_ref(&self) -> Bytes<'_> {
+        match &self {
+            Bytes::Static(s) => Bytes::Static(s),
+            Bytes::Borrowed(s) => Bytes::Borrowed(s),
+            Bytes::Owned(s) => Bytes::Borrowed(s),
+        }
+    }
 }
 
-impl<'b> std::ops::Deref for Bytes<'b> {
+impl std::ops::Deref for Bytes<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
@@ -49,25 +60,55 @@ impl<'b> std::ops::Deref for Bytes<'b> {
     }
 }
 
+impl Eq for Bytes<'_> {}
+
+impl PartialEq for Bytes<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Ord for Bytes<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+impl PartialOrd for Bytes<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Hash for Bytes<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (**self).hash(state)
+    }
+}
+
 /// String that [identifies] the type of an encoded value.
 ///
 /// # Examples
 ///
 /// ```
-/// use core::convert::TryFrom;
 /// use zvariant::Signature;
 ///
 /// // Valid signatures
 /// let s = Signature::try_from("").unwrap();
 /// assert_eq!(s, "");
+/// # assert_eq!(s.n_complete_types(), Ok(0));
 /// let s = Signature::try_from("y").unwrap();
 /// assert_eq!(s, "y");
+/// # assert_eq!(s.n_complete_types(), Ok(1));
 /// let s = Signature::try_from("xs").unwrap();
 /// assert_eq!(s, "xs");
+/// # assert_eq!(s.n_complete_types(), Ok(2));
 /// let s = Signature::try_from("(ysa{sd})").unwrap();
 /// assert_eq!(s, "(ysa{sd})");
+/// # assert_eq!(s.n_complete_types(), Ok(1));
 /// let s = Signature::try_from("a{sd}").unwrap();
 /// assert_eq!(s, "a{sd}");
+/// # assert_eq!(s.n_complete_types(), Ok(1));
 ///
 /// // Invalid signatures
 /// Signature::try_from("z").unwrap_err();
@@ -83,7 +124,7 @@ impl<'b> std::ops::Deref for Bytes<'b> {
 ///
 /// [identifies]: https://dbus.freedesktop.org/doc/dbus-specification.html#type-system
 /// [`slice`]: #method.slice
-#[derive(Eq, Hash, Clone)]
+#[derive(Hash, Clone, PartialOrd, Ord)]
 pub struct Signature<'a> {
     bytes: Bytes<'a>,
     pos: usize,
@@ -102,6 +143,15 @@ impl<'a> Signature<'a> {
     /// The signature bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[self.pos..self.end]
+    }
+
+    /// This is faster than `Clone::clone` when `self` contains owned data.
+    pub fn as_ref(&self) -> Signature<'_> {
+        Signature {
+            bytes: self.bytes.as_ref(),
+            pos: self.pos,
+            end: self.end,
+        }
     }
 
     /// Create a new Signature from given bytes.
@@ -170,7 +220,7 @@ impl<'a> Signature<'a> {
     /// [`Signature::into_owned`] do not clone the underlying bytes.
     pub fn from_static_str(signature: &'static str) -> Result<Self> {
         let bytes = signature.as_bytes();
-        ensure_correct_signature_str(bytes)?;
+        SignatureParser::validate(bytes)?;
 
         Ok(Self {
             bytes: Bytes::Static(bytes),
@@ -185,7 +235,7 @@ impl<'a> Signature<'a> {
     /// `&'static [u8]`. The former will ensure that [`Signature::to_owned`] and
     /// [`Signature::into_owned`] do not clone the underlying bytes.
     pub fn from_static_bytes(bytes: &'static [u8]) -> Result<Self> {
-        ensure_correct_signature_str(bytes)?;
+        SignatureParser::validate(bytes)?;
 
         Ok(Self {
             bytes: Bytes::Static(bytes),
@@ -271,6 +321,21 @@ impl<'a> Signature<'a> {
 
         clone
     }
+
+    /// The number of complete types for the signature.
+    ///
+    /// # Errors
+    ///
+    /// If the signature is invalid, returns the first error.
+    pub fn n_complete_types(&self) -> Result<usize> {
+        let mut count = 0;
+        // SAFETY: the parser is only used to do counting
+        for s in unsafe { SignatureParser::from_bytes_unchecked(self.as_bytes())? } {
+            s?;
+            count += 1;
+        }
+        Ok(count)
+    }
 }
 
 impl<'a> Debug for Signature<'a> {
@@ -283,11 +348,11 @@ impl<'a> Basic for Signature<'a> {
     const SIGNATURE_CHAR: char = 'g';
     const SIGNATURE_STR: &'static str = "g";
 
-    fn alignment(format: EncodingFormat) -> usize {
+    fn alignment(format: Format) -> usize {
         match format {
-            EncodingFormat::DBus => 1,
+            Format::DBus => 1,
             #[cfg(feature = "gvariant")]
-            EncodingFormat::GVariant => 1,
+            Format::GVariant => 1,
         }
     }
 }
@@ -298,8 +363,8 @@ impl<'a> Type for Signature<'a> {
     }
 }
 
-impl<'a, 'b> From<&'b Signature<'a>> for Signature<'a> {
-    fn from(signature: &'b Signature<'a>) -> Signature<'a> {
+impl<'a> From<&Signature<'a>> for Signature<'a> {
+    fn from(signature: &Signature<'a>) -> Signature<'a> {
         signature.clone()
     }
 }
@@ -308,9 +373,9 @@ impl<'a> TryFrom<&'a [u8]> for Signature<'a> {
     type Error = Error;
 
     fn try_from(value: &'a [u8]) -> Result<Self> {
-        ensure_correct_signature_str(value)?;
+        SignatureParser::validate(value)?;
 
-        // SAFETY: ensure_correct_signature_str checks UTF8
+        // SAFETY: validate checks UTF8
         unsafe { Ok(Self::from_bytes_unchecked(value)) }
     }
 }
@@ -324,11 +389,23 @@ impl<'a> TryFrom<&'a str> for Signature<'a> {
     }
 }
 
+/// Try to create a Signature from a `Cow<str>.`
+impl<'a> TryFrom<Cow<'a, str>> for Signature<'a> {
+    type Error = Error;
+
+    fn try_from(value: Cow<'a, str>) -> Result<Self> {
+        match value {
+            Cow::Borrowed(v) => Self::try_from(v),
+            Cow::Owned(v) => Self::try_from(v),
+        }
+    }
+}
+
 impl<'a> TryFrom<String> for Signature<'a> {
     type Error = Error;
 
     fn try_from(value: String) -> Result<Self> {
-        ensure_correct_signature_str(value.as_bytes())?;
+        SignatureParser::validate(value.as_bytes())?;
 
         Ok(Self::from_string_unchecked(value))
     }
@@ -354,9 +431,35 @@ impl<'a> std::ops::Deref for Signature<'a> {
     }
 }
 
+/// Checks whether the string slice has balanced parentheses.
+fn has_balanced_parentheses(signature_str: &str) -> bool {
+    signature_str.chars().fold(0, |count, ch| match ch {
+        '(' => count + 1,
+        ')' if count != 0 => count - 1,
+        _ => count,
+    }) == 0
+}
+
+/// Determines whether the signature has outer parentheses and if so, return the
+/// string slice without those parentheses.
+fn without_outer_parentheses<'a, 'b>(sig: &'a Signature<'b>) -> &'a str
+where
+    'b: 'a,
+{
+    let sig_str = sig.as_str();
+
+    if let Some(subslice) = sig_str.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        if has_balanced_parentheses(subslice) {
+            return subslice;
+        }
+    }
+    sig_str
+}
+
+/// Evaluate equality of two signatures, ignoring outer parentheses if needed.
 impl<'a, 'b> PartialEq<Signature<'a>> for Signature<'b> {
     fn eq(&self, other: &Signature<'_>) -> bool {
-        self.as_bytes() == other.as_bytes()
+        without_outer_parentheses(self) == without_outer_parentheses(other)
     }
 }
 
@@ -371,6 +474,10 @@ impl<'a> PartialEq<&str> for Signature<'a> {
         self.as_bytes() == other.as_bytes()
     }
 }
+
+// According to the docs, `Eq` derive should only be used on structs if all its fields are
+// are `Eq`. Hence the manual implementation.
+impl Eq for Signature<'_> {}
 
 impl<'a> Display for Signature<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -392,50 +499,10 @@ impl<'de: 'a, 'a> Deserialize<'de> for Signature<'a> {
     where
         D: Deserializer<'de>,
     {
-        let visitor = SignatureVisitor;
+        let val = <std::borrow::Cow<'a, str>>::deserialize(deserializer)?;
 
-        deserializer.deserialize_str(visitor)
+        Self::try_from(val).map_err(serde::de::Error::custom)
     }
-}
-
-struct SignatureVisitor;
-
-impl<'de> Visitor<'de> for SignatureVisitor {
-    type Value = Signature<'de>;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("a Signature")
-    }
-
-    #[inline]
-    fn visit_borrowed_str<E>(self, value: &'de str) -> core::result::Result<Signature<'de>, E>
-    where
-        E: serde::de::Error,
-    {
-        Signature::try_from(value).map_err(serde::de::Error::custom)
-    }
-}
-
-fn ensure_correct_signature_str(signature: &[u8]) -> Result<()> {
-    if signature.len() > 255 {
-        return Err(serde::de::Error::invalid_length(
-            signature.len(),
-            &"<= 255 characters",
-        ));
-    }
-
-    if signature.is_empty() {
-        return Ok(());
-    }
-
-    // SAFETY: SignatureParser never calls as_str
-    let signature = unsafe { Signature::from_bytes_unchecked(signature) };
-    let mut parser = SignatureParser::new(signature);
-    while !parser.done() {
-        let _ = parser.parse_next_signature()?;
-    }
-
-    Ok(())
 }
 
 /// Owned [`Signature`](struct.Signature.html)
@@ -447,6 +514,15 @@ assert_impl_all!(OwnedSignature: Send, Sync, Unpin);
 impl OwnedSignature {
     pub fn into_inner(self) -> Signature<'static> {
         self.0
+    }
+}
+
+impl Basic for OwnedSignature {
+    const SIGNATURE_CHAR: char = Signature::SIGNATURE_CHAR;
+    const SIGNATURE_STR: &'static str = Signature::SIGNATURE_STR;
+
+    fn alignment(format: Format) -> usize {
+        Signature::alignment(format)
     }
 }
 
@@ -476,16 +552,22 @@ impl std::convert::From<OwnedSignature> for crate::Value<'static> {
     }
 }
 
+impl TryFrom<String> for OwnedSignature {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Ok(Self(Signature::try_from(value)?))
+    }
+}
+
 impl<'de> Deserialize<'de> for OwnedSignature {
     fn deserialize<D>(deserializer: D) -> core::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let visitor = SignatureVisitor;
+        let val = String::deserialize(deserializer)?;
 
-        deserializer
-            .deserialize_str(visitor)
-            .map(|v| OwnedSignature(v.to_owned()))
+        OwnedSignature::try_from(val).map_err(serde::de::Error::custom)
     }
 }
 
@@ -497,7 +579,31 @@ impl std::fmt::Display for OwnedSignature {
 
 #[cfg(test)]
 mod tests {
-    use super::Signature;
+    use super::{Bytes, Signature};
+    use std::sync::Arc;
+
+    #[test]
+    fn bytes_equality() {
+        let borrowed1 = Bytes::Borrowed(b"foo");
+        let borrowed2 = Bytes::Borrowed(b"foo");
+        let static1 = Bytes::Static(b"foo");
+        let static2 = Bytes::Static(b"foo");
+        let owned1 = Bytes::Owned(Arc::new(*b"foo"));
+        let owned2 = Bytes::Owned(Arc::new(*b"foo"));
+
+        assert_eq!(borrowed1, borrowed2);
+        assert_eq!(static1, static2);
+        assert_eq!(owned1, owned2);
+
+        assert_eq!(borrowed1, static1);
+        assert_eq!(static1, borrowed1);
+
+        assert_eq!(static1, owned1);
+        assert_eq!(owned1, static1);
+
+        assert_eq!(borrowed1, owned1);
+        assert_eq!(owned1, borrowed1);
+    }
 
     #[test]
     fn signature_slicing() {
@@ -514,5 +620,20 @@ mod tests {
         assert_eq!(slice.len(), 1);
         assert_eq!(slice, "t");
         assert_eq!(slice.slice(1..), "");
+    }
+
+    #[test]
+    fn signature_equality() {
+        let sig_a = Signature::from_str_unchecked("(asta{sv})");
+        let sig_b = Signature::from_str_unchecked("asta{sv}");
+        assert_eq!(sig_a, sig_b);
+
+        let sig_a = Signature::from_str_unchecked("((so)ii(uu))");
+        let sig_b = Signature::from_str_unchecked("(so)ii(uu)");
+        assert_eq!(sig_a, sig_b);
+
+        let sig_a = Signature::from_str_unchecked("(so)i");
+        let sig_b = Signature::from_str_unchecked("(so)u");
+        assert_ne!(sig_a, sig_b);
     }
 }

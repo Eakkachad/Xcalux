@@ -10,9 +10,8 @@ macros for your convenience so you do not need to use this crate directly.
 ## Example code
 
 ```rust
-use zvariant::{EncodingContext, from_slice, to_bytes, Type};
+use zvariant::{serialized::Context, to_bytes, Type, LE};
 use serde::{Deserialize, Serialize};
-use byteorder::LE;
 
 #[derive(Deserialize, Serialize, Type, PartialEq, Debug)]
 struct Struct<'s> {
@@ -27,9 +26,9 @@ let s = Struct {
     field2: i64::max_value(),
     field3: "hello",
 };
-let ctxt = EncodingContext::<LE>::new_dbus(0);
+let ctxt = Context::new_dbus(LE, 0);
 let encoded = to_bytes(ctxt, &s).unwrap();
-let decoded: Struct = from_slice(&encoded, ctxt).unwrap();
+let decoded: Struct = encoded.deserialize().unwrap().0;
 assert_eq!(decoded, s);
 ```
 

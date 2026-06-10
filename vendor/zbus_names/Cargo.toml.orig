@@ -1,9 +1,9 @@
 [package]
 name = "zbus_names"
-version = "2.6.1"
+version = "3.0.0"
 authors = ["Zeeshan Ali Khan <zeeshanak@gnome.org>"]
-edition = "2018"
-rust-version = "1.64"
+edition = "2021"
+rust-version = "1.75"
 
 description = "A collection of D-Bus bus names types"
 repository = "https://github.com/dbus2/zbus/"
@@ -14,7 +14,9 @@ readme = "README.md"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-zvariant = { path = "../zvariant", version = "3.15", default-features = false, features = ["enumflags2"] }
+zvariant = { path = "../zvariant", version = "4.0.0", default-features = false, features = [
+    "enumflags2",
+] }
 static_assertions = "1.1.0"
 
 [package.metadata.docs.rs]

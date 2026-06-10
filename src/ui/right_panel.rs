@@ -1787,248 +1787,359 @@ pub(crate) fn draw_layers_manager_widget(
                 }
             }
 
-            let order = app.layer_order.clone();
-            'layer_loop: for id in order {
-                let pointer_released = ui.ctx().input(|i| i.pointer.any_released());
-                let is_active = app.active_layer_id == id;
-                let mut drag_started = false;
+            egui::ScrollArea::vertical()
+                .id_source("layers_list_scroll")
+                .max_height(250.0)
+                .show(ui, |ui| {
+                    let order = app.layer_order.clone();
+                    'layer_loop: for id in order {
+                        let pointer_released = ui.ctx().input(|i| i.pointer.any_released());
+                        let is_active = app.active_layer_id == id;
+                        let mut drag_started = false;
 
-                let row_height = 48.0;
-                let avail_w = ui.available_width();
-                let (row_rect, row_response) =
-                    ui.allocate_exact_size(egui::vec2(avail_w, row_height), egui::Sense::click());
-                let row_hovered = row_response.hovered();
+                        let row_height = 48.0;
+                        let avail_w = ui.available_width();
+                        let (row_rect, row_response) =
+                            ui.allocate_exact_size(egui::vec2(avail_w, row_height), egui::Sense::click());
+                        let row_hovered = row_response.hovered();
 
-                // Draw row with painter (fresh borrow per iteration)
-                {
-                    let p = ui.painter();
-                    if is_active {
-                        p.rect_filled(row_rect, 0.0, egui::Color32::from_rgb(224, 220, 255));
-                        p.rect_stroke(
-                            row_rect,
-                            0.0,
-                            egui::Stroke::new(1.5, egui::Color32::from_rgb(125, 120, 255)),
-                        );
-                    } else if row_response.hovered() {
-                        p.rect_filled(row_rect, 0.0, egui::Color32::from_gray(245));
-                    } else {
-                        p.rect_filled(row_rect, 0.0, egui::Color32::WHITE);
-                    }
-                }
-
-                if let Some(layer) = app.layers.get_mut(&id) {
-                    // Drag handle
-                    let grip_rect = egui::Rect::from_min_size(
-                        egui::pos2(row_rect.min.x + 2.0, row_rect.min.y + 2.0),
-                        egui::vec2(14.0, row_height - 4.0),
-                    );
-                    let grip_resp = ui.allocate_rect(grip_rect, egui::Sense::click_and_drag());
-                    ui.painter().text(
-                        grip_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "⠿",
-                        egui::FontId::proportional(10.0),
-                        egui::Color32::from_gray(160),
-                    );
-
-                    if grip_resp.drag_started() {
-                        app.dragging_layer_id = Some(id);
-                        app.active_layer_id = id;
-                        drag_started = true;
-                    }
-
-                    // Visibility eye
-                    let vis_x = row_rect.min.x + 18.0;
-                    let vis_rect = egui::Rect::from_min_size(
-                        egui::pos2(vis_x, row_rect.min.y + 2.0),
-                        egui::vec2(18.0, row_height - 4.0),
-                    );
-                    let vis_resp = ui.allocate_rect(vis_rect, egui::Sense::click());
-                    {
-                        let p = ui.painter();
-                        let eye_text = if layer.visible { "👁" } else { "⦂" };
-                        let eye_color = if layer.visible {
-                            egui::Color32::BLACK
-                        } else {
-                            egui::Color32::from_gray(160)
-                        };
-                        p.text(
-                            vis_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            eye_text,
-                            egui::FontId::proportional(11.0),
-                            eye_color,
-                        );
-                    }
-                    if vis_resp.clicked() {
-                        let old_vis = layer.visible;
-                        layer.visible = !layer.visible;
-                        app.history.push_command(HistoryCommand::LayerProperty {
-                            layer_id: id,
-                            property: LayerPropertyChange::Visible {
-                                old: old_vis,
-                                new: layer.visible,
-                            },
-                        });
-                    }
-
-                    // Reference dot
-                    let ref_rect = egui::Rect::from_min_size(
-                        egui::pos2(vis_x, row_rect.min.y + 24.0),
-                        egui::vec2(18.0, 18.0),
-                    );
-                    let ref_resp = ui.allocate_rect(ref_rect, egui::Sense::click());
-                    {
-                        let p = ui.painter();
-                        let ref_text = if layer.selection_source { "◎" } else { "⚬" };
-                        let ref_color = if layer.selection_source {
-                            egui::Color32::from_rgb(0, 120, 215)
-                        } else {
-                            egui::Color32::from_gray(160)
-                        };
-                        p.text(
-                            ref_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            ref_text,
-                            egui::FontId::proportional(10.0),
-                            ref_color,
-                        );
-                    }
-                    if ref_resp.clicked() {
-                        layer.selection_source = !layer.selection_source;
-                    }
-
-                    // Layer type label
-                    let type_str = match &layer.kind {
-                        crate::canvas::LayerType::Folder { .. } => "F",
-                        crate::canvas::LayerType::Vector => "V",
-                        crate::canvas::LayerType::Raster => "R",
-                    };
-
-                    // Thumbnail
-                    let thumb_left = row_rect.min.x + 42.0;
-                    let thumb_size = 38.0;
-                    let thumb_rect = egui::Rect::from_min_size(
-                        egui::pos2(thumb_left, row_rect.min.y + (row_height - thumb_size) / 2.0),
-                        egui::Vec2::splat(thumb_size),
-                    );
-                    let thumb_resp = ui.allocate_rect(thumb_rect, egui::Sense::click());
-                    {
-                        let p = ui.painter();
-                        p.rect_filled(thumb_rect, 1.0, egui::Color32::WHITE);
-                        p.rect_stroke(
-                            thumb_rect,
-                            1.0,
-                            egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
-                        );
-                        if let Some(tex) = thumb_textures.get(&id) {
-                            p.image(
-                                tex.id(),
-                                thumb_rect,
-                                egui::Rect::from_min_max(
-                                    egui::Pos2::ZERO,
-                                    egui::Pos2::new(1.0, 1.0),
-                                ),
-                                egui::Color32::WHITE,
-                            );
+                        // Right click activates the layer first
+                        if row_response.secondary_clicked() {
+                            app.active_layer_id = id;
                         }
-                    }
-                    if is_active && thumb_resp.clicked() {
-                        app.active_mask_editing = false;
-                    }
 
-                    // Mask overlay on thumbnail
-                    if layer.mask.is_some() {
-                        let mask_overlay_rect = egui::Rect::from_min_size(
-                            egui::pos2(thumb_rect.max.x - 16.0, thumb_rect.max.y - 16.0),
-                            egui::Vec2::splat(16.0),
-                        );
+                        // Context menu triggers
+                        let mut rename_clicked = false;
+                        let mut duplicate_clicked = false;
+                        let mut delete_clicked = false;
+                        let mut merge_clicked = false;
+
+                        row_response.context_menu(|ui| {
+                            if ui.button("Rename").clicked() {
+                                rename_clicked = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("Duplicate").clicked() {
+                                duplicate_clicked = true;
+                                ui.close_menu();
+                            }
+                            let order_len = app.layer_order.len();
+                            if ui.add_enabled(order_len > 1, egui::Button::new("Delete")).clicked() {
+                                delete_clicked = true;
+                                ui.close_menu();
+                            }
+                            let pos = app.layer_order.iter().position(|&x| x == id).unwrap_or(0);
+                            if ui.add_enabled(pos + 1 < order_len, egui::Button::new("Merge Down")).clicked() {
+                                merge_clicked = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            ui.menu_button("Properties", |ui| {
+                                if let Some(layer) = app.layers.get_mut(&id) {
+                                    ui.horizontal(|ui| {
+                                        ui.label("Opacity:");
+                                        ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0));
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.label("Blend:");
+                                        egui::ComboBox::from_id_source(format!("blend_ctx_{}", id))
+                                            .selected_text(format!("{:?}", layer.blend_mode))
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut layer.blend_mode, BlendMode::Normal, "Normal");
+                                                ui.selectable_value(&mut layer.blend_mode, BlendMode::Multiply, "Multiply");
+                                                ui.selectable_value(&mut layer.blend_mode, BlendMode::Screen, "Screen");
+                                                ui.selectable_value(&mut layer.blend_mode, BlendMode::Overlay, "Overlay");
+                                                ui.selectable_value(&mut layer.blend_mode, BlendMode::Luminosity, "Luminosity");
+                                                ui.selectable_value(&mut layer.blend_mode, BlendMode::Shade, "Shade");
+                                            });
+                                    });
+                                    ui.checkbox(&mut layer.lock_alpha, "Lock Alpha");
+                                    ui.checkbox(&mut layer.locked, "Lock Drawing");
+                                    ui.checkbox(&mut layer.is_clipping, "Clipping Group");
+                                }
+                            });
+                        });
+
+                        // Deferred context menu execution
+                        if rename_clicked {
+                            app.renaming_layer_id = Some(id);
+                            if let Some(l) = app.layers.get(&id) {
+                                app.rename_layer_input = l.name.clone();
+                            }
+                        }
+                        if duplicate_clicked {
+                            app.active_layer_id = id;
+                            app.duplicate_active_layer();
+                        }
+                        if delete_clicked {
+                            app.active_layer_id = id;
+                            app.delete_active_layer();
+                        }
+                        if merge_clicked {
+                            app.active_layer_id = id;
+                            app.merge_down();
+                        }
+
+                        // Draw row with painter (fresh borrow per iteration)
                         {
                             let p = ui.painter();
-                            p.rect_filled(mask_overlay_rect, 0.0, egui::Color32::WHITE);
-                            p.rect_stroke(
-                                mask_overlay_rect,
-                                0.0,
-                                egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
-                            );
-                            if is_active && app.active_mask_editing {
+                            if is_active {
+                                p.rect_filled(row_rect, 0.0, egui::Color32::from_rgb(224, 220, 255));
                                 p.rect_stroke(
-                                    mask_overlay_rect.expand(1.0),
+                                    row_rect,
                                     0.0,
-                                    egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 200, 80)),
+                                    egui::Stroke::new(1.5, egui::Color32::from_rgb(125, 120, 255)),
+                                );
+                            } else if row_hovered {
+                                p.rect_filled(row_rect, 0.0, egui::Color32::from_gray(245));
+                            } else {
+                                p.rect_filled(row_rect, 0.0, egui::Color32::WHITE);
+                            }
+                        }
+
+                        if let Some(layer) = app.layers.get_mut(&id) {
+                            // Drag handle
+                            let grip_rect = egui::Rect::from_min_size(
+                                egui::pos2(row_rect.min.x + 2.0, row_rect.min.y + 2.0),
+                                egui::vec2(14.0, row_height - 4.0),
+                            );
+                            let grip_resp = ui.allocate_rect(grip_rect, egui::Sense::click_and_drag());
+                            ui.painter().text(
+                                grip_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "⠿",
+                                egui::FontId::proportional(10.0),
+                                egui::Color32::from_gray(160),
+                            );
+
+                            if grip_resp.drag_started() {
+                                app.dragging_layer_id = Some(id);
+                                app.active_layer_id = id;
+                                drag_started = true;
+                            }
+
+                            // Visibility eye
+                            let vis_x = row_rect.min.x + 18.0;
+                            let vis_rect = egui::Rect::from_min_size(
+                                egui::pos2(vis_x, row_rect.min.y + 2.0),
+                                egui::vec2(18.0, row_height - 4.0),
+                            );
+                            let vis_resp = ui.allocate_rect(vis_rect, egui::Sense::click());
+                            {
+                                let p = ui.painter();
+                                let eye_text = if layer.visible { "👁" } else { "⦂" };
+                                let eye_color = if layer.visible {
+                                    egui::Color32::BLACK
+                                } else {
+                                    egui::Color32::from_gray(160)
+                                };
+                                p.text(
+                                    vis_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    eye_text,
+                                    egui::FontId::proportional(11.0),
+                                    eye_color,
                                 );
                             }
-                        }
-                        let mask_thumb_resp =
-                            ui.allocate_rect(mask_overlay_rect, egui::Sense::click());
-                        if mask_thumb_resp.clicked() {
-                            app.active_mask_editing = true;
-                        }
-                        if mask_thumb_resp.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                    }
-
-                    // Text: name, blend mode, opacity
-                    let text_x = thumb_left + thumb_size + 6.0;
-                    {
-                        let p = ui.painter();
-                        p.text(
-                            egui::pos2(text_x, row_rect.min.y + 4.0),
-                            egui::Align2::LEFT_TOP,
-                            format!("{}  {}", type_str, layer.name),
-                            egui::FontId::proportional(11.0),
-                            egui::Color32::BLACK,
-                        );
-                        p.text(
-                            egui::pos2(text_x, row_rect.min.y + 19.0),
-                            egui::Align2::LEFT_TOP,
-                            format!("{:?}", layer.blend_mode),
-                            egui::FontId::proportional(10.0),
-                            egui::Color32::from_gray(100),
-                        );
-                        let opacity_pct = (layer.opacity * 100.0).round() as i32;
-                        p.text(
-                            egui::pos2(text_x, row_rect.min.y + 32.0),
-                            egui::Align2::LEFT_TOP,
-                            format!("{}%", opacity_pct),
-                            egui::FontId::proportional(10.0),
-                            egui::Color32::from_gray(100),
-                        );
-                    }
-
-                    if row_response.clicked() {
-                        app.active_layer_id = id;
-                    }
-                }
-
-                // Drag reorder
-                if let Some(dragging_id) = app.dragging_layer_id {
-                    if dragging_id == id && drag_started {
-                        app.drag_start_order = Some(app.layer_order.clone());
-                    }
-                    if dragging_id != id && row_hovered {
-                        if let (Some(from), Some(to)) = (
-                            app.layer_order.iter().position(|&lid| lid == dragging_id),
-                            app.layer_order.iter().position(|&lid| lid == id),
-                        ) {
-                            app.layer_order.swap(from, to);
-                        }
-                    }
-                    if pointer_released {
-                        if let Some(old_order) = app.drag_start_order.take() {
-                            let new_order = app.layer_order.clone();
-                            if old_order != new_order {
-                                app.history.push_command(HistoryCommand::LayerReorder {
-                                    old_order,
-                                    new_order,
+                            if vis_resp.clicked() {
+                                let old_vis = layer.visible;
+                                layer.visible = !layer.visible;
+                                app.history.push_command(HistoryCommand::LayerProperty {
+                                    layer_id: id,
+                                    property: LayerPropertyChange::Visible {
+                                        old: old_vis,
+                                        new: layer.visible,
+                                    },
                                 });
                             }
+
+                            // Reference dot
+                            let ref_rect = egui::Rect::from_min_size(
+                                egui::pos2(vis_x, row_rect.min.y + 24.0),
+                                egui::vec2(18.0, 18.0),
+                            );
+                            let ref_resp = ui.allocate_rect(ref_rect, egui::Sense::click());
+                            {
+                                let p = ui.painter();
+                                let ref_text = if layer.selection_source { "◎" } else { "⚬" };
+                                let ref_color = if layer.selection_source {
+                                    egui::Color32::from_rgb(0, 120, 215)
+                                } else {
+                                    egui::Color32::from_gray(160)
+                                };
+                                p.text(
+                                    ref_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    ref_text,
+                                    egui::FontId::proportional(10.0),
+                                    ref_color,
+                                );
+                            }
+                            if ref_resp.clicked() {
+                                layer.selection_source = !layer.selection_source;
+                            }
+
+                            // Layer type label
+                            let type_str = match &layer.kind {
+                                crate::canvas::LayerType::Folder { .. } => "F",
+                                crate::canvas::LayerType::Vector => "V",
+                                crate::canvas::LayerType::Raster => "R",
+                            };
+
+                            // Thumbnail
+                            let thumb_left = row_rect.min.x + 42.0;
+                            let thumb_size = 38.0;
+                            let thumb_rect = egui::Rect::from_min_size(
+                                egui::pos2(thumb_left, row_rect.min.y + (row_height - thumb_size) / 2.0),
+                                egui::Vec2::splat(thumb_size),
+                            );
+                            let thumb_resp = ui.allocate_rect(thumb_rect, egui::Sense::click());
+                            {
+                                let p = ui.painter();
+                                p.rect_filled(thumb_rect, 1.0, egui::Color32::WHITE);
+                                p.rect_stroke(
+                                    thumb_rect,
+                                    1.0,
+                                    egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                                );
+                                if let Some(tex) = thumb_textures.get(&id) {
+                                    p.image(
+                                        tex.id(),
+                                        thumb_rect,
+                                        egui::Rect::from_min_max(
+                                            egui::Pos2::ZERO,
+                                            egui::Pos2::new(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
+                                }
+                            }
+                            if is_active && thumb_resp.clicked() {
+                                app.active_mask_editing = false;
+                            }
+
+                            // Mask overlay on thumbnail
+                            if layer.mask.is_some() {
+                                let mask_overlay_rect = egui::Rect::from_min_size(
+                                    egui::pos2(thumb_rect.max.x - 16.0, thumb_rect.max.y - 16.0),
+                                    egui::Vec2::splat(16.0),
+                                );
+                                {
+                                    let p = ui.painter();
+                                    p.rect_filled(mask_overlay_rect, 0.0, egui::Color32::WHITE);
+                                    p.rect_stroke(
+                                        mask_overlay_rect,
+                                        0.0,
+                                        egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                                    );
+                                    if is_active && app.active_mask_editing {
+                                        p.rect_stroke(
+                                            mask_overlay_rect.expand(1.0),
+                                            0.0,
+                                            egui::Stroke::new(2.0, egui::Color32::from_rgb(0, 200, 80)),
+                                        );
+                                    }
+                                }
+                                let mask_thumb_resp =
+                                    ui.allocate_rect(mask_overlay_rect, egui::Sense::click());
+                                if mask_thumb_resp.clicked() {
+                                    app.active_mask_editing = true;
+                                }
+                                if mask_thumb_resp.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                            }
+
+                            // Text: name, blend mode, opacity
+                            let text_x = thumb_left + thumb_size + 6.0;
+                            let text_width = row_rect.max.x - text_x - 4.0;
+                            let name_rect = egui::Rect::from_min_max(
+                                egui::pos2(text_x, row_rect.min.y + 2.0),
+                                egui::pos2(text_x + text_width.max(50.0), row_rect.min.y + 16.0),
+                            );
+
+                            if app.renaming_layer_id == Some(id) {
+                                let text_edit = egui::TextEdit::singleline(&mut app.rename_layer_input)
+                                    .font(egui::FontId::proportional(11.0));
+                                let res = ui.put(name_rect, text_edit);
+                                res.request_focus();
+                                if res.lost_focus() || (ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                                    if !app.rename_layer_input.is_empty() {
+                                        let old_name = layer.name.clone();
+                                        layer.name = app.rename_layer_input.clone();
+                                        app.history.push_command(HistoryCommand::LayerProperty {
+                                            layer_id: id,
+                                            property: LayerPropertyChange::Rename {
+                                                old: old_name,
+                                                new: layer.name.clone(),
+                                            },
+                                        });
+                                    }
+                                    app.renaming_layer_id = None;
+                                }
+                            } else {
+                                let p = ui.painter();
+                                p.text(
+                                    egui::pos2(text_x, row_rect.min.y + 4.0),
+                                    egui::Align2::LEFT_TOP,
+                                    format!("{}  {}", type_str, layer.name),
+                                    egui::FontId::proportional(11.0),
+                                    egui::Color32::BLACK,
+                                );
+                            }
+
+                            {
+                                let p = ui.painter();
+                                p.text(
+                                    egui::pos2(text_x, row_rect.min.y + 19.0),
+                                    egui::Align2::LEFT_TOP,
+                                    format!("{:?}", layer.blend_mode),
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_gray(100),
+                                );
+                                let opacity_pct = (layer.opacity * 100.0).round() as i32;
+                                p.text(
+                                    egui::pos2(text_x, row_rect.min.y + 32.0),
+                                    egui::Align2::LEFT_TOP,
+                                    format!("{}%", opacity_pct),
+                                    egui::FontId::proportional(10.0),
+                                    egui::Color32::from_gray(100),
+                                );
+                            }
+
+                            if row_response.clicked() {
+                                app.active_layer_id = id;
+                            }
                         }
-                        app.dragging_layer_id = None;
-                        continue 'layer_loop;
+
+                        // Drag reorder
+                        if let Some(dragging_id) = app.dragging_layer_id {
+                            if dragging_id == id && drag_started {
+                                app.drag_start_order = Some(app.layer_order.clone());
+                            }
+                            if dragging_id != id && row_hovered {
+                                if let (Some(from), Some(to)) = (
+                                    app.layer_order.iter().position(|&lid| lid == dragging_id),
+                                    app.layer_order.iter().position(|&lid| lid == id),
+                                ) {
+                                    app.layer_order.swap(from, to);
+                                }
+                            }
+                            if pointer_released {
+                                if let Some(old_order) = app.drag_start_order.take() {
+                                    let new_order = app.layer_order.clone();
+                                    if old_order != new_order {
+                                        app.history.push_command(HistoryCommand::LayerReorder {
+                                            old_order,
+                                            new_order,
+                                        });
+                                    }
+                                }
+                                app.dragging_layer_id = None;
+                                continue 'layer_loop;
+                            }
+                        }
                     }
-                }
-            }
+                });
         });
 }

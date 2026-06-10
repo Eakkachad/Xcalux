@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2018"
-rust-version = "1.64"
+edition = "2021"
+rust-version = "1.75"
 name = "zvariant_derive"
-version = "3.15.2"
+version = "4.2.0"
 authors = ["Zeeshan Ali Khan <zeeshanak@gnome.org>"]
 description = "D-Bus & GVariant encoding & decoding"
 readme = "README.md"
@@ -30,40 +30,36 @@ categories = [
 ]
 license = "MIT"
 repository = "https://github.com/dbus2/zbus/"
-resolver = "2"
 
 [lib]
 proc-macro = true
 
 [dependencies.proc-macro-crate]
-version = "1.2.1"
+version = "3.1.0"
 
 [dependencies.proc-macro2]
-version = "1.0"
+version = "1.0.81"
 
 [dependencies.quote]
-version = "1.0.21"
+version = "1.0.36"
 
 [dependencies.syn]
-version = "1.0.103"
+version = "2.0.64"
 features = [
     "extra-traits",
     "full",
 ]
 
 [dependencies.zvariant_utils]
-version = "=1.0.1"
-
-[dev-dependencies.byteorder]
-version = "1.4.3"
+version = "=2.1.0"
 
 [dev-dependencies.enumflags2]
-version = "0.7.7"
+version = "0.7.9"
 features = ["serde"]
 
 [dev-dependencies.serde]
-version = "1.0"
+version = "1.0.200"
 features = ["derive"]
 
 [dev-dependencies.serde_repr]
-version = "0.1.9"
+version = "0.1.19"

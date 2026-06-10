@@ -2,7 +2,8 @@
 use crate::Error;
 use core::{
     mem::MaybeUninit,
-    ptr::{self, NonNull},
+    ptr::{self, null_mut, NonNull},
+    sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
 use r_efi::{
     efi::{BootServices, Handle},
@@ -15,6 +16,8 @@ pub use crate::util::{inner_u32, inner_u64};
 
 #[cfg(not(target_os = "uefi"))]
 compile_error!("`efi_rng` backend can be enabled only for UEFI targets!");
+
+static RNG_PROTOCOL: AtomicPtr<rng::Protocol> = AtomicPtr::new(null_mut());
 
 #[cold]
 #[inline(never)]
@@ -33,7 +36,7 @@ fn init() -> Result<NonNull<rng::Protocol>, Error> {
         ((*boot_services.as_ptr()).locate_handle)(
             r_efi::efi::BY_PROTOCOL,
             &mut guid,
-            ptr::null_mut(),
+            null_mut(),
             &mut buf_size,
             handles.as_mut_ptr(),
         )
@@ -85,6 +88,7 @@ fn init() -> Result<NonNull<rng::Protocol>, Error> {
             continue;
         }
 
+        RNG_PROTOCOL.store(protocol.as_ptr(), Relaxed);
         return Ok(protocol);
     }
     Err(Error::NO_RNG_HANDLE)
@@ -92,12 +96,10 @@ fn init() -> Result<NonNull<rng::Protocol>, Error> {
 
 #[inline]
 pub fn fill_inner(dest: &mut [MaybeUninit<u8>]) -> Result<(), Error> {
-    #[path = "../utils/lazy_ptr.rs"]
-    mod lazy;
-
-    static RNG_PROTOCOL: lazy::LazyPtr<rng::Protocol> = lazy::LazyPtr::new();
-
-    let protocol = RNG_PROTOCOL.try_unsync_init(init)?;
+    let protocol = match NonNull::new(RNG_PROTOCOL.load(Relaxed)) {
+        Some(p) => p,
+        None => init()?,
+    };
 
     let mut alg_guid = rng::ALGORITHM_RAW;
     let ret = unsafe {

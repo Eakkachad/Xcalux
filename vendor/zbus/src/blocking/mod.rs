@@ -9,23 +9,45 @@
 //!
 //! Since methods provided by these types run their own little runtime (`block_on`), you must not
 //! use them in async contexts because of the infamous [async sandwich footgun][asf]. This is
-//! an especially important fact to keep in mind for [`crate::dbus_interface`]. While
+//! an especially important fact to keep in mind for [`crate::interface`]. While
 //! `dbus_interface` allows non-async methods for convenience, these methods are called from an
 //! async context. The [`blocking` crate] provides an easy way around this problem though.
 //!
 //! [asf]: https://rust-lang.github.io/wg-async/vision/shiny_future/users_manual.html#caveat-beware-the-async-sandwich
 //! [`blocking` crate]: https://docs.rs/blocking/
 
-mod connection;
-pub use connection::*;
-mod connection_builder;
-pub use connection_builder::*;
+pub mod connection;
+pub use connection::Connection;
+
 mod message_iterator;
 pub use message_iterator::*;
-mod object_server;
-pub use object_server::*;
-mod proxy;
-pub use proxy::*;
-mod proxy_builder;
-pub use proxy_builder::*;
+pub mod object_server;
+pub use object_server::ObjectServer;
+pub mod proxy;
+pub use proxy::Proxy;
+
+#[deprecated(since = "4.0.0", note = "Use `proxy::Builder` instead")]
+#[doc(hidden)]
+pub use proxy::Builder as ProxyBuilder;
+#[deprecated(since = "4.0.0", note = "Use `proxy::OwnerChangedIterator` instead")]
+#[doc(hidden)]
+pub use proxy::OwnerChangedIterator;
+#[deprecated(since = "4.0.0", note = "Use `proxy::PropertyChanged` instead")]
+#[doc(hidden)]
+pub use proxy::PropertyChanged;
+#[deprecated(since = "4.0.0", note = "Use `proxy::PropertyIterator` instead")]
+#[doc(hidden)]
+pub use proxy::PropertyIterator;
+#[deprecated(since = "4.0.0", note = "Use `proxy::SignalIterator` instead")]
+#[doc(hidden)]
+pub use proxy::SignalIterator;
+
+#[deprecated(since = "4.0.0", note = "Use `object_server::InterfaceRef` instead")]
+#[doc(hidden)]
+pub use object_server::InterfaceRef;
+
+#[deprecated(since = "4.0.0", note = "Use `connection::Builder` instead")]
+#[doc(hidden)]
+pub use connection::Builder as ConnectionBuilder;
+
 pub mod fdo;

@@ -24,52 +24,52 @@ pub struct Mode {
     pub cursor_visible: crate::base::Boolean,
 }
 
-pub type ProtocolReset = unsafe extern "efiapi" fn(
+pub type ProtocolReset = eficall! {fn(
     *mut Protocol,
     crate::base::Boolean,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolOutputString = unsafe extern "efiapi" fn(
+pub type ProtocolOutputString = eficall! {fn(
     *mut Protocol,
     *mut crate::base::Char16,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolTestString = unsafe extern "efiapi" fn(
+pub type ProtocolTestString = eficall! {fn(
     *mut Protocol,
     *mut crate::base::Char16,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolQueryMode = unsafe extern "efiapi" fn(
+pub type ProtocolQueryMode = eficall! {fn(
     *mut Protocol,
     usize,
     *mut usize,
     *mut usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolSetMode = unsafe extern "efiapi" fn(
+pub type ProtocolSetMode = eficall! {fn(
     *mut Protocol,
     usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolSetAttribute = unsafe extern "efiapi" fn(
+pub type ProtocolSetAttribute = eficall! {fn(
     *mut Protocol,
     usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolClearScreen = unsafe extern "efiapi" fn(
+pub type ProtocolClearScreen = eficall! {fn(
     *mut Protocol,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolSetCursorPosition = unsafe extern "efiapi" fn(
+pub type ProtocolSetCursorPosition = eficall! {fn(
     *mut Protocol,
     usize,
     usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ProtocolEnableCursor = unsafe extern "efiapi" fn(
+pub type ProtocolEnableCursor = eficall! {fn(
     *mut Protocol,
     crate::base::Boolean,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

@@ -20,19 +20,19 @@ examples assume that a D-Bus broker is setup on your machine and you've a sessio
 (`DBUS_SESSION_BUS_ADDRESS` environment variable must be set). This is guaranteed to be the case on
 a typical Linux desktop session.
 
-### Server
+### Service
 
 A simple service that politely greets whoever calls its `SayHello` method:
 
 ```rust,no_run
 use std::{error::Error, future::pending};
-use zbus::{ConnectionBuilder, dbus_interface};
+use zbus::{connection, interface};
 
 struct Greeter {
     count: u64
 }
 
-#[dbus_interface(name = "org.zbus.MyGreeter1")]
+#[interface(name = "org.zbus.MyGreeter1")]
 impl Greeter {
     // Can be `async` as well.
     fn say_hello(&mut self, name: &str) -> String {
@@ -41,11 +41,11 @@ impl Greeter {
     }
 }
 
-// Although we use `async-std` here, you can use any async runtime of choice.
-#[async_std::main]
+// Although we use `tokio` here, you can use any async runtime of choice.
+#[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let greeter = Greeter { count: 0 };
-    let _conn = ConnectionBuilder::session()?
+    let _conn = connection::Builder::session()?
         .name("org.zbus.MyGreeter")?
         .serve_at("/org/zbus/MyGreeter", greeter)?
         .build()
@@ -70,9 +70,9 @@ s "Hello Maria! I have been called 1 times."
 Now let's write the client-side code for `MyGreeter` service:
 
 ```rust,no_run
-use zbus::{Connection, Result, dbus_proxy};
+use zbus::{Connection, Result, proxy};
 
-#[dbus_proxy(
+#[proxy(
     interface = "org.zbus.MyGreeter1",
     default_service = "org.zbus.MyGreeter",
     default_path = "/org/zbus/MyGreeter"
@@ -81,12 +81,12 @@ trait MyGreeter {
     async fn say_hello(&self, name: &str) -> Result<String>;
 }
 
-// Although we use `async-std` here, you can use any async runtime of choice.
-#[async_std::main]
+// Although we use `tokio` here, you can use any async runtime of choice.
+#[tokio::main]
 async fn main() -> Result<()> {
     let connection = Connection::session().await?;
 
-    // `dbus_proxy` macro creates `MyGreaterProxy` based on `Notifications` trait.
+    // `proxy` macro creates `MyGreaterProxy` based on `Notifications` trait.
     let proxy = MyGreeterProxy::new(&connection).await?;
     let reply = proxy.say_hello("Maria").await?;
     println!("{reply}");
@@ -106,7 +106,7 @@ zbus is runtime-agnostic and should work out of the box with different Rust asyn
 in order to achieve that, zbus spawns a thread per connection to handle various internal tasks. If
 that is something you would like to avoid, you need to:
 
-* Use [`ConnectionBuilder`] and disable the `internal_executor` flag.
+* Use [`connection::Builder`] and disable the `internal_executor` flag.
 * Ensure the [internal executor keeps ticking continuously][iektc].
 
 Moreover, by default zbus makes use of [`async-io`] for all I/O, which also launches its own thread
@@ -130,14 +130,10 @@ tick any executors etc. 😼
 **Note**: On Windows, the `async-io` feature is currently required for UNIX domain socket support,
 see [the corresponding tokio issue on GitHub][tctiog].
 
-**Note:** On Windows, there is no standard implicit way to connect to a session bus. zbus provides
-opt-in compatibility to the GDBus session bus discovery mechanism via the `windows-gdbus` feature.
-This mechanism uses a machine-wide mutex however, so only one GDBus session bus can run at a time.
-
 [zbus]: https://github.com/dbus2/zbus\#readme
-[bw]: https://docs.rs/zbus/3.0.0/zbus/blocking/index.html
-[iektc]: https://docs.rs/zbus/3.0.0/zbus/struct.Connection.html#examples-1
+[bw]: https://docs.rs/zbus/latest/zbus/blocking/index.html
+[iektc]: https://docs.rs/zbus/latest/zbus/connection/struct.Connection.html#examples-1
 [tctiog]: https://github.com/tokio-rs/tokio/issues/2201
-[`ConnectionBuilder`]: https://docs.rs/zbus/3.0.0/zbus/struct.ConnectionBuilder.html
+[`connection::Builder`]: https://docs.rs/zbus/latest/zbus/connection/struct.ConnectionBuilder.html
 [`tokio`]: https://crates.io/crates/tokio
 [`async-io`]: https://crates.io/crates/async-io

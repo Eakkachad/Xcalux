@@ -1,17 +1,17 @@
-use byteorder::LE;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+#[cfg(feature = "serde_bytes")]
+use serde_bytes::ByteBuf;
+use std::{collections::HashMap, vec};
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use zvariant::{
-    from_slice_for_signature, to_bytes_for_signature, EncodingContext as Context, Type, Value,
-};
+use zvariant::{serialized::Context, to_bytes_for_signature, Type, Value, LE};
 
-fn fixed_size_array(c: &mut Criterion) {
-    let ay = vec![77u8; 100_000];
-    let ctxt = Context::<LE>::new_dbus(0);
-    let signature = Vec::<u8>::signature();
+#[cfg(feature = "serde_bytes")]
+fn byte_array(c: &mut Criterion) {
+    let ay = ByteBuf::from(vec![77u8; 100_000]);
+    let ctxt = Context::new_dbus(LE, 0);
+    let signature = ByteBuf::signature();
     c.bench_function("byte_array_ser", |b| {
         b.iter(|| {
             to_bytes_for_signature(black_box(ctxt), black_box(&signature), black_box(&ay)).unwrap()
@@ -20,9 +20,28 @@ fn fixed_size_array(c: &mut Criterion) {
     let enc = to_bytes_for_signature(ctxt, &signature, &ay).unwrap();
     c.bench_function("byte_array_de", |b| {
         b.iter(|| {
-            let _: Vec<u8> =
-                from_slice_for_signature(black_box(&enc), black_box(ctxt), black_box(&signature))
-                    .unwrap();
+            let _: (ByteBuf, _) = enc
+                .deserialize_for_signature(black_box(&signature))
+                .unwrap();
+        })
+    });
+}
+
+fn fixed_size_array(c: &mut Criterion) {
+    let ay = vec![77u8; 100_000];
+    let ctxt = Context::new_dbus(LE, 0);
+    let signature = Vec::<u8>::signature();
+    c.bench_function("fixed_size_array_ser", |b| {
+        b.iter(|| {
+            to_bytes_for_signature(black_box(ctxt), black_box(&signature), black_box(&ay)).unwrap()
+        })
+    });
+    let enc = to_bytes_for_signature(ctxt, &signature, &ay).unwrap();
+    c.bench_function("fixed_size_array_de", |b| {
+        b.iter(|| {
+            let _: (Vec<u8>, _) = enc
+                .deserialize_for_signature(black_box(&signature))
+                .unwrap();
         })
     });
 }
@@ -45,8 +64,7 @@ fn big_array_ser_and_de(c: &mut Criterion) {
     }
 
     let mut dict = HashMap::new();
-    let mut int_array = Vec::new();
-    int_array.resize(1024 * 10, 0u64);
+    let int_array = vec![0u64; 1024 * 10];
     let mut strings = Vec::new();
     let mut string_array: Vec<&str> = Vec::new();
     for idx in 0..1024 * 10 {
@@ -72,7 +90,7 @@ fn big_array_ser_and_de(c: &mut Criterion) {
     };
 
     // Let's try with DBus format first
-    let ctxt = Context::<LE>::new_dbus(0);
+    let ctxt = Context::new_dbus(LE, 0);
     let signature = ZVStruct::signature();
 
     c.bench_function("big_array_ser_dbus", |b| {
@@ -87,41 +105,44 @@ fn big_array_ser_and_de(c: &mut Criterion) {
     let encoded = to_bytes_for_signature(ctxt, &signature, &element).unwrap();
     c.bench_function("big_array_de_dbus", |b| {
         b.iter(|| {
-            let s: ZVStruct = from_slice_for_signature(
-                black_box(&encoded),
-                black_box(ctxt),
-                black_box(&signature),
-            )
-            .unwrap();
+            let (s, _): (ZVStruct, _) = encoded
+                .deserialize_for_signature(black_box(&signature))
+                .unwrap();
             black_box(s);
         })
     });
 
     // Now GVariant.
-    let ctxt = Context::<LE>::new_gvariant(0);
+    #[cfg(feature = "gvariant")]
+    {
+        let ctxt = Context::new_gvariant(LE, 0);
 
-    c.bench_function("big_array_ser_gvariant", |b| {
-        b.iter(|| {
-            let encoded =
-                to_bytes_for_signature(black_box(ctxt), black_box(&signature), black_box(&element))
+        c.bench_function("big_array_ser_gvariant", |b| {
+            b.iter(|| {
+                let encoded = to_bytes_for_signature(
+                    black_box(ctxt),
+                    black_box(&signature),
+                    black_box(&element),
+                )
+                .unwrap();
+                black_box(encoded);
+            })
+        });
+
+        let encoded = to_bytes_for_signature(ctxt, &signature, &element).unwrap();
+        c.bench_function("big_array_de_gvariant", |b| {
+            b.iter(|| {
+                let (s, _): (ZVStruct, _) = encoded
+                    .deserialize_for_signature(black_box(&signature))
                     .unwrap();
-            black_box(encoded);
-        })
-    });
-
-    let encoded = to_bytes_for_signature(ctxt, &signature, &element).unwrap();
-    c.bench_function("big_array_de_gvariant", |b| {
-        b.iter(|| {
-            let s: ZVStruct = from_slice_for_signature(
-                black_box(&encoded),
-                black_box(ctxt),
-                black_box(&signature),
-            )
-            .unwrap();
-            black_box(s);
-        })
-    });
+                black_box(s);
+            })
+        });
+    }
 }
 
+#[cfg(feature = "serde_bytes")]
+criterion_group!(benches, big_array_ser_and_de, byte_array, fixed_size_array);
+#[cfg(not(feature = "serde_bytes"))]
 criterion_group!(benches, big_array_ser_and_de, fixed_size_array);
 criterion_main!(benches);

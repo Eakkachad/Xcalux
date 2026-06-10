@@ -1,10 +1,12 @@
-use crate::{utils::impl_try_from, Error, Result};
+use crate::{
+    utils::{impl_str_basic, impl_try_from},
+    Error, Result,
+};
 use serde::{de, Deserialize, Serialize};
 use static_assertions::assert_impl_all;
 use std::{
     borrow::{Borrow, Cow},
-    convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     ops::Deref,
     sync::Arc,
 };
@@ -15,7 +17,6 @@ use zvariant::{NoneValue, OwnedValue, Str, Type, Value};
 /// # Examples
 ///
 /// ```
-/// use core::convert::TryFrom;
 /// use zbus_names::MemberName;
 ///
 /// // Valid member names.
@@ -42,8 +43,10 @@ pub struct MemberName<'name>(Str<'name>);
 
 assert_impl_all!(MemberName<'_>: Send, Sync, Unpin);
 
+impl_str_basic!(MemberName<'_>);
+
 impl<'name> MemberName<'name> {
-    /// A borrowed clone (never allocates, unlike clone).
+    /// This is faster than `Clone::clone` when `self` contains owned data.
     pub fn as_ref(&self) -> MemberName<'_> {
         MemberName(self.0.as_ref())
     }
@@ -217,12 +220,12 @@ impl<'name> NoneValue for MemberName<'name> {
 }
 
 /// Owned sibling of [`MemberName`].
-#[derive(
-    Clone, Debug, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue,
-)]
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Type, Value, PartialOrd, Ord, OwnedValue)]
 pub struct OwnedMemberName(#[serde(borrow)] MemberName<'static>);
 
 assert_impl_all!(OwnedMemberName: Send, Sync, Unpin);
+
+impl_str_basic!(OwnedMemberName);
 
 impl OwnedMemberName {
     /// Convert to the inner `MemberName`, consuming `self`.
@@ -250,7 +253,7 @@ impl Borrow<str> for OwnedMemberName {
     }
 }
 
-impl From<OwnedMemberName> for MemberName<'static> {
+impl From<OwnedMemberName> for MemberName<'_> {
     fn from(o: OwnedMemberName) -> Self {
         o.into_inner()
     }
@@ -268,7 +271,7 @@ impl From<MemberName<'_>> for OwnedMemberName {
     }
 }
 
-impl From<OwnedMemberName> for Str<'static> {
+impl From<OwnedMemberName> for Str<'_> {
     fn from(value: OwnedMemberName) -> Self {
         value.into_inner().0
     }
@@ -297,9 +300,17 @@ impl PartialEq<MemberName<'_>> for OwnedMemberName {
     }
 }
 
+impl Debug for OwnedMemberName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OwnedMemberName")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+
 impl Display for OwnedMemberName {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        MemberName::from(self).fmt(f)
+        Display::fmt(&MemberName::from(self), f)
     }
 }
 

@@ -1,15 +1,15 @@
 use futures_util::StreamExt;
 use static_assertions::assert_impl_all;
-use std::{convert::TryInto, sync::Arc};
 
-use crate::{blocking::Connection, utils::block_on, MatchRule, Message, OwnedMatchRule, Result};
+use crate::{
+    blocking::Connection, message::Message, utils::block_on, MatchRule, OwnedMatchRule, Result,
+};
 
 /// A blocking wrapper of [`crate::MessageStream`].
 ///
 /// Just like [`crate::MessageStream`] must be continuously polled, you must continuously iterate
 /// over this type until it's consumed or dropped.
-#[derive(derivative::Derivative, Clone)]
-#[derivative(Debug)]
+#[derive(Debug, Clone)]
 pub struct MessageIterator {
     // Wrap it in an `Option` to ensure the stream is dropped in a `block_on` call. This is needed
     // for tokio because the proxy spawns a task in its `Drop` impl and that needs a runtime
@@ -45,7 +45,7 @@ impl MessageIterator {
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let conn = Connection::session()?;
     /// let rule = MatchRule::builder()
-    ///     .msg_type(zbus::MessageType::Signal)
+    ///     .msg_type(zbus::message::Type::Signal)
     ///     .sender("org.freedesktop.DBus")?
     ///     .interface("org.freedesktop.DBus")?
     ///     .member("NameOwnerChanged")?
@@ -110,7 +110,7 @@ impl MessageIterator {
 }
 
 impl Iterator for MessageIterator {
-    type Item = Result<Arc<Message>>;
+    type Item = Result<Message>;
 
     fn next(&mut self) -> Option<Self::Item> {
         block_on(self.azync.as_mut().expect("Inner stream is `None`").next())

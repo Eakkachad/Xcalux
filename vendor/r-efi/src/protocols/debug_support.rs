@@ -796,34 +796,34 @@ pub const EXCEPT_RISCV_MACHINE_TIMER_INT: ExceptionType = 7;
 pub const EXCEPT_RISCV_SUPERVISOR_EXTERNAL_INT: ExceptionType = 9;
 pub const EXCEPT_RISCV_MACHINE_EXTERNAL_INT: ExceptionType = 11;
 
-pub type GetMaximumProcessorIndex = unsafe extern "efiapi" fn(
+pub type GetMaximumProcessorIndex = eficall! {fn(
     *mut Protocol,
     *mut usize,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type PeriodicCallback = unsafe extern "efiapi" fn(SystemContext);
+pub type PeriodicCallback = eficall! {fn(SystemContext)};
 
-pub type RegisterPeriodicCallback = unsafe extern "efiapi" fn(
+pub type RegisterPeriodicCallback = eficall! {fn(
     *mut Protocol,
     usize,
     Option<PeriodicCallback>,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type ExceptionCallback = unsafe extern "efiapi" fn(ExceptionType, SystemContext);
+pub type ExceptionCallback = eficall! {fn(ExceptionType, SystemContext)};
 
-pub type RegisterExceptionCallback = unsafe extern "efiapi" fn(
+pub type RegisterExceptionCallback = eficall! {fn(
     *mut Protocol,
     usize,
     Option<ExceptionCallback>,
     ExceptionType,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
-pub type InvalidateInstructionCache = unsafe extern "efiapi" fn(
+pub type InvalidateInstructionCache = eficall! {fn(
     *mut Protocol,
     usize,
     *mut core::ffi::c_void,
     u64,
-) -> crate::base::Status;
+) -> crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

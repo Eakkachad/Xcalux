@@ -152,45 +152,12 @@ impl tablet_pc::IStylusPlugin_Impl for Plugin {
                         _ => return Err(E_INVALIDARG.into()),
                     }
                 };
-
-                // Query all COM tablet data OUTSIDE the shared_frame lock to avoid deadlocking with pump()!
-                let mut tablets_to_add = Vec::new();
+                let mut lock = self.shared_frame.lock().unwrap_or_else(PoisonError::into_inner);
                 for &tcid in tcids {
                     unsafe {
                         let tablet = self.rts.GetTabletFromTabletContextId(tcid)?;
-                        let name = tablet.Name().ok().as_ref().map(ToString::to_string);
-                        let (raw_tablet, tablet_info) =
-                            if let Ok((interpreter, info)) = super::packet::make_interpreter(&self.rts, tcid) {
-                                (
-                                    super::RawTabletSlot::Concrete(super::RawTablet {
-                                        interpreter,
-                                        axes: info,
-                                        tcid,
-                                    }),
-                                    Some(crate::tablet::Tablet {
-                                        internal_id: super::ID::Tablet(tcid).into(),
-                                        name,
-                                        usb_id: None,
-                                    }),
-                                )
-                            } else {
-                                (super::RawTabletSlot::Dummy { tcid }, None)
-                            };
-                        tablets_to_add.push((tcid, raw_tablet, tablet_info));
+                        lock.append_tablet(&self.rts, &tablet, tcid);
                     }
-                }
-
-                // Now acquire the lock and append them
-                let mut lock = self.shared_frame.lock().unwrap_or_else(PoisonError::into_inner);
-                for (tcid, raw_tablet, tablet_info) in tablets_to_add {
-                    if let Some(tablet_info) = tablet_info {
-                        lock.tablets.push(tablet_info);
-                        lock.events.push(crate::events::raw::Event::Tablet {
-                            tablet: super::ID::Tablet(tcid),
-                            event: crate::events::raw::TabletEvent::Added,
-                        });
-                    }
-                    lock.raw_tablets.push(raw_tablet);
                 }
 
                 poison.disarm();
@@ -504,38 +471,10 @@ impl tablet_pc::IStylusPlugin_Impl for Plugin {
                 let rts = rts.ok_or(E_POINTER)?;
                 let tablet = tablet.ok_or(E_POINTER)?;
 
-                // Query all COM data OUTSIDE the shared_frame lock to avoid deadlocking with pump()!
                 let tcid = unsafe { rts.GetTabletContextIdFromTablet(tablet) }?;
-                let name = unsafe { tablet.Name() }.ok().as_ref().map(ToString::to_string);
-                let (raw_tablet, tablet_info) = unsafe {
-                    if let Ok((interpreter, info)) = super::packet::make_interpreter(&self.rts, tcid) {
-                        (
-                            super::RawTabletSlot::Concrete(super::RawTablet {
-                                interpreter,
-                                axes: info,
-                                tcid,
-                            }),
-                            Some(crate::tablet::Tablet {
-                                internal_id: super::ID::Tablet(tcid).into(),
-                                name,
-                                usb_id: None,
-                            }),
-                        )
-                    } else {
-                        (super::RawTabletSlot::Dummy { tcid }, None)
-                    }
-                };
 
-                // Now acquire the lock and append them
                 let mut lock = self.shared_frame.lock().unwrap_or_else(PoisonError::into_inner);
-                if let Some(tablet_info) = tablet_info {
-                    lock.tablets.push(tablet_info);
-                    lock.events.push(crate::events::raw::Event::Tablet {
-                        tablet: super::ID::Tablet(tcid),
-                        event: crate::events::raw::TabletEvent::Added,
-                    });
-                }
-                lock.raw_tablets.push(raw_tablet);
+                unsafe { lock.append_tablet(&self.rts, tablet, tcid) };
 
                 poison.disarm();
                 Ok(())

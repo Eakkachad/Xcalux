@@ -5,27 +5,6 @@ use zvariant_utils::{case, macros};
 
 use crate::utils::*;
 
-pub fn expand_type_derive(input: DeriveInput) -> Result<TokenStream, Error> {
-    let name = match input.data {
-        Data::Struct(_) => input.ident,
-        _ => return Err(Error::new(input.span(), "only structs supported")),
-    };
-
-    let zv = zvariant_path();
-    let generics = input.generics;
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
-    Ok(quote! {
-        impl #impl_generics #zv::Type for #name #ty_generics
-        #where_clause
-        {
-            fn signature() -> #zv::Signature<'static> {
-                #zv::Signature::from_static_str_unchecked("a{sv}")
-            }
-        }
-    })
-}
-
 fn dict_name_for_field(
     f: &Field,
     rename_attr: Option<String>,
@@ -41,7 +20,8 @@ fn dict_name_for_field(
             Some("UPPERCASE") => Ok(ident.to_ascii_uppercase()),
             Some("PascalCase") => Ok(case::pascal_or_camel_case(&ident, true)),
             Some("camelCase") => Ok(case::pascal_or_camel_case(&ident, false)),
-            Some("snake_case") => Ok(case::snake_case(&ident)),
+            Some("snake_case") => Ok(case::snake_or_kebab_case(&ident, true)),
+            Some("kebab-case") => Ok(case::snake_or_kebab_case(&ident, false)),
             None => Ok(ident),
             Some(other) => Err(Error::new(
                 f.span(),
@@ -175,7 +155,7 @@ pub fn expand_deserialize_derive(input: DeriveInput) -> Result<TokenStream, Erro
 
     let (_, ty_generics, _) = input.generics.split_for_impl();
     let mut generics = input.generics.clone();
-    let def = syn::LifetimeDef {
+    let def = syn::LifetimeParam {
         attrs: Vec::new(),
         lifetime: syn::Lifetime::new("'de", Span::call_site()),
         colon_token: None,

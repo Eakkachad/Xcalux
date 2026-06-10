@@ -2,23 +2,29 @@ use futures_util::{
     future::{select, Either},
     stream::StreamExt,
 };
-use std::{convert::TryInto, future::ready};
-use zbus::{block_on, fdo, CacheProperties, SignalContext};
-use zbus_macros::{dbus_interface, dbus_proxy, DBusError};
+use std::future::ready;
+use zbus::{block_on, fdo, object_server::SignalContext, proxy::CacheProperties};
+use zbus_macros::{interface, proxy, DBusError};
 
-#[test]
-fn test_proxy() {
-    #[dbus_proxy(
+mod param {
+    #[zbus_macros::proxy(
         interface = "org.freedesktop.zbus_macros.ProxyParam",
         default_service = "org.freedesktop.zbus_macros",
         default_path = "/org/freedesktop/zbus_macros/test"
     )]
     trait ProxyParam {
-        #[dbus_proxy(object = "Test")]
+        #[zbus(object = "super::test::Test")]
         fn some_method<T>(&self, test: &T);
     }
+}
 
-    #[dbus_proxy(
+mod test {
+    use zbus::{
+        fdo,
+        zvariant::{OwnedStructure, Structure},
+    };
+
+    #[zbus_macros::proxy(
         assume_defaults = false,
         interface = "org.freedesktop.zbus_macros.Test",
         default_service = "org.freedesktop.zbus_macros"
@@ -31,30 +37,39 @@ fn test_proxy() {
         /// which is useful to pass in a proxy as a param. It serializes it as an `ObjectPath`.
         fn some_method<T>(&self, object_path: &T) -> zbus::Result<()>;
 
-        #[dbus_proxy(name = "CheckRENAMING")]
+        /// A call accepting an argument that only implements DynamicType and Serialize.
+        fn test_dyn_type(&self, arg: Structure<'_>, arg2: u32) -> zbus::Result<()>;
+
+        /// A call returning an type that only implements DynamicDeserialize
+        fn test_dyn_ret(&self) -> zbus::Result<OwnedStructure>;
+
+        #[zbus(name = "CheckRENAMING")]
         fn check_renaming(&self) -> zbus::Result<Vec<u8>>;
 
-        #[dbus_proxy(property)]
+        #[zbus(property)]
         fn property(&self) -> fdo::Result<Vec<String>>;
 
-        #[dbus_proxy(property(emits_changed_signal = "const"))]
+        #[zbus(property(emits_changed_signal = "const"))]
         fn a_const_property(&self) -> fdo::Result<Vec<String>>;
 
-        #[dbus_proxy(property(emits_changed_signal = "false"))]
+        #[zbus(property(emits_changed_signal = "false"))]
         fn a_live_property(&self) -> fdo::Result<Vec<String>>;
 
-        #[dbus_proxy(property)]
+        #[zbus(property)]
         fn set_property(&self, val: u16) -> fdo::Result<()>;
 
-        #[dbus_proxy(signal)]
+        #[zbus(signal)]
         fn a_signal<T>(&self, arg: u8, other: T) -> fdo::Result<()>
         where
             T: AsRef<str>;
     }
+}
 
+#[test]
+fn test_proxy() {
     block_on(async move {
         let connection = zbus::Connection::session().await.unwrap();
-        let proxy = TestProxy::builder(&connection)
+        let proxy = test::TestProxy::builder(&connection)
             .path("/org/freedesktop/zbus_macros/test")
             .unwrap()
             .cache_properties(CacheProperties::No)
@@ -95,12 +110,12 @@ fn test_proxy() {
 #[test]
 fn test_derive_error() {
     #[derive(Debug, DBusError)]
-    #[dbus_error(prefix = "org.freedesktop.zbus")]
+    #[zbus(prefix = "org.freedesktop.zbus")]
     enum Test {
-        #[dbus_error(zbus_error)]
+        #[zbus(error)]
         ZBus(zbus::Error),
         SomeExcuse,
-        #[dbus_error(name = "I.Am.Sorry.Dave")]
+        #[zbus(name = "I.Am.Sorry.Dave")]
         IAmSorryDave(String),
         LetItBe {
             desc: String,
@@ -112,8 +127,8 @@ fn test_derive_error() {
 fn test_interface() {
     use serde::{Deserialize, Serialize};
     use zbus::{
+        object_server::Interface,
         zvariant::{Type, Value},
-        Interface,
     };
 
     struct Test<T> {
@@ -124,7 +139,7 @@ fn test_interface() {
     #[derive(Serialize, Deserialize, Type, Value)]
     struct MyCustomPropertyType(u32);
 
-    #[dbus_interface(name = "org.freedesktop.zbus.Test")]
+    #[interface(name = "org.freedesktop.zbus.Test", spawn = false)]
     impl<T: 'static> Test<T>
     where
         T: serde::ser::Serialize + zbus::zvariant::Type + Send + Sync,
@@ -153,18 +168,34 @@ fn test_interface() {
             unimplemented!()
         }
 
-        #[dbus_interface(property)]
+        #[zbus(property)]
         fn my_custom_property(&self) -> MyCustomPropertyType {
             unimplemented!()
         }
 
         // Also tests that mut argument bindings work for properties
-        #[dbus_interface(property)]
+        #[zbus(property)]
         fn set_my_custom_property(&self, mut _value: MyCustomPropertyType) {
             _value = MyCustomPropertyType(42);
         }
 
-        #[dbus_interface(name = "CheckVEC")]
+        // Test that the emits_changed_signal property results in the correct annotation
+        #[zbus(property(emits_changed_signal = "false"))]
+        fn my_custom_property_emits_false(&self) -> MyCustomPropertyType {
+            unimplemented!()
+        }
+
+        #[zbus(property(emits_changed_signal = "invalidates"))]
+        fn my_custom_property_emits_invalidates(&self) -> MyCustomPropertyType {
+            unimplemented!()
+        }
+
+        #[zbus(property(emits_changed_signal = "const"))]
+        fn my_custom_property_emits_const(&self) -> MyCustomPropertyType {
+            unimplemented!()
+        }
+
+        #[zbus(name = "CheckVEC")]
         fn check_vec(&self) -> Vec<u8> {
             unimplemented!()
         }
@@ -172,18 +203,18 @@ fn test_interface() {
         /// Testing my_prop documentation is reflected in XML.
         ///
         /// And that too.
-        #[dbus_interface(property)]
+        #[zbus(property)]
         fn my_prop(&self) -> u16 {
             unimplemented!()
         }
 
-        #[dbus_interface(property)]
+        #[zbus(property)]
         fn set_my_prop(&mut self, _val: u16) {
             unimplemented!()
         }
 
         /// Emit a signal.
-        #[dbus_interface(signal)]
+        #[zbus(signal)]
         async fn signal(ctxt: &SignalContext<'_>, arg: u8, other: &str) -> zbus::Result<()>;
     }
 
@@ -215,6 +246,15 @@ fn test_interface() {
     <arg name="other" type="s"/>
   </signal>
   <property name="MyCustomProperty" type="u" access="readwrite"/>
+  <property name="MyCustomPropertyEmitsConst" type="u" access="read">
+    <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+  </property>
+  <property name="MyCustomPropertyEmitsFalse" type="u" access="read">
+    <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+  </property>
+  <property name="MyCustomPropertyEmitsInvalidates" type="u" access="read">
+    <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="invalidates"/>
+  </property>
   <!--
    Testing my_prop documentation is reflected in XML.
 
@@ -238,9 +278,10 @@ fn test_interface() {
             // check compilation
             let c = zbus::Connection::session().await.unwrap();
             let s = c.object_server();
-            let m =
-                zbus::Message::method(None::<()>, None::<()>, "/", None::<()>, "StrU32", &(42,))
-                    .unwrap();
+            let m = zbus::message::Message::method("/", "StrU32")
+                .unwrap()
+                .build(&(42,))
+                .unwrap();
             let _ = t.call(&s, &c, &m, "StrU32".try_into().unwrap());
             let ctxt = SignalContext::new(&c, "/does/not/matter").unwrap();
             block_on(Test::<u32>::signal(&ctxt, 23, "ergo sum")).unwrap();
@@ -250,34 +291,31 @@ fn test_interface() {
 
 mod signal_from_message {
     use super::*;
-    use std::sync::Arc;
-    use zbus::MessageBuilder;
+    use zbus::message::Message;
 
-    #[dbus_proxy(
+    #[proxy(
         interface = "org.freedesktop.zbus_macros.Test",
         default_service = "org.freedesktop.zbus_macros",
         default_path = "/org/freedesktop/zbus_macros/test"
     )]
     trait Test {
-        #[dbus_proxy(signal)]
+        #[zbus(signal)]
         fn signal_u8(&self, arg: u8) -> fdo::Result<()>;
 
-        #[dbus_proxy(signal)]
+        #[zbus(signal)]
         fn signal_string(&self, arg: String) -> fdo::Result<()>;
     }
 
     #[test]
     fn signal_u8() {
-        let message = Arc::new(
-            MessageBuilder::signal(
-                "/org/freedesktop/zbus_macros/test",
-                "org.freedesktop.zbus_macros.Test",
-                "SignalU8",
-            )
-            .expect("Failed to create signal message builder")
-            .build(&(1u8,))
-            .expect("Failed to build signal message"),
-        );
+        let message = Message::signal(
+            "/org/freedesktop/zbus_macros/test",
+            "org.freedesktop.zbus_macros.Test",
+            "SignalU8",
+        )
+        .expect("Failed to create signal message builder")
+        .build(&(1u8,))
+        .expect("Failed to build signal message");
 
         assert!(
             SignalU8::from_message(message.clone()).is_some(),
@@ -291,16 +329,14 @@ mod signal_from_message {
 
     #[test]
     fn signal_string() {
-        let message = Arc::new(
-            MessageBuilder::signal(
-                "/org/freedesktop/zbus_macros/test",
-                "org.freedesktop.zbus_macros.Test",
-                "SignalString",
-            )
-            .expect("Failed to create signal message builder")
-            .build(&(String::from("test"),))
-            .expect("Failed to build signal message"),
-        );
+        let message = Message::signal(
+            "/org/freedesktop/zbus_macros/test",
+            "org.freedesktop.zbus_macros.Test",
+            "SignalString",
+        )
+        .expect("Failed to create signal message builder")
+        .build(&(String::from("test"),))
+        .expect("Failed to build signal message");
 
         assert!(
             SignalString::from_message(message.clone()).is_some(),
@@ -314,16 +350,14 @@ mod signal_from_message {
 
     #[test]
     fn wrong_data() {
-        let message = Arc::new(
-            MessageBuilder::signal(
-                "/org/freedesktop/zbus_macros/test",
-                "org.freedesktop.zbus_macros.Test",
-                "SignalU8",
-            )
-            .expect("Failed to create signal message builder")
-            .build(&(String::from("test"),))
-            .expect("Failed to build signal message"),
-        );
+        let message = Message::signal(
+            "/org/freedesktop/zbus_macros/test",
+            "org.freedesktop.zbus_macros.Test",
+            "SignalU8",
+        )
+        .expect("Failed to create signal message builder")
+        .build(&(String::from("test"),))
+        .expect("Failed to build signal message");
 
         let signal = SignalU8::from_message(message).expect("Message is a SignalU8");
         signal

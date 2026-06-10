@@ -1,6 +1,6 @@
 use serde::ser::{Serialize, Serializer};
 use static_assertions::assert_impl_all;
-use std::{convert::TryFrom, fmt::Display};
+use std::fmt::Display;
 
 use crate::{value_display_fmt, Error, Signature, Type, Value};
 
@@ -9,7 +9,7 @@ use crate::{value_display_fmt, Error, Signature, Type, Value};
 /// API is provided to convert from, and to `Option<T>`.
 ///
 /// [`Value`]: enum.Value.html
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Maybe<'a> {
     value: Box<Option<Value<'a>>>,
     value_signature: Signature<'a>,
@@ -65,12 +65,15 @@ impl<'a> Maybe<'a> {
     }
 
     /// Get the inner value as a concrete type
-    pub fn get<T>(self) -> core::result::Result<Option<T>, Error>
+    pub fn get<T>(&'a self) -> core::result::Result<Option<T>, Error>
     where
-        T: TryFrom<Value<'a>>,
+        T: ?Sized + TryFrom<&'a Value<'a>>,
+        <T as TryFrom<&'a Value<'a>>>::Error: Into<crate::Error>,
     {
         self.value
-            .map(|v| v.downcast().ok_or(Error::IncorrectType))
+            .as_ref()
+            .as_ref()
+            .map(|v| v.downcast_ref())
             .transpose()
     }
 
@@ -94,12 +97,33 @@ impl<'a> Maybe<'a> {
         &self.value_signature
     }
 
-    pub(crate) fn to_owned(&self) -> Maybe<'static> {
-        Maybe {
+    pub(crate) fn try_to_owned(&self) -> crate::Result<Maybe<'static>> {
+        Ok(Maybe {
             value_signature: self.value_signature.to_owned(),
-            value: Box::new(self.value.clone().map(|v| v.to_owned().into())),
+            value: Box::new(
+                self.value
+                    .as_ref()
+                    .as_ref()
+                    .map(|v| v.try_to_owned().map(Into::into))
+                    .transpose()?,
+            ),
             signature: self.signature.to_owned(),
-        }
+        })
+    }
+
+    /// Attempt to clone `self`.
+    pub fn try_clone(&self) -> Result<Self, crate::Error> {
+        Ok(Maybe {
+            value_signature: self.value_signature.clone(),
+            value: Box::new(
+                self.value
+                    .as_ref()
+                    .as_ref()
+                    .map(|v| v.try_clone().map(Into::into))
+                    .transpose()?,
+            ),
+            signature: self.signature.clone(),
+        })
     }
 }
 
@@ -166,11 +190,6 @@ where
             .unwrap_or_else(|| Self::nothing(T::signature()))
     }
 }
-
-// This would be great but somehow it conflicts with some blanket generic implementations from
-// core:
-//
-// impl<'a, T> TryFrom<Maybe<'a>> for Option<T>
 
 impl<'a> Serialize for Maybe<'a> {
     fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>

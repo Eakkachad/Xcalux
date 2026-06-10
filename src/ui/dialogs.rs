@@ -190,8 +190,17 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                     .num_columns(2)
                     .spacing([12.0, 8.0])
                     .show(ui, |ui| {
-                        ui.label("File path:");
-                        ui.text_edit_singleline(&mut app.export_png_path);
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut app.export_png_path);
+                            if ui.button("Browse...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("PNG Image", &["png"])
+                                    .save_file()
+                                {
+                                    app.export_png_path = path.to_string_lossy().to_string();
+                                }
+                            }
+                        });
                         ui.end_row();
                         ui.label("Background:");
                         let mut bg_val = match app.export_png_options.background {
@@ -263,6 +272,14 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     ui.label("File path:");
                     ui.text_edit_singleline(&mut app.export_ora_path);
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("OpenRaster Image", &["ora"])
+                            .save_file()
+                        {
+                            app.export_ora_path = path.to_string_lossy().to_string();
+                        }
+                    }
                 });
                 ui.add_space(4.0);
                 ui.label(
@@ -317,6 +334,14 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.horizontal(|ui| {
                     ui.label("File path:");
                     ui.text_edit_singleline(&mut app.import_ora_path);
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("OpenRaster Image", &["ora"])
+                            .pick_file()
+                        {
+                            app.import_ora_path = path.to_string_lossy().to_string();
+                        }
+                    }
                 });
                 ui.add_space(4.0);
                 ui.label(
@@ -991,6 +1016,155 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             });
         if close {
             app.show_tablet_diagnostics = false;
+        }
+    }
+
+    // 2e. EXPORT JPEG DIALOG
+    if app.show_export_jpeg_dialog {
+        let mut close = false;
+        let mut do_export = false;
+        egui::Window::new("Export JPEG")
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new("Export Canvas as JPEG").strong());
+                });
+                ui.add_space(8.0);
+                egui::Grid::new("export_jpeg_grid")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("File path:");
+                        ui.horizontal(|ui| {
+                            ui.text_edit_singleline(&mut app.export_jpeg_path);
+                            if ui.button("Browse...").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("JPEG Image", &["jpg", "jpeg"])
+                                    .save_file()
+                                {
+                                    app.export_jpeg_path = path.to_string_lossy().to_string();
+                                }
+                            }
+                        });
+                        ui.end_row();
+
+                        ui.label("Quality:");
+                        ui.add(egui::Slider::new(&mut app.export_jpeg_quality, 1..=100));
+                        ui.end_row();
+                    });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Export").clicked() {
+                        do_export = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if do_export {
+            let path = std::path::Path::new(&app.export_jpeg_path).to_path_buf();
+            let layers = app.layers.clone();
+            let layer_order = app.layer_order.clone();
+            let w = app.canvas_width;
+            let h = app.canvas_height;
+            let quality = app.export_jpeg_quality;
+            std::thread::spawn(move || {
+                match crate::export::jpeg::export_jpeg(&path, &layers, &layer_order, w, h, quality) {
+                    Ok(()) => log::info!("Exported JPEG to {:?}", path),
+                    Err(e) => log::error!("JPEG export failed: {:?}", e),
+                }
+            });
+            app.show_export_jpeg_dialog = false;
+        }
+        if close {
+            app.show_export_jpeg_dialog = false;
+        }
+    }
+
+    // 8b. SMOOTH SELECTION DIALOG
+    if app.show_smooth_dialog {
+        let mut close = false;
+        let mut smooth_cmd: Option<HistoryCommand> = None;
+        egui::Window::new("Smooth Selection")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Smooth radius:");
+                    ui.add(egui::DragValue::new(&mut app.smooth_pixels).clamp_range(1..=100));
+                    ui.label("pixels");
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Smooth").clicked() {
+                        let old_mask = Box::new(app.selection_mask.clone());
+                        let smooth_px = app.smooth_pixels;
+                        selection::smooth_selection(
+                            &mut app.selection_mask,
+                            smooth_px,
+                            app.canvas_width as i32,
+                            app.canvas_height as i32,
+                        );
+                        app.show_selection_overlay = app.selection_mask.is_active;
+                        let new_mask = Box::new(app.selection_mask.clone());
+                        smooth_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if let Some(cmd) = smooth_cmd {
+            app.history.push_command(cmd);
+        }
+        if close {
+            app.show_smooth_dialog = false;
+        }
+    }
+
+    // 8c. BORDER SELECTION DIALOG
+    if app.show_border_dialog {
+        let mut close = false;
+        let mut border_cmd: Option<HistoryCommand> = None;
+        egui::Window::new("Border Selection")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Border width:");
+                    ui.add(egui::DragValue::new(&mut app.border_pixels).clamp_range(1..=100));
+                    ui.label("pixels");
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Border").clicked() {
+                        let old_mask = Box::new(app.selection_mask.clone());
+                        let border_px = app.border_pixels;
+                        selection::border_selection(
+                            &mut app.selection_mask,
+                            border_px,
+                            app.canvas_width as i32,
+                            app.canvas_height as i32,
+                        );
+                        app.show_selection_overlay = app.selection_mask.is_active;
+                        let new_mask = Box::new(app.selection_mask.clone());
+                        border_cmd = Some(HistoryCommand::SelectionChange { old_mask, new_mask });
+                        close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if let Some(cmd) = border_cmd {
+            app.history.push_command(cmd);
+        }
+        if close {
+            app.show_border_dialog = false;
         }
     }
 }

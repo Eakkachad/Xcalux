@@ -11,27 +11,27 @@ pub const PROTOCOL_GUID: crate::base::Guid = crate::base::Guid::from_fields(
     &[0x26, 0x47, 0xba, 0x96, 0x60, 0xd0],
 );
 
-pub type Reset = unsafe extern "efiapi" fn(
+pub type Reset = eficall! {fn(
     *mut Protocol,
-) -> *mut crate::base::Status;
+) -> *mut crate::base::Status};
 
-pub type Write = unsafe extern "efiapi" fn(
+pub type Write = eficall! {fn(
     *mut Protocol,
     u32,
     *mut usize,
     *mut core::ffi::c_void
-) -> *mut crate::base::Status;
+) -> *mut crate::base::Status};
 
-pub type Read = unsafe extern "efiapi" fn(
+pub type Read = eficall! {fn(
     *mut Protocol,
     u32,
     *mut usize,
     *mut core::ffi::c_void
-) -> *mut crate::base::Status;
+) -> *mut crate::base::Status};
 
-pub type Poll = unsafe extern "efiapi" fn(
+pub type Poll = eficall! {fn(
     *mut Protocol,
-) -> *mut crate::base::Status;
+) -> *mut crate::base::Status};
 
 #[repr(C)]
 pub struct Protocol {

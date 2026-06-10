@@ -1,8 +1,10 @@
-use core::str;
-use std::{
-    convert::TryFrom,
+use core::{
+    cmp::Ordering,
     fmt::{Display, Write},
+    hash::{Hash, Hasher},
     marker::PhantomData,
+    mem::discriminant,
+    str,
 };
 
 use serde::{
@@ -10,7 +12,9 @@ use serde::{
         Deserialize, DeserializeSeed, Deserializer, Error, MapAccess, SeqAccess, Unexpected,
         Visitor,
     },
-    ser::{Serialize, SerializeSeq, SerializeStruct, SerializeTupleStruct, Serializer},
+    ser::{
+        Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeTupleStruct, Serializer,
+    },
 };
 use static_assertions::assert_impl_all;
 
@@ -34,18 +38,17 @@ use crate::Fd;
 /// # Examples
 ///
 /// ```
-/// use std::convert::TryFrom;
-/// use zvariant::{from_slice, to_bytes, EncodingContext, Value};
+/// use zvariant::{to_bytes, serialized::Context, Value, LE};
 ///
 /// // Create a Value from an i16
 /// let v = Value::new(i16::max_value());
 ///
 /// // Encode it
-/// let ctxt = EncodingContext::<byteorder::LE>::new_dbus(0);
+/// let ctxt = Context::new_dbus(LE, 0);
 /// let encoding = to_bytes(ctxt, &v).unwrap();
 ///
 /// // Decode it back
-/// let v: Value = from_slice(&encoding, ctxt).unwrap();
+/// let v: Value = encoding.deserialize().unwrap().0;
 ///
 /// // Check everything is as expected
 /// assert_eq!(i16::try_from(&v).unwrap(), i16::max_value());
@@ -54,17 +57,16 @@ use crate::Fd;
 /// Now let's try a more complicated example:
 ///
 /// ```
-/// use std::convert::TryFrom;
-/// use zvariant::{from_slice, to_bytes, EncodingContext};
+/// use zvariant::{to_bytes, serialized::Context, LE};
 /// use zvariant::{Structure, Value, Str};
 ///
 /// // Create a Value from a tuple this time
 /// let v = Value::new((i16::max_value(), "hello", true));
 ///
 /// // Same drill as previous example
-/// let ctxt = EncodingContext::<byteorder::LE>::new_dbus(0);
+/// let ctxt = Context::new_dbus(LE, 0);
 /// let encoding = to_bytes(ctxt, &v).unwrap();
-/// let v: Value = from_slice(&encoding, ctxt).unwrap();
+/// let v: Value = encoding.deserialize().unwrap().0;
 ///
 /// // Check everything is as expected
 /// let s = Structure::try_from(v).unwrap();
@@ -75,7 +77,7 @@ use crate::Fd;
 /// ```
 ///
 /// [D-Bus specification]: https://dbus.freedesktop.org/doc/dbus-specification.html#container-types
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq, PartialOrd)]
 pub enum Value<'a> {
     // Simple types
     U8(u8),
@@ -100,7 +102,54 @@ pub enum Value<'a> {
     Maybe(Maybe<'a>),
 
     #[cfg(unix)]
-    Fd(Fd),
+    Fd(Fd<'a>),
+}
+
+impl Hash for Value<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        discriminant(self).hash(state);
+        match self {
+            Self::U8(inner) => inner.hash(state),
+            Self::Bool(inner) => inner.hash(state),
+            Self::I16(inner) => inner.hash(state),
+            Self::U16(inner) => inner.hash(state),
+            Self::I32(inner) => inner.hash(state),
+            Self::U32(inner) => inner.hash(state),
+            Self::I64(inner) => inner.hash(state),
+            Self::U64(inner) => inner.hash(state),
+            // To hold the +0.0 == -0.0 => hash(+0.0) == hash(-0.0) property.
+            // See https://doc.rust-lang.org/beta/std/hash/trait.Hash.html#hash-and-eq
+            Self::F64(inner) if *inner == 0. => 0f64.to_le_bytes().hash(state),
+            Self::F64(inner) => inner.to_le_bytes().hash(state),
+            Self::Str(inner) => inner.hash(state),
+            Self::Signature(inner) => inner.hash(state),
+            Self::ObjectPath(inner) => inner.hash(state),
+            Self::Value(inner) => inner.hash(state),
+            Self::Array(inner) => inner.hash(state),
+            Self::Dict(inner) => inner.hash(state),
+            Self::Structure(inner) => inner.hash(state),
+            #[cfg(feature = "gvariant")]
+            Self::Maybe(inner) => inner.hash(state),
+            #[cfg(unix)]
+            Self::Fd(inner) => inner.hash(state),
+        }
+    }
+}
+
+impl Eq for Value<'_> {}
+
+impl Ord for Value<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other)
+            .unwrap_or_else(|| match (self, other) {
+                (Self::F64(lhs), Self::F64(rhs)) => lhs.total_cmp(rhs),
+                // `partial_cmp` returns `Some(_)` if either the discriminants are different
+                // or if both the left hand side and right hand side is `Self::F64(_)`,
+                // because `f64` is the only type in this enum, that does not implement `Ord`.
+                // This `match`-arm is therefore unreachable.
+                _ => unreachable!(),
+            })
+    }
 }
 
 assert_impl_all!(Value<'_>: Send, Sync, Unpin);
@@ -166,13 +215,14 @@ impl<'a> Value<'a> {
         }
     }
 
-    /// Create an owned version of `self`.
+    /// Try to create an owned version of `self`.
     ///
-    /// Ideally, we should implement [`std::borrow::ToOwned`] trait for `Value`, but that's
-    /// implemented generically for us through `impl<T: Clone> ToOwned for T` and it's not what we
-    /// need/want.
-    pub fn to_owned(&self) -> OwnedValue {
-        OwnedValue(match self {
+    /// # Errors
+    ///
+    /// This method can currently only fail on Unix platforms for [`Value::Fd`] variant. This
+    /// happens when the current process exceeds the maximum number of open file descriptors.
+    pub fn try_to_owned(&self) -> crate::Result<OwnedValue> {
+        Ok(OwnedValue(match self {
             Value::U8(v) => Value::U8(*v),
             Value::Bool(v) => Value::Bool(*v),
             Value::I16(v) => Value::I16(*v),
@@ -186,18 +236,18 @@ impl<'a> Value<'a> {
             Value::Signature(v) => Value::Signature(v.to_owned()),
             Value::ObjectPath(v) => Value::ObjectPath(v.to_owned()),
             Value::Value(v) => {
-                let o = OwnedValue::from(&**v);
+                let o = OwnedValue::try_from(&**v)?;
                 Value::Value(Box::new(o.into_inner()))
             }
 
-            Value::Array(v) => Value::Array(v.to_owned()),
-            Value::Dict(v) => Value::Dict(v.to_owned()),
-            Value::Structure(v) => Value::Structure(v.to_owned()),
+            Value::Array(v) => Value::Array(v.try_to_owned()?),
+            Value::Dict(v) => Value::Dict(v.try_to_owned()?),
+            Value::Structure(v) => Value::Structure(v.try_to_owned()?),
             #[cfg(feature = "gvariant")]
-            Value::Maybe(v) => Value::Maybe(v.to_owned()),
+            Value::Maybe(v) => Value::Maybe(v.try_to_owned()?),
             #[cfg(unix)]
-            Value::Fd(v) => Value::Fd(*v),
-        })
+            Value::Fd(v) => Value::Fd(v.try_to_owned()?),
+        }))
     }
 
     /// Get the signature of the enclosed value.
@@ -218,15 +268,47 @@ impl<'a> Value<'a> {
             Value::Value(_) => Signature::from_static_str_unchecked("v"),
 
             // Container types
-            Value::Array(value) => value.full_signature().clone(),
-            Value::Dict(value) => value.full_signature().clone(),
-            Value::Structure(value) => value.full_signature().clone(),
+            Value::Array(value) => value.full_signature().as_ref(),
+            Value::Dict(value) => value.full_signature().as_ref(),
+            Value::Structure(value) => value.full_signature().as_ref(),
             #[cfg(feature = "gvariant")]
-            Value::Maybe(value) => value.full_signature().clone(),
+            Value::Maybe(value) => value.full_signature().as_ref(),
 
             #[cfg(unix)]
             Value::Fd(_) => Fd::signature(),
         }
+    }
+
+    /// Try to clone the value.
+    ///
+    /// # Errors
+    ///
+    /// This method can currently only fail on Unix platforms for [`Value::Fd`] variant containing
+    /// an [`Fd::Owned`] variant. This happens when the current process exceeds the maximum number
+    /// of open file descriptors.
+    pub fn try_clone(&self) -> crate::Result<Self> {
+        Ok(match self {
+            Value::U8(v) => Value::U8(*v),
+            Value::Bool(v) => Value::Bool(*v),
+            Value::I16(v) => Value::I16(*v),
+            Value::U16(v) => Value::U16(*v),
+            Value::I32(v) => Value::I32(*v),
+            Value::U32(v) => Value::U32(*v),
+            Value::I64(v) => Value::I64(*v),
+            Value::U64(v) => Value::U64(*v),
+            Value::F64(v) => Value::F64(*v),
+            Value::Str(v) => Value::Str(v.clone()),
+            Value::Signature(v) => Value::Signature(v.clone()),
+            Value::ObjectPath(v) => Value::ObjectPath(v.clone()),
+            Value::Value(v) => Value::Value(Box::new(v.try_clone()?)),
+            Value::Array(v) => Value::Array(v.try_clone()?),
+            Value::Dict(v) => Value::Dict(v.try_clone()?),
+            Value::Structure(v) => Value::Structure(v.try_clone()?),
+            #[cfg(feature = "gvariant")]
+            Value::Maybe(v) => Value::Maybe(v.try_clone()?),
+            #[cfg(unix)]
+            Value::Fd(v) => Value::Fd(v.try_clone()?),
+        })
     }
 
     pub(crate) fn serialize_value_as_struct_field<S>(
@@ -261,6 +343,23 @@ impl<'a> Value<'a> {
         serialize_value!(self serializer.serialize_element)
     }
 
+    pub(crate) fn serialize_value_as_dict_key<S>(&self, serializer: &mut S) -> Result<(), S::Error>
+    where
+        S: SerializeMap,
+    {
+        serialize_value!(self serializer.serialize_key)
+    }
+
+    pub(crate) fn serialize_value_as_dict_value<S>(
+        &self,
+        serializer: &mut S,
+    ) -> Result<(), S::Error>
+    where
+        S: SerializeMap,
+    {
+        serialize_value!(self serializer.serialize_value)
+    }
+
     #[cfg(feature = "gvariant")]
     pub(crate) fn serialize_value_as_some<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -279,16 +378,16 @@ impl<'a> Value<'a> {
     /// # Examples
     ///
     /// ```
-    /// use std::convert::TryFrom;
-    /// use zvariant::{Result, Value};
+    /// use zvariant::{Error, Result, Value};
     ///
     /// fn value_vec_to_type_vec<'a, T>(values: Vec<Value<'a>>) -> Result<Vec<T>>
     /// where
     ///     T: TryFrom<Value<'a>>,
+    ///     <T as TryFrom<Value<'a>>>::Error: Into<Error>,
     /// {
     ///     let mut res = vec![];
     ///     for value in values.into_iter() {
-    ///         res.push(value.downcast().unwrap());
+    ///         res.push(value.downcast()?);
     ///     }
     ///
     ///     Ok(res)
@@ -310,35 +409,37 @@ impl<'a> Value<'a> {
     /// [`Value::Value`]: enum.Value.html#variant.Value
     /// [`TryFrom<Value>`]: https://doc.rust-lang.org/std/convert/trait.TryFrom.html
     /// [`From<Value>`]: https://doc.rust-lang.org/std/convert/trait.From.html
-    pub fn downcast<T: ?Sized>(self) -> Option<T>
+    pub fn downcast<T>(self) -> Result<T, crate::Error>
     where
-        T: TryFrom<Value<'a>>,
+        T: ?Sized + TryFrom<Value<'a>>,
+        <T as TryFrom<Value<'a>>>::Error: Into<crate::Error>,
     {
         if let Value::Value(v) = self {
-            T::try_from(*v).ok()
+            T::try_from(*v)
         } else {
-            T::try_from(self).ok()
+            T::try_from(self)
         }
+        .map_err(Into::into)
     }
 
-    /// Try to get a reference to the underlying type `T`.
+    /// Try to get the underlying type `T`.
     ///
-    /// Same as [`downcast`] except it doesn't consume `self` and get a reference to the underlying
-    /// value.
+    /// Same as [`downcast`] except it doesn't consume `self` and hence requires
+    /// `T: TryFrom<&Value<_>>`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use std::convert::TryFrom;
-    /// use zvariant::{Result, Value};
+    /// use zvariant::{Error, Result, Value};
     ///
     /// fn value_vec_to_type_vec<'a, T>(values: &'a Vec<Value<'a>>) -> Result<Vec<&'a T>>
     /// where
     ///     &'a T: TryFrom<&'a Value<'a>>,
+    ///     <&'a T as TryFrom<&'a Value<'a>>>::Error: Into<Error>,
     /// {
     ///     let mut res = vec![];
     ///     for value in values.into_iter() {
-    ///         res.push(value.downcast_ref().unwrap());
+    ///         res.push(value.downcast_ref()?);
     ///     }
     ///
     ///     Ok(res)
@@ -358,16 +459,17 @@ impl<'a> Value<'a> {
     /// ```
     ///
     /// [`downcast`]: enum.Value.html#method.downcast
-    pub fn downcast_ref<T>(&'a self) -> Option<&'a T>
+    pub fn downcast_ref<T>(&'a self) -> Result<T, crate::Error>
     where
-        T: ?Sized,
-        &'a T: TryFrom<&'a Value<'a>>,
+        T: ?Sized + TryFrom<&'a Value<'a>>,
+        <T as TryFrom<&'a Value<'a>>>::Error: Into<crate::Error>,
     {
         if let Value::Value(v) = self {
-            <&T>::try_from(v).ok()
+            <T>::try_from(v)
         } else {
-            <&T>::try_from(self).ok()
+            <T>::try_from(self)
         }
+        .map_err(Into::into)
     }
 }
 
@@ -584,7 +686,7 @@ impl<'de> SignatureSeed<'de> {
         let mut builder = StructureBuilder::new();
         while i < signature_end {
             let fields_signature = self.signature.slice(i..signature_end);
-            let parser = SignatureParser::new(fields_signature.clone());
+            let parser = SignatureParser::new(fields_signature.as_ref());
             let len = parser.next_signature().map_err(Error::custom)?.len();
             let field_signature = fields_signature.slice(0..len);
             i += field_signature.len();
@@ -717,7 +819,11 @@ where
             )
         })? {
             #[cfg(unix)]
-            b'h' => Fd::from(value).into(),
+            b'h' => {
+                // SAFETY: The `'de` lifetimes will ensure the borrow won't outlive the raw FD.
+                let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(value) };
+                Fd::Borrowed(fd).into()
+            }
             _ => value.into(),
         };
 
@@ -845,6 +951,14 @@ where
 impl<'a> Type for Value<'a> {
     fn signature() -> Signature<'static> {
         Signature::from_static_str_unchecked(VARIANT_SIGNATURE_STR)
+    }
+}
+
+impl<'a> TryFrom<&Value<'a>> for Value<'a> {
+    type Error = crate::Error;
+
+    fn try_from(value: &Value<'a>) -> crate::Result<Value<'a>> {
+        value.try_clone()
     }
 }
 
@@ -977,57 +1091,80 @@ mod tests {
             "((true,), (true, false), (true, true, false))"
         );
 
-        assert_eq!(
-            Value::new((
-                (Some(0_i16), Some(Some(0_i16)), Some(Some(Some(0_i16))),),
-                (None::<i16>, Some(None::<i16>), Some(Some(None::<i16>)),),
-                (None::<Option<i16>>, Some(None::<Option<i16>>)),
-            ))
-            .to_string(),
-            "((@mn 0, @mmn 0, @mmmn 0), \
+        #[cfg(any(feature = "gvariant", feature = "option-as-array"))]
+        {
+            #[cfg(unix)]
+            use std::os::fd::BorrowedFd;
+
+            #[cfg(all(feature = "gvariant", not(feature = "option-as-array")))]
+            let s = "((@mn 0, @mmn 0, @mmmn 0), \
                 (@mn nothing, @mmn just nothing, @mmmn just just nothing), \
-                (@mmn nothing, @mmmn just nothing))"
-        );
+                (@mmn nothing, @mmmn just nothing))";
+            #[cfg(feature = "option-as-array")]
+            let s = "(([int16 0], [[int16 0]], [[[int16 0]]]), \
+                (@an [], [@an []], [[@an []]]), \
+                (@aan [], [@aan []]))";
+            assert_eq!(
+                Value::new((
+                    (Some(0_i16), Some(Some(0_i16)), Some(Some(Some(0_i16))),),
+                    (None::<i16>, Some(None::<i16>), Some(Some(None::<i16>)),),
+                    (None::<Option<i16>>, Some(None::<Option<i16>>)),
+                ))
+                .to_string(),
+                s,
+            );
 
-        assert_eq!(
-            Value::new(vec![Fd::from(0), Fd::from(-100)]).to_string(),
-            "[handle 0, -100]"
-        );
+            #[cfg(unix)]
+            assert_eq!(
+                Value::new(vec![
+                    Fd::from(unsafe { BorrowedFd::borrow_raw(0) }),
+                    Fd::from(unsafe { BorrowedFd::borrow_raw(-100) })
+                ])
+                .to_string(),
+                "[handle 0, -100]"
+            );
 
-        assert_eq!(
-            Value::new((
-                None::<bool>,
-                None::<bool>,
-                Some(
-                    vec![("size", Value::new((800, 600)))]
-                        .into_iter()
-                        .collect::<HashMap<_, _>>()
-                ),
-                vec![
-                    Value::new(1),
-                    Value::new(
-                        vec![(
-                            "dimension",
-                            Value::new((
-                                vec![2.4, 1.],
-                                Some(Some(200_i16)),
-                                Value::new((3_u8, "Hello!"))
-                            ))
-                        )]
-                        .into_iter()
-                        .collect::<HashMap<_, _>>()
-                    )
-                ],
-                7777,
-                ObjectPath::from_static_str("/").unwrap(),
-                8888
-            ))
-            .to_string(),
-            "(@mb nothing, @mb nothing, \
+            #[cfg(all(feature = "gvariant", not(feature = "option-as-array")))]
+            let s = "(@mb nothing, @mb nothing, \
                 @ma{sv} {\"size\": <(800, 600)>}, \
                 [<1>, <{\"dimension\": <([2.4, 1.], \
                 @mmn 200, <(byte 0x03, \"Hello!\")>)>}>], \
-                7777, objectpath \"/\", 8888)"
-        );
+                7777, objectpath \"/\", 8888)";
+            #[cfg(feature = "option-as-array")]
+            let s = "(@ab [], @ab [], [{\"size\": <(800, 600)>}], \
+                [<1>, <{\"dimension\": <([2.4, 1.], [[int16 200]], \
+                <(byte 0x03, \"Hello!\")>)>}>], 7777, objectpath \"/\", 8888)";
+            assert_eq!(
+                Value::new((
+                    None::<bool>,
+                    None::<bool>,
+                    Some(
+                        vec![("size", Value::new((800, 600)))]
+                            .into_iter()
+                            .collect::<HashMap<_, _>>()
+                    ),
+                    vec![
+                        Value::new(1),
+                        Value::new(
+                            vec![(
+                                "dimension",
+                                Value::new((
+                                    vec![2.4, 1.],
+                                    Some(Some(200_i16)),
+                                    Value::new((3_u8, "Hello!"))
+                                ))
+                            )]
+                            .into_iter()
+                            .collect::<HashMap<_, _>>()
+                        )
+                    ],
+                    7777,
+                    ObjectPath::from_static_str("/").unwrap(),
+                    8888
+                ))
+                .to_string(),
+                s,
+            );
+        }
     }
 }

@@ -78,7 +78,17 @@ pub fn draw_status_bar(app: &mut PaintApp, ctx: &egui::Context) {
             ui.label(format!("Layer: {}", layer_name));
             ui.separator();
 
-            ui.label(&app.autosave_status);
+            let status = &app.autosave_status;
+            if !status.is_empty() {
+                let color = if status.to_lowercase().contains("failed") || status.to_lowercase().contains("error") {
+                    egui::Color32::from_rgb(220, 60, 60)
+                } else if status.to_lowercase().contains("saving") || status.contains("...") {
+                    egui::Color32::from_rgb(0, 120, 215)
+                } else {
+                    egui::Color32::from_rgb(46, 125, 50)
+                };
+                ui.label(egui::RichText::new(format!("💾 {}", status)).color(color).strong().size(10.5));
+            }
         });
     });
 }

@@ -239,7 +239,7 @@ impl DataFrame {
     /// (can't take a self param due to borrowing crimes.)
     fn get_or_insert_tool<'tool>(
         tools: &'tool mut Vec<crate::tool::Tool>,
-        _rts: &tablet_pc::IRealTimeStylus,
+        rts: &tablet_pc::IRealTimeStylus,
         cid: u32,
     ) -> WinResult<&'tool mut crate::tool::Tool> {
         if let Some(pos) = tools
@@ -248,22 +248,39 @@ impl DataFrame {
                 // use `position` instead of find because of borrow issues.
                 return Ok(&mut tools[pos]);
             };
-        // Not found, make a default placeholder tool to avoid a COM deadlock!
-        // Calling GetStylusForId on the background COM thread marshals the call to the main
-        // STA window thread. Since the main thread can be blocked waiting for the shared_frame
-        // lock (which is held by this COM callback thread), a classic STA deadlock occurs.
-        // Bypassing the COM call entirely resolves this beautifully and safely since the
-        // application doesn't actually rely on cursor_id, name, or tool_type from RTS anyway.
-        let tool = crate::tool::Tool {
-            internal_id: ID::Stylus { cid, cursor_id: None }.into(),
-            name: None,
-            hardware_id: None,
-            wacom_id: None,
-            tool_type: Some(crate::tool::Type::Pen),
-            axes: crate::axis::FullInfo::default(),
-        };
-        tools.push(tool);
-        Ok(tools.last_mut().unwrap())
+        // Not found, make one!
+        unsafe {
+            // About cursors!
+            // https://learn.microsoft.com/en-us/windows/win32/api/msinkaut/nn-msinkaut-iinkcursor
+            // Each cursor represents *one end* of a stylus, with implications of it being hardware unique ID (note from future:
+            // this implication is false). Problem is, tip and eraser have *different* hardware ids with no way to re-correlate them.
+            // Sadness!
+            // We can also query the number of buttons! However, tip and eraser are also considered buttons with no way
+            // to differentiate them, so that's not much use.
+
+            let cursor = rts.GetStylusForId(cid)?;
+            let cursor_id = cursor.Id().ok();
+
+            let tool = crate::tool::Tool {
+                internal_id: ID::Stylus { cid, cursor_id }.into(),
+                name: cursor.Name().ok().as_ref().map(ToString::to_string),
+                // Very intentional cast. We just want *uniqueness* of each number.
+                #[allow(clippy::cast_sign_loss)]
+                hardware_id: cursor_id.map(|id| crate::tool::HardwareID(id as u64)),
+                wacom_id: None,
+                tool_type: match cursor
+                    .Inverted()
+                    .map(windows::Win32::Foundation::VARIANT_BOOL::as_bool)
+                {
+                    Ok(false) => Some(crate::tool::Type::Pen),
+                    Ok(true) => Some(crate::tool::Type::Eraser),
+                    Err(_) => None,
+                },
+                axes: crate::axis::FullInfo::default(),
+            };
+            tools.push(tool);
+            Ok(tools.last_mut().unwrap())
+        }
     }
     fn get_tool(&self, cid: u32) -> Option<&crate::tool::Tool> {
         self.tools

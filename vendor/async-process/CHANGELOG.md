@@ -1,3 +1,62 @@
+# Version 2.5.0
+
+- Bump MSRV to 1.71. (#106)
+- Add `Command::get_{args, envs, current_dir, program}` (#102)
+- Update to `windows-sys` v0.61. (#104)
+- Remove dependency on `async_lock` on Windows. (#103)
+
+# Version 2.4.0
+
+- Add a new optional `tracing` feature. When enabled, this feature adds logging
+  to the implementation. By default it is disabled. (#101)
+- Fix build failure when compiled together with old versions of `async-signal`. (#96)
+- Fix build failure with minimal-versions. (#101)
+- Update `windows-sys` to v0.60. (#99)
+
+# Version 2.3.1
+
+- Update rustix to 1.0. (#94)
+
+# Version 2.3.0
+
+- Use a more efficient backend on Windows. (#87)
+
+# Version 2.2.4
+
+- Update to `windows-sys` v0.59. (#85)
+
+# Version 2.2.3
+
+- Fix builds on Android by having Android unconditionally use the signal reaper
+  backend. (#80)
+
+# Version 2.2.2
+
+- Fix a typo in the docs for `ChildStdin`. (#76)
+
+# Version 2.2.1
+
+- Fix a compilation error for 32-bit operating systems by using a 32-bit zombie counter. (#75)
+
+# Version 2.2.0
+
+- Port Linux to a new backend that tries to use `pidfd` if it is available. (#68)
+
+# Version 2.1.0
+
+- Update `event-listener` to v5.1.0. (#67)
+
+# Version 2.0.1
+
+- Update `event-listener` to v4.0.0. (#64)
+- Update `windows-sys` to v0.52.0. (#65)
+
+# Version 2.0.0
+
+- **Breaking:** Remove the `pre_exec` extension function on Unix. It is still available through the `From<std::process::Command>` implementation on `Command`. (#54)
+- Add the `driver()` function, which allows the processes to be driven without a separate thread. (#52)
+- Bump `async-io` to v2.0.0 and `async-channel` to v2.0.0. (#60)
+
 # Version 1.8.1
 
 - Bump `async-signal` to v0.2.3. (#56)

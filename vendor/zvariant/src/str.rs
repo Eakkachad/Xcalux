@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{Basic, EncodingFormat, Signature, Type};
+use crate::{serialized::Format, Basic, Signature, Type};
 
 /// A string wrapper.
 ///
@@ -17,11 +17,11 @@ use crate::{Basic, EncodingFormat, Signature, Type};
 /// [`Value`]: enum.Value.html#variant.Str
 /// [`&str`]: https://doc.rust-lang.org/std/str/index.html
 /// [`String`]: https://doc.rust-lang.org/std/string/struct.String.html
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize)]
+#[derive(Default, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize)]
 #[serde(rename(serialize = "zvariant::Str", deserialize = "zvariant::Str"))]
 pub struct Str<'a>(#[serde(borrow)] Inner<'a>);
 
-#[derive(Debug, Eq, Clone)]
+#[derive(Eq, Clone)]
 enum Inner<'a> {
     Static(&'static str),
     Borrowed(&'a str),
@@ -92,7 +92,7 @@ impl<'a> Str<'a> {
         Str(Inner::Static(s))
     }
 
-    /// A borrowed clone (this never allocates, unlike clone).
+    /// This is faster than `Clone::clone` when `self` contains owned data.
     pub fn as_ref(&self) -> Str<'_> {
         match &self.0 {
             Inner::Static(s) => Str(Inner::Static(s)),
@@ -125,7 +125,7 @@ impl<'a> Basic for Str<'a> {
     const SIGNATURE_CHAR: char = <&str>::SIGNATURE_CHAR;
     const SIGNATURE_STR: &'static str = <&str>::SIGNATURE_STR;
 
-    fn alignment(format: EncodingFormat) -> usize {
+    fn alignment(format: Format) -> usize {
         <&str>::alignment(format)
     }
 }
@@ -179,8 +179,8 @@ impl<'a> From<Str<'a>> for String {
     }
 }
 
-impl<'a> From<&'a Str<'a>> for &'a str {
-    fn from(value: &'a Str<'a>) -> &'a str {
+impl<'a> From<&'a Str<'_>> for &'a str {
+    fn from(value: &'a Str<'_>) -> &'a str {
         value.as_str()
     }
 }
@@ -205,9 +205,15 @@ impl<'a> PartialEq<&str> for Str<'a> {
     }
 }
 
+impl<'a> std::fmt::Debug for Str<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
 impl<'a> std::fmt::Display for Str<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_str().fmt(f)
+        std::fmt::Display::fmt(self.as_str(), f)
     }
 }
 

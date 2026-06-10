@@ -1,13 +1,10 @@
 #![allow(unknown_lints)]
 use serde::{
-    de::{DeserializeSeed, Deserializer, SeqAccess, Visitor},
+    de::{DeserializeSeed, Deserializer, Error, SeqAccess, Visitor},
     ser::{Serialize, SerializeTupleStruct, Serializer},
 };
 use static_assertions::assert_impl_all;
-use std::{
-    convert::TryInto,
-    fmt::{Display, Write},
-};
+use std::fmt::{Display, Write};
 
 use crate::{
     signature_parser::SignatureParser, value::SignatureSeed, value_display_fmt, DynamicDeserialize,
@@ -17,7 +14,7 @@ use crate::{
 /// Use this to efficiently build a [`Structure`].
 ///
 /// [`Structure`]: struct.Structure.html
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct StructureBuilder<'a>(Vec<Value<'a>>);
 
 assert_impl_all!(StructureBuilder<'_>: Send, Sync, Unpin);
@@ -108,7 +105,7 @@ impl<'a> StructureSeed<'a> {
     }
 }
 
-impl<'a> std::convert::TryFrom<Signature<'a>> for StructureSeed<'a> {
+impl<'a> TryFrom<Signature<'a>> for StructureSeed<'a> {
     type Error = zvariant::Error;
 
     fn try_from(signature: Signature<'a>) -> Result<Self, zvariant::Error> {
@@ -158,7 +155,7 @@ impl<'de> Visitor<'de> for StructureVisitor<'de> {
 /// API is provided to convert from, and to tuples.
 ///
 /// [`Value`]: enum.Value.html
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Structure<'a> {
     fields: Vec<Value<'a>>,
     signature: Signature<'a>,
@@ -192,11 +189,29 @@ impl<'a> Structure<'a> {
         &self.signature
     }
 
-    pub(crate) fn to_owned(&self) -> Structure<'static> {
-        Structure {
-            fields: self.fields.iter().map(|v| v.to_owned().into()).collect(),
+    pub(crate) fn try_to_owned(&self) -> crate::Result<Structure<'static>> {
+        Ok(Structure {
+            fields: self
+                .fields
+                .iter()
+                .map(|v| v.try_to_owned().map(Into::into))
+                .collect::<crate::Result<_>>()?,
             signature: self.signature.to_owned(),
-        }
+        })
+    }
+
+    /// Attempt to clone `self`.
+    pub fn try_clone(&self) -> Result<Self, crate::Error> {
+        let fields = self
+            .fields
+            .iter()
+            .map(|v| v.try_clone())
+            .collect::<crate::Result<Vec<_>>>()?;
+
+        Ok(Self {
+            fields,
+            signature: self.signature.clone(),
+        })
     }
 }
 
@@ -248,13 +263,13 @@ impl<'a> Default for Structure<'a> {
 
 impl<'a> DynamicType for Structure<'a> {
     fn dynamic_signature(&self) -> Signature<'_> {
-        self.signature.clone()
+        self.signature.as_ref()
     }
 }
 
 impl<'a> DynamicType for StructureSeed<'a> {
     fn dynamic_signature(&self) -> Signature<'_> {
-        self.0.clone()
+        self.0.as_ref()
     }
 }
 
@@ -274,7 +289,7 @@ impl<'a> DynamicDeserialize<'a> for Structure<'a> {
         }
 
         // The signature might be something like "(i)u(i)" - we need to parse it to check.
-        let mut parser = SignatureParser::new(signature.clone());
+        let mut parser = SignatureParser::new(signature.as_ref());
         parser.parse_next_signature()?;
         if !parser.done() {
             // more than one element - we must wrap it
@@ -315,9 +330,9 @@ macro_rules! tuple_impls {
                 }
             }
 
-            impl<'a, E, $($name),+> std::convert::TryFrom<Structure<'a>> for ($($name),+,)
+            impl<'a, E, $($name),+> TryFrom<Structure<'a>> for ($($name),+,)
             where
-                $($name: std::convert::TryFrom<Value<'a>, Error = E>,)+
+                $($name: TryFrom<Value<'a>, Error = E>,)+
                 crate::Error: From<E>,
 
             {
@@ -332,9 +347,9 @@ macro_rules! tuple_impls {
                 }
             }
 
-            impl<'a, E, $($name),+> std::convert::TryFrom<Value<'a>> for ($($name),+,)
+            impl<'a, E, $($name),+> TryFrom<Value<'a>> for ($($name),+,)
             where
-                $($name: std::convert::TryFrom<Value<'a>, Error = E>,)+
+                $($name: TryFrom<Value<'a>, Error = E>,)+
                 crate::Error: From<E>,
 
             {
@@ -345,9 +360,9 @@ macro_rules! tuple_impls {
                 }
             }
 
-            impl<E, $($name),+> std::convert::TryFrom<OwnedValue> for ($($name),+,)
+            impl<E, $($name),+> TryFrom<OwnedValue> for ($($name),+,)
             where
-                $($name: std::convert::TryFrom<Value<'static>, Error = E>,)+
+                $($name: TryFrom<Value<'static>, Error = E>,)+
                 crate::Error: From<E>,
 
             {
@@ -389,4 +404,58 @@ fn create_signature_from_fields(fields: &[Value<'_>]) -> Signature<'static> {
     signature.push(')');
 
     Signature::from_string_unchecked(signature)
+}
+
+/// Owned [`Structure`]
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OwnedStructure(pub Structure<'static>);
+
+/// Use this to deserialize an [`OwnedStructure`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedStructureSeed(Signature<'static>);
+
+impl DynamicType for OwnedStructure {
+    fn dynamic_signature(&self) -> Signature<'_> {
+        self.0.dynamic_signature()
+    }
+}
+
+impl DynamicType for OwnedStructureSeed {
+    fn dynamic_signature(&self) -> Signature<'_> {
+        self.0.clone()
+    }
+}
+
+impl<'de> DynamicDeserialize<'de> for OwnedStructure {
+    type Deserializer = OwnedStructureSeed;
+
+    fn deserializer_for_signature<S>(signature: S) -> zvariant::Result<Self::Deserializer>
+    where
+        S: TryInto<Signature<'de>>,
+        S::Error: Into<zvariant::Error>,
+    {
+        Structure::deserializer_for_signature(signature)
+            .map(|StructureSeed(s)| OwnedStructureSeed(s.to_owned()))
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for OwnedStructureSeed {
+    type Value = OwnedStructure;
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer
+            .deserialize_seq(StructureVisitor { signature: self.0 })
+            .and_then(|s| match s.try_to_owned() {
+                Ok(s) => Ok(OwnedStructure(s)),
+                Err(e) => Err(D::Error::custom(e)),
+            })
+    }
+}
+
+impl Serialize for OwnedStructure {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
 }

@@ -1,7 +1,6 @@
 use crate::{utils::*, Signature};
 use serde::de::{Deserialize, DeserializeSeed};
 use std::{
-    convert::TryInto,
     marker::PhantomData,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::{Path, PathBuf},
@@ -31,7 +30,7 @@ use std::{
 /// [basic types]: trait.Basic.html
 /// [`Vec`]: https://doc.rust-lang.org/std/vec/struct.Vec.html
 /// [`HashMap`]: https://doc.rust-lang.org/std/collections/struct.HashMap.html
-/// [zvariant_derive]: https://docs.rs/zvariant_derive/2.10.0/zvariant_derive/
+/// [zvariant_derive]: https://docs.rs/zvariant_derive/latest/zvariant_derive/
 pub trait Type {
     /// Get the signature for the implementing type.
     ///
@@ -114,7 +113,7 @@ where
             return Ok(PhantomData);
         }
 
-        let mut signature = original.clone();
+        let mut signature = original.as_ref();
         while expected.len() < signature.len()
             && signature.starts_with(STRUCT_SIG_START_CHAR)
             && signature.ends_with(STRUCT_SIG_END_CHAR)
@@ -188,6 +187,25 @@ impl<const CAP: usize> Type for arrayvec::ArrayString<CAP> {
     }
 }
 
+#[cfg(feature = "heapless")]
+impl<T, const CAP: usize> Type for heapless::Vec<T, CAP>
+where
+    T: Type,
+{
+    #[inline]
+    fn signature() -> Signature<'static> {
+        <[T]>::signature()
+    }
+}
+
+#[cfg(feature = "heapless")]
+impl<const CAP: usize> Type for heapless::String<CAP> {
+    #[inline]
+    fn signature() -> Signature<'static> {
+        <&str>::signature()
+    }
+}
+
 // Empty type deserves empty signature
 impl Type for () {
     #[inline]
@@ -219,7 +237,7 @@ deref_impl!(T, <T: ?Sized + Type> Type for RwLock<T>);
 deref_impl!(T, <T: ?Sized + Type> Type for Box<T>);
 deref_impl!(T, <T: ?Sized + Type> Type for Rc<T>);
 
-#[cfg(feature = "gvariant")]
+#[cfg(all(feature = "gvariant", not(feature = "option-as-array")))]
 impl<T> Type for Option<T>
 where
     T: Type,
@@ -227,6 +245,17 @@ where
     #[inline]
     fn signature() -> Signature<'static> {
         Signature::from_string_unchecked(format!("m{}", T::signature()))
+    }
+}
+
+#[cfg(feature = "option-as-array")]
+impl<T> Type for Option<T>
+where
+    T: Type,
+{
+    #[inline]
+    fn signature() -> Signature<'static> {
+        Signature::from_string_unchecked(format!("a{}", T::signature()))
     }
 }
 
