@@ -14,11 +14,7 @@ mod stress_test;
 mod ui;
 mod vector;
 
-mod tools {
-    pub mod fill;
-    pub mod selection;
-    pub mod transform;
-}
+mod tools;
 
 mod export;
 

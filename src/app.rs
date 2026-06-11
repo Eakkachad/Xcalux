@@ -286,6 +286,7 @@ pub struct PaintApp {
 
     // Active tool
     pub active_tool: ToolId,
+    pub(crate) tool_registry: crate::tools::ToolRegistry,
 
     // Fill tool state
     pub fill_options: fill::FillOptions,
@@ -426,7 +427,7 @@ pub struct PaintApp {
 }
 
 // Tool ID enum used in app
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(dead_code)]
 pub enum ToolId {
     Brush,
@@ -1048,6 +1049,15 @@ impl PaintApp {
             renderer,
             shortcuts: ShortcutManager::new(),
             active_tool: ToolId::Brush,
+            tool_registry: {
+                let mut reg = crate::tools::ToolRegistry::new();
+                reg.register(Box::new(crate::tools::HandTool));
+                reg.register(Box::new(crate::tools::ZoomTool));
+                reg.register(Box::new(crate::tools::RotateViewTool));
+                reg.register(Box::new(crate::tools::ColorPickerTool));
+                reg.register(Box::new(crate::tools::MoveTool));
+                reg
+            },
             fill_options: fill::FillOptions::default(),
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
@@ -2064,6 +2074,11 @@ impl PaintApp {
         }
     }
 
+    pub fn set_active_tool(&mut self, id: ToolId) {
+        self.active_tool = id;
+        self.tool_registry.activate(id);
+    }
+
     pub fn command(&mut self, cmd: CommandId) {
         match cmd {
             // File
@@ -2440,26 +2455,26 @@ impl PaintApp {
             CommandId::FilterGaussianBlur => self.adjustment.show_gaussian_blur = true,
 
             // Tools
-            CommandId::ToolBrush => self.active_tool = ToolId::Brush,
-            CommandId::ToolEraser => self.active_tool = ToolId::Eraser,
-            CommandId::ToolFill => self.active_tool = ToolId::Fill,
-            CommandId::ToolGradient => self.active_tool = ToolId::Gradient,
-            CommandId::ToolRectSelect => self.active_tool = ToolId::RectSelect,
-            CommandId::ToolEllipseSelect => self.active_tool = ToolId::EllipseSelect,
-            CommandId::ToolLasso => self.active_tool = ToolId::Lasso,
-            CommandId::ToolPolygonLasso => self.active_tool = ToolId::PolygonLasso,
-            CommandId::ToolMagicWand => self.active_tool = ToolId::MagicWand,
-            CommandId::ToolMove => self.active_tool = ToolId::Move,
+            CommandId::ToolBrush => self.set_active_tool(ToolId::Brush),
+            CommandId::ToolEraser => self.set_active_tool(ToolId::Eraser),
+            CommandId::ToolFill => self.set_active_tool(ToolId::Fill),
+            CommandId::ToolGradient => self.set_active_tool(ToolId::Gradient),
+            CommandId::ToolRectSelect => self.set_active_tool(ToolId::RectSelect),
+            CommandId::ToolEllipseSelect => self.set_active_tool(ToolId::EllipseSelect),
+            CommandId::ToolLasso => self.set_active_tool(ToolId::Lasso),
+            CommandId::ToolPolygonLasso => self.set_active_tool(ToolId::PolygonLasso),
+            CommandId::ToolMagicWand => self.set_active_tool(ToolId::MagicWand),
+            CommandId::ToolMove => self.set_active_tool(ToolId::Move),
             CommandId::ToolTransform => {
-                self.active_tool = ToolId::Transform;
+                self.set_active_tool(ToolId::Transform);
                 self.start_transform();
             }
-            CommandId::ToolColorPicker => self.active_tool = ToolId::ColorPicker,
-            CommandId::ToolHand => self.active_tool = ToolId::Hand,
-            CommandId::ToolZoom => self.active_tool = ToolId::Zoom,
-            CommandId::ToolRotateView => self.active_tool = ToolId::RotateView,
-            CommandId::ToolLine => self.active_tool = ToolId::Line,
-            CommandId::ToolShape => self.active_tool = ToolId::Shape,
+            CommandId::ToolColorPicker => self.set_active_tool(ToolId::ColorPicker),
+            CommandId::ToolHand => self.set_active_tool(ToolId::Hand),
+            CommandId::ToolZoom => self.set_active_tool(ToolId::Zoom),
+            CommandId::ToolRotateView => self.set_active_tool(ToolId::RotateView),
+            CommandId::ToolLine => self.set_active_tool(ToolId::Line),
+            CommandId::ToolShape => self.set_active_tool(ToolId::Shape),
         }
     }
 
@@ -3347,7 +3362,7 @@ impl PaintApp {
         }
     }
 
-    fn get_merged_pixel(&self, x: i32, y: i32) -> [u16; 4] {
+    pub(crate) fn get_merged_pixel(&self, x: i32, y: i32) -> [u16; 4] {
         let mut composite = [0u16; 4];
         for &id in self.layer_order.iter().rev() {
             if let Some(l) = self.layers.get(&id) {
@@ -4591,6 +4606,13 @@ impl eframe::App for PaintApp {
                     ctx.request_repaint();
                 }
 
+                // ── Trait-based tool event dispatch (reserved) ──
+                // TODO: Wire trait dispatch once tools are fully ported.
+                // The borrow split between tool_registry and PaintApp is handled
+                // via PaintApp::dispatch_tool_event() when needed.
+                let trait_handled = false;
+
+                if !trait_handled {
                 // Handle magic wand click
                 if pointer_clicked && matches!(self.active_tool, ToolId::MagicWand) {
                     if let Some(ptr_pos) = response.hover_pos() {
@@ -4865,6 +4887,7 @@ impl eframe::App for PaintApp {
                         self.edit_cp_dragging = false;
                     }
                 }
+                } // end if !trait_handled — inline dispatch skip
 
                 // Handle brush/eraser stroke drawing
                 if pointer_down
@@ -7070,6 +7093,7 @@ mod tests {
             panel_drag: None,
             floating_drag_panel: None,
             workspace_layout: Default::default(),
+            tool_registry: crate::tools::ToolRegistry::new(),
         };
 
         // Turn on transparent color mode
@@ -7280,6 +7304,7 @@ mod tests {
             panel_drag: None,
             floating_drag_panel: None,
             workspace_layout: Default::default(),
+            tool_registry: crate::tools::ToolRegistry::new(),
         };
 
         let view_rect =
