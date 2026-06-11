@@ -252,13 +252,13 @@ pub(crate) fn draw_tools_and_presets_content(
         .spacing([4.0, 4.0])
         .show(ui, |ui| {
             // ROW 1
-            let active_shape_tool = if app.active_tool == ToolId::EllipseSelect {
+            let active_shape_tool = if app.active_tool() == ToolId::EllipseSelect {
                 ToolId::EllipseSelect
             } else {
                 ToolId::RectSelect
             };
             let is_active =
-                app.active_tool == ToolId::RectSelect || app.active_tool == ToolId::EllipseSelect;
+                app.active_tool() == ToolId::RectSelect || app.active_tool() == ToolId::EllipseSelect;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -285,7 +285,7 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.context_menu(|ui| {
                 if ui
-                    .selectable_label(app.active_tool == ToolId::RectSelect, "Rectangle Selection")
+                    .selectable_label(app.active_tool() == ToolId::RectSelect, "Rectangle Selection")
                     .clicked()
                 {
                     app.set_active_tool(ToolId::RectSelect);
@@ -293,7 +293,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 }
                 if ui
                     .selectable_label(
-                        app.active_tool == ToolId::EllipseSelect,
+                        app.active_tool() == ToolId::EllipseSelect,
                         "Ellipse Selection",
                     )
                     .clicked()
@@ -304,13 +304,13 @@ pub(crate) fn draw_tools_and_presets_content(
             });
             btn_resp.on_hover_text("Selection Tool [Ctrl+A/D/I] (Right-click to change shape)");
 
-            let active_lasso_tool = if app.active_tool == ToolId::PolygonLasso {
+            let active_lasso_tool = if app.active_tool() == ToolId::PolygonLasso {
                 ToolId::PolygonLasso
             } else {
                 ToolId::Lasso
             };
             let is_active =
-                app.active_tool == ToolId::Lasso || app.active_tool == ToolId::PolygonLasso;
+                app.active_tool() == ToolId::Lasso || app.active_tool() == ToolId::PolygonLasso;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -353,7 +353,7 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.context_menu(|ui| {
                 if ui
-                    .selectable_label(app.active_tool == ToolId::Lasso, "Free Lasso Selection")
+                    .selectable_label(app.active_tool() == ToolId::Lasso, "Free Lasso Selection")
                     .clicked()
                 {
                     app.set_active_tool(ToolId::Lasso);
@@ -361,7 +361,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 }
                 if ui
                     .selectable_label(
-                        app.active_tool == ToolId::PolygonLasso,
+                        app.active_tool() == ToolId::PolygonLasso,
                         "Polygon Lasso Selection [Shift+L]",
                     )
                     .clicked()
@@ -372,7 +372,7 @@ pub(crate) fn draw_tools_and_presets_content(
             });
             btn_resp.on_hover_text("Lasso Tool (Right-click to switch to Polygon)");
 
-            let is_active = app.active_tool == ToolId::MagicWand;
+            let is_active = app.active_tool() == ToolId::MagicWand;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -411,7 +411,7 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Magic Wand Selection");
 
-            let is_active = app.active_tool == ToolId::Transform;
+            let is_active = app.active_tool() == ToolId::Transform;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -458,7 +458,7 @@ pub(crate) fn draw_tools_and_presets_content(
             ui.end_row();
 
             // ROW 2
-            let is_active = app.active_tool == ToolId::Move;
+            let is_active = app.active_tool() == ToolId::Move;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -526,7 +526,7 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Move Layer Tool");
 
-            let is_active = app.active_tool == ToolId::Zoom;
+            let is_active = app.active_tool() == ToolId::Zoom;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -551,7 +551,7 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Zoom Canvas");
 
-            let is_active = app.active_tool == ToolId::RotateView;
+            let is_active = app.active_tool() == ToolId::RotateView;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -583,7 +583,7 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Rotate View [R]");
 
-            let is_active = app.active_tool == ToolId::Hand;
+            let is_active = app.active_tool() == ToolId::Hand;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -639,7 +639,7 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Hand Panning Tool [Space]");
 
-            let is_active = app.active_tool == ToolId::ColorPicker;
+            let is_active = app.active_tool() == ToolId::ColorPicker;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
             let icon_color = if is_active {
@@ -696,7 +696,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 ),
             ];
             for &(tool_id, label, tooltip) in &vec_tools {
-                let is_active = app.active_tool == tool_id;
+                let is_active = app.active_tool() == tool_id;
                 let btn =
                     egui::Button::new(egui::RichText::new(label).size(12.0)).selected(is_active);
                 let r = ui.add_sized([26.0, 26.0], btn).on_hover_text(tooltip);
@@ -729,7 +729,7 @@ pub(crate) fn draw_tools_and_presets_content(
                         let preset_icon = app.presets[i].icon;
                         let preset_name = app.presets[i].name.clone();
                         let is_selected = app.active_preset_index == i
-                            && matches!(app.active_tool, ToolId::Brush | ToolId::Eraser);
+                            && matches!(app.active_tool(), ToolId::Brush | ToolId::Eraser);
 
                         let type_tag = match preset_icon {
                             PresetIcon::Pencil => "P",
@@ -1090,7 +1090,7 @@ pub(crate) fn draw_brush_settings_content(
     ui: &mut egui::Ui,
     _ctx: &egui::Context,
 ) {
-    if matches!(app.active_tool, ToolId::Brush | ToolId::Eraser) {
+    if matches!(app.active_tool(), ToolId::Brush | ToolId::Eraser) {
         // --- 1. BRUSH STROKE PREVIEW ---
         let preview_height = 56.0;
         let (preview_resp, preview_painter) = ui.allocate_painter(
@@ -1585,7 +1585,7 @@ pub(crate) fn draw_brush_settings_content(
 }
 
 pub(crate) fn draw_stabilizer_content(app: &mut PaintApp, ui: &mut egui::Ui, ctx: &egui::Context) {
-    if !matches!(app.active_tool, ToolId::Brush | ToolId::Eraser) {
+    if !matches!(app.active_tool(), ToolId::Brush | ToolId::Eraser) {
         ui.colored_label(
             egui::Color32::from_gray(120),
             "Active with Brush/Eraser only",
@@ -1703,7 +1703,7 @@ pub(crate) fn draw_stabilizer_content(app: &mut PaintApp, ui: &mut egui::Ui, ctx
 }
 
 pub(crate) fn draw_symmetry_content(app: &mut PaintApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
-    if !matches!(app.active_tool, ToolId::Brush | ToolId::Eraser) {
+    if !matches!(app.active_tool(), ToolId::Brush | ToolId::Eraser) {
         ui.colored_label(
             egui::Color32::from_gray(120),
             "Active with Brush/Eraser only",
@@ -1794,7 +1794,7 @@ pub(crate) fn draw_advanced_debug_content(
     ui: &mut egui::Ui,
     _ctx: &egui::Context,
 ) {
-    if !matches!(app.active_tool, ToolId::Brush | ToolId::Eraser) {
+    if !matches!(app.active_tool(), ToolId::Brush | ToolId::Eraser) {
         ui.colored_label(
             egui::Color32::from_gray(120),
             "Active with Brush/Eraser only",
@@ -1863,7 +1863,7 @@ pub(crate) fn draw_tool_options_content(
     ui: &mut egui::Ui,
     _ctx: &egui::Context,
 ) {
-    match app.active_tool {
+    match app.active_tool() {
         ToolId::Brush | ToolId::Eraser => {
             ui.colored_label(egui::Color32::from_gray(120), "Brush settings above");
         }

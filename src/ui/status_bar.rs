@@ -4,11 +4,11 @@ use crate::tools::fill;
 pub fn draw_status_bar(app: &mut PaintApp, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
         ui.horizontal(|ui| {
-            let tool_name = app.active_tool.name();
+            let tool_name = app.active_tool().name();
             ui.label(format!("Tool: {}", tool_name));
             ui.separator();
 
-            if matches!(app.active_tool, ToolId::Brush | ToolId::Eraser) {
+            if matches!(app.active_tool(), ToolId::Brush | ToolId::Eraser) {
                 let px_radius = app.brush_radius_log.exp();
                 ui.label(format!("Size: {:.1}px", px_radius));
                 ui.separator();
@@ -18,7 +18,7 @@ pub fn draw_status_bar(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.separator();
             }
 
-            if matches!(app.active_tool, ToolId::Fill | ToolId::MagicWand) {
+            if matches!(app.active_tool(), ToolId::Fill | ToolId::MagicWand) {
                 let ref_text = match app.fill_options.reference {
                     fill::FillReference::CurrentLayer => "Current Layer",
                     fill::FillReference::SelectionSourceLayers => "Reference Layers",

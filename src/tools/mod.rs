@@ -107,12 +107,16 @@ pub enum ToolOutcome {
     GradientComplete { start: egui::Vec2, end: egui::Vec2 },
     /// RectSelect / EllipseSelect: drag updated to world position.
     RectSelectUpdated { world_pos: egui::Vec2 },
-    /// RectSelect / EllipseSelect: drag completed (dispatch applies selection).
     RectSelectComplete,
-    /// Lasso freehand: drag updated at world position.
     LassoUpdated { world_pos: egui::Vec2 },
-    /// Lasso freehand: drag completed with collected points.
     LassoComplete { points: Vec<(f32, f32)> },
+    /// Move/Reference: pointer clicked at screen position (dispatch checks reference hit).
+    MoveClick { screen_pos: egui::Pos2 },
+    MoveDrag { screen_pos: egui::Pos2 },
+    /// Transform: pointer down at screen position.
+    TransformDown { screen_pos: egui::Pos2 },
+    /// Transform: drag update at screen position.
+    TransformDrag { screen_pos: egui::Pos2 },
 }
 
 // ── Tool trait ──
@@ -156,6 +160,10 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         let id = tool.tool_id();
         self.tools.insert(id, tool);
+    }
+
+    pub fn active_tool_id(&self) -> ToolId {
+        self.active
     }
 
     pub fn active_tool(&self) -> Option<&dyn Tool> {
@@ -211,6 +219,24 @@ impl ToolRegistry {
 }
 
 // ── Concrete tool implementations ──
+
+pub struct BrushTool;
+impl Tool for BrushTool {
+    fn name(&self) -> &'static str { "Brush" }
+    fn tool_id(&self) -> ToolId { ToolId::Brush }
+    fn handle_event(&mut self, _ctx: &ToolContext) -> ToolOutcome { ToolOutcome::None }
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+pub struct EraserTool;
+impl Tool for EraserTool {
+    fn name(&self) -> &'static str { "Eraser" }
+    fn tool_id(&self) -> ToolId { ToolId::Eraser }
+    fn handle_event(&mut self, _ctx: &ToolContext) -> ToolOutcome { ToolOutcome::None }
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
 
 pub struct HandTool;
 impl Tool for HandTool {
@@ -518,8 +544,16 @@ impl Tool for MoveTool {
     fn name(&self) -> &'static str { "Move" }
     fn tool_id(&self) -> ToolId { ToolId::Move }
 
-    fn handle_event(&mut self, _ctx: &ToolContext) -> ToolOutcome {
-        ToolOutcome::None
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked || (ctx.pointer_down && ctx.pointer_drag_stopped) {
+            // Click or drag start
+            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveClick { screen_pos: sp })
+        } else if ctx.pointer_down {
+            // Continuous drag
+            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveDrag { screen_pos: sp })
+        } else {
+            ToolOutcome::None
+        }
     }
 
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
@@ -680,6 +714,52 @@ impl Tool for LassoTool {
             );
         }
     }
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// REFERENCE TOOL (alias for move/reference image dragging)
+// =============================================================
+pub struct ReferenceTool;
+impl Tool for ReferenceTool {
+    fn name(&self) -> &'static str { "Reference" }
+    fn tool_id(&self) -> ToolId { ToolId::Reference }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked || (ctx.pointer_down && ctx.pointer_drag_stopped) {
+            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveClick { screen_pos: sp })
+        } else if ctx.pointer_down {
+            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveDrag { screen_pos: sp })
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// TRANSFORM TOOL
+// =============================================================
+pub struct TransformTool;
+impl Tool for TransformTool {
+    fn name(&self) -> &'static str { "Transform" }
+    fn tool_id(&self) -> ToolId { ToolId::Transform }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked || (ctx.pointer_down && ctx.pointer_drag_stopped) {
+            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::TransformDown { screen_pos: sp })
+        } else if ctx.pointer_down {
+            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::TransformDrag { screen_pos: sp })
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }

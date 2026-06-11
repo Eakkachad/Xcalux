@@ -284,7 +284,7 @@ pub struct PaintApp {
     pub shortcuts: ShortcutManager,
 
     // Active tool
-    pub active_tool: ToolId,
+
     pub(crate) tool_registry: crate::tools::ToolRegistry,
 
     // Fill tool state
@@ -1040,9 +1040,10 @@ impl PaintApp {
             brush_settings_dirty: false,
             renderer,
             shortcuts: ShortcutManager::new(),
-            active_tool: ToolId::Brush,
             tool_registry: {
                 let mut reg = crate::tools::ToolRegistry::new();
+                reg.register(Box::new(crate::tools::BrushTool));
+                reg.register(Box::new(crate::tools::EraserTool));
                 reg.register(Box::new(crate::tools::HandTool));
                 reg.register(Box::new(crate::tools::ZoomTool));
                 reg.register(Box::new(crate::tools::RotateViewTool));
@@ -1051,6 +1052,8 @@ impl PaintApp {
                 reg.register(Box::new(crate::tools::PolygonLassoTool::new()));
                 reg.register(Box::new(crate::tools::MagicWandTool));
                 reg.register(Box::new(crate::tools::MoveTool));
+                reg.register(Box::new(crate::tools::ReferenceTool));
+                reg.register(Box::new(crate::tools::TransformTool));
                 reg.register(Box::new(crate::tools::VectorPenTool));
                 reg.register(Box::new(crate::tools::CurveTool::new()));
                 reg.register(Box::new(crate::tools::EditCPTool::new()));
@@ -2072,8 +2075,11 @@ impl PaintApp {
         }
     }
 
+    pub fn active_tool(&self) -> ToolId {
+        self.tool_registry.active_tool_id()
+    }
+
     pub fn set_active_tool(&mut self, id: ToolId) {
-        self.active_tool = id;
         self.tool_registry.activate(id);
     }
 
@@ -2257,7 +2263,7 @@ impl PaintApp {
                                 selection::clear_selection(&mut self.selection_mask);
                             }
                         } else {
-                            if self.active_tool == ToolId::RectSelect {
+                            if self.active_tool() == ToolId::RectSelect {
                                 selection::apply_rect_selection(
                                     &mut self.selection_mask,
                                     rect,
@@ -2265,7 +2271,7 @@ impl PaintApp {
                                     self.selection_feather,
                                     true,
                                 );
-                            } else if self.active_tool == ToolId::EllipseSelect {
+                            } else if self.active_tool() == ToolId::EllipseSelect {
                                 selection::apply_ellipse_selection(
                                     &mut self.selection_mask,
                                     rect,
@@ -2308,6 +2314,575 @@ impl PaintApp {
                     self.show_selection_overlay = self.selection_mask.is_active;
                 }
                 true
+            }
+            tools::ToolOutcome::MoveClick { screen_pos } => {
+                // Released after dragging → clear state
+                if self.ref_image_dragging.take().is_some() {
+                    return true;
+                }
+                // Hit-test visible reference images from top of stack to bottom
+                let mut hit_idx = None;
+                for (idx, img) in self.reference_images.iter().enumerate().rev() {
+                    if !img.visible {
+                        continue;
+                    }
+                    let quad = self.ref_image_corners(img, ctx.screen_rect);
+                    if point_in_quad(screen_pos, &quad) {
+                        hit_idx = Some(idx);
+                        break;
+                    }
+                }
+                if let Some(idx) = hit_idx {
+                    self.selected_reference_idx = Some(idx);
+                    self.ref_image_dragging = Some(idx);
+                    let img = &self.reference_images[idx];
+                    if img.pinned_to_view {
+                        self.ref_image_drag_offset =
+                            img.world_pos - (screen_pos - ctx.screen_rect.min);
+                    } else {
+                        let ptr_world = ctx.screen_to_world(screen_pos);
+                        self.ref_image_drag_offset = img.world_pos - ptr_world;
+                    }
+                }
+                true
+            }
+            tools::ToolOutcome::MoveDrag { screen_pos } => {
+                if let Some(idx) = self.ref_image_dragging {
+                    if idx < self.reference_images.len() {
+                        let pinned_to_view = self.reference_images[idx].pinned_to_view;
+                        if pinned_to_view {
+                            let screen_drag_pos =
+                                (screen_pos - ctx.screen_rect.min) + self.ref_image_drag_offset;
+                            self.reference_images[idx].world_pos = screen_drag_pos;
+                        } else {
+                            let curr_world = ctx.screen_to_world(screen_pos);
+                            let world_drag_pos = curr_world + self.ref_image_drag_offset;
+                            self.reference_images[idx].world_pos = world_drag_pos;
+                        }
+                    }
+                }
+                true
+            }
+            tools::ToolOutcome::TransformDown { screen_pos } => {
+                // Released after dragging → clear state
+                if self.transform_dragging.take().is_some() {
+                    self.transform_drag_start_ptr = None;
+                    return true;
+                }
+                // Hit-test transform handles and start drag if hit
+                if let Some(h) = self.hit_test_transform_handle(screen_pos, ctx.screen_rect) {
+                    self.transform_dragging = Some(h);
+                    self.transform_drag_start_ptr = Some(screen_pos);
+                    self.transform_drag_start_translation = self.transform_translation;
+                    self.transform_drag_start_scale = self.transform_scale;
+                    self.transform_drag_start_rotation = self.transform_rotation;
+                }
+                true
+            }
+            tools::ToolOutcome::TransformDrag { screen_pos } => {
+                if let Some(h) = self.transform_dragging {
+                    if let Some(start_ptr) = self.transform_drag_start_ptr {
+                        let start_w = ctx.screen_to_world(start_ptr);
+                        let curr_w = ctx.screen_to_world(screen_pos);
+                        let delta_w = curr_w - start_w;
+                        match h {
+                            10 => {
+                                self.transform_translation =
+                                    self.transform_drag_start_translation + delta_w;
+                            }
+                            9 => {
+                                let orig_pivot = self.transform_pivot;
+                                let new_pivot = orig_pivot + delta_w;
+                                let ob = self.transform_orig_bounds;
+                                self.transform_pivot = egui::Pos2::new(
+                                    new_pivot.x.clamp(ob.min.x, ob.max.x),
+                                    new_pivot.y.clamp(ob.min.y, ob.max.y),
+                                );
+                            }
+                            8 => {
+                                let pivot_w =
+                                    self.transform_pivot + self.transform_translation;
+                                let start_vec = start_w - pivot_w.to_vec2();
+                                let curr_vec = curr_w - pivot_w.to_vec2();
+                                let start_ang = start_vec.y.atan2(start_vec.x);
+                                let curr_ang = curr_vec.y.atan2(curr_vec.x);
+                                let diff_ang = curr_ang - start_ang;
+                                self.transform_rotation =
+                                    self.transform_drag_start_rotation + diff_ang;
+                            }
+                            0..=7 => {
+                                let ob = self.transform_orig_bounds;
+                                let orig_corners = [
+                                    egui::Pos2::new(ob.min.x, ob.min.y),
+                                    egui::Pos2::new(ob.center().x, ob.min.y),
+                                    egui::Pos2::new(ob.max.x, ob.min.y),
+                                    egui::Pos2::new(ob.max.x, ob.center().y),
+                                    egui::Pos2::new(ob.max.x, ob.max.y),
+                                    egui::Pos2::new(ob.center().x, ob.max.y),
+                                    egui::Pos2::new(ob.min.x, ob.max.y),
+                                    egui::Pos2::new(ob.min.x, ob.center().y),
+                                ];
+                                let orig_h = orig_corners[h];
+                                let orig_offset = orig_h - self.transform_pivot;
+                                let cos = (-self.transform_drag_start_rotation).cos();
+                                let sin = (-self.transform_drag_start_rotation).sin();
+                                let local_delta_x = delta_w.x * cos - delta_w.y * sin;
+                                let local_delta_y = delta_w.x * sin + delta_w.y * cos;
+                                let mut scale_x = self.transform_drag_start_scale.x;
+                                let mut scale_y = self.transform_drag_start_scale.y;
+                                if orig_offset.x.abs() > 0.01 {
+                                    let new_local_x = orig_offset.x
+                                        * self.transform_drag_start_scale.x
+                                        + local_delta_x;
+                                    scale_x = new_local_x / orig_offset.x;
+                                }
+                                if orig_offset.y.abs() > 0.01 {
+                                    let new_local_y = orig_offset.y
+                                        * self.transform_drag_start_scale.y
+                                        + local_delta_y;
+                                    scale_y = new_local_y / orig_offset.y;
+                                }
+                                self.transform_scale = egui::Vec2::new(
+                                    scale_x.max(0.05),
+                                    scale_y.max(0.05),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// Execute the brush/eraser/vector-pen stroke pipeline for the current frame.
+    /// Called from `update()` outside the trait dispatch fallback (brush tools don't use outcome dispatch).
+    fn exec_brush_pipeline(
+        &mut self,
+        pointer_down: bool,
+        _pointer_clicked: bool,
+        response: &egui::Response,
+        egui_ctx: &egui::Context,
+        rect: egui::Rect,
+    ) {
+        // ── Stroke processing (while pointer is held) ──
+        if pointer_down
+            && matches!(
+                self.active_tool(),
+                ToolId::Brush | ToolId::Eraser | ToolId::VectorPen
+            )
+            && !self.is_active_layer_locked()
+            && self.panel_drag.is_none()
+            && self.floating_drag_panel.is_none()
+        {
+            if let Some(ptr_pos) = response.hover_pos() {
+                let world_pos = self.screen_to_world(ptr_pos, rect);
+                let cx = world_pos.x;
+                let cy = world_pos.y;
+
+                if !self.stabilizer.is_drawing {
+                    self.stabilizer.reset();
+                    self.stabilizer.is_drawing = true;
+                    self.stroke_id = self.stroke_id.wrapping_add(1);
+                    self.last_event_time = egui_ctx.input(|i| i.time) - 0.016;
+                    self.current_stroke_snapshots.clear();
+                    self.current_vector_points.clear();
+                    if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                        active_layer.begin_atomic();
+                    }
+                }
+
+                let cur_time = egui_ctx.input(|i| i.time);
+                let dt = (cur_time - self.last_event_time).max(0.001);
+                self.last_event_time = cur_time;
+
+                // Pressure & tilt
+                let raw_tilt_x = self.tablet_axis.tilt_x.unwrap_or(0.0);
+                let raw_tilt_y = self.tablet_axis.tilt_y.unwrap_or(0.0);
+                let raw_pressure = if let Some(force) = self.egui_touch_pressure {
+                    force.max(0.05)
+                } else if self.input_manager.is_some() {
+                    self.tablet_axis.pressure.max(0.05)
+                } else {
+                    if let Some(last_pos) = self.last_ptr_pos {
+                        let dx = cx - last_pos.x;
+                        let dy = cy - last_pos.y;
+                        let dist = (dx * dx + dy * dy).sqrt();
+                        let velocity = dist / dt as f32;
+                        let speed_factor = (-velocity / 400.0).exp();
+                        let pressure = speed_factor * 0.85 + 0.10;
+                        pressure.clamp(0.05, 0.95)
+                    } else {
+                        0.25
+                    }
+                };
+
+                let (sx_raw, sy_raw, smoothed_pressure, smoothed_tilt_x, smoothed_tilt_y) =
+                    self.stabilizer.process(cx, cy, raw_pressure, raw_tilt_x, raw_tilt_y, dt as f32);
+
+                // Shift-constrain angle snapping
+                let shift_held = egui_ctx.input(|i| i.modifiers.shift);
+                let (sx, sy) = if self.shift_snap_enabled && shift_held {
+                    if self.stroke_start_pos.is_none() {
+                        self.stroke_start_pos = Some(egui::Pos2::new(sx_raw, sy_raw));
+                    }
+                    let start = self.stroke_start_pos.unwrap();
+                    Self::snap_to_angle(start.x, start.y, sx_raw, sy_raw)
+                } else {
+                    self.stroke_start_pos = None;
+                    (sx_raw, sy_raw)
+                };
+
+                let sx = sx.clamp(0.0, self.canvas_width as f32);
+                let sy = sy.clamp(0.0, self.canvas_height as f32);
+
+                let pressure = if self.egui_touch_pressure.is_some() || self.input_manager.is_some() {
+                    self.remap_pressure(smoothed_pressure)
+                } else {
+                    smoothed_pressure
+                };
+                let pressure = self.pressure_response.calibrate(pressure);
+                self.last_ptr_pressure = pressure;
+
+                let tilt_x = smoothed_tilt_x;
+                let tilt_y = smoothed_tilt_y;
+
+                let is_vector = if let Some(layer) = self.layers.get(&self.active_layer_id) {
+                    layer.kind == crate::canvas::LayerType::Vector
+                } else {
+                    false
+                };
+
+                if is_vector {
+                    let cp = crate::canvas::VectorControlPoint { x: sx, y: sy, pressure, tilt_x, tilt_y };
+                    self.current_vector_points.push(cp);
+
+                    self.sync_brush_settings();
+                    let k = self.current_vector_points.len();
+                    if k >= 3 {
+                        let p0 = if k >= 4 { &self.current_vector_points[k - 4] } else { &self.current_vector_points[k - 3] };
+                        let p1 = &self.current_vector_points[k - 3];
+                        let p2 = &self.current_vector_points[k - 2];
+                        let p3 = &self.current_vector_points[k - 1];
+
+                        let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
+                        let steps = ((dist / 2.0) as usize).clamp(2, 100);
+                        let start_i = if k == 3 { 0 } else { 1 };
+
+                        let active_brush = &self.brushes[self.active_preset_index];
+                        let active_brush_state = &mut self.brush_states[self.active_preset_index];
+
+                        if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                            let preset = &self.presets[self.active_preset_index];
+                            let tex_idx = preset.texture_id as usize;
+                            let (brush_texture, tex_w, tex_h) =
+                                if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                                    let t = &self.brush_textures[tex_idx];
+                                    (Some(t.pixels.as_slice()), t.width, t.height)
+                                } else {
+                                    (None, 256, 256)
+                                };
+                            for i in start_i..=steps {
+                                let t = i as f32 / steps as f32;
+                                let pt = Self::catmull_rom(p0, p1, p2, p3, t);
+                                let mut stroke_surface = StrokeSurface {
+                                    layer: active_layer,
+                                    history: &mut self.history,
+                                    snapshots: &mut self.current_stroke_snapshots,
+                                    stroke_id: self.stroke_id,
+                                    canvas_width: self.canvas_width,
+                                    canvas_height: self.canvas_height,
+                                    lock_canvas_bounds: self.lock_canvas_bounds,
+                                    selection_mask: Some(&self.selection_mask),
+                                    brush_texture,
+                                    brush_texture_width: tex_w,
+                                    brush_texture_height: tex_h,
+                                    brush_texture_scale: preset.texture_scale,
+                                    active_mask_editing: self.active_mask_editing,
+                                };
+                                active_brush.stroke_to(
+                                    active_brush_state, &mut stroke_surface,
+                                    pt.x, pt.y, pt.pressure, pt.tilt_x, pt.tilt_y, dt / steps as f64,
+                                );
+                                self.performance_hud.note_stroke_point(egui_ctx.input(|i| i.time) as f32);
+                            }
+                        }
+                    }
+                } else {
+                    self.sync_brush_settings();
+                    let active_brush = &self.brushes[self.active_preset_index];
+                    let stroke_points = self.compute_symmetry_points(sx, sy);
+                    let needs_symmetry = stroke_points.len() > 1;
+
+                    if needs_symmetry {
+                        while self.symmetry_brush_states.len() < stroke_points.len() - 1 {
+                            self.symmetry_brush_states
+                                .push(self.brush_states[self.active_preset_index].clone());
+                        }
+                    }
+
+                    let active_brush_state = &mut self.brush_states[self.active_preset_index];
+
+                    if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                        let preset = &self.presets[self.active_preset_index];
+                        let tex_idx = preset.texture_id as usize;
+                        let (brush_texture, tex_w, tex_h) =
+                            if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                                let t = &self.brush_textures[tex_idx];
+                                (Some(t.pixels.as_slice()), t.width, t.height)
+                            } else {
+                                (None, 256, 256)
+                            };
+
+                        let mut stroke_surface = StrokeSurface {
+                            layer: active_layer,
+                            history: &mut self.history,
+                            snapshots: &mut self.current_stroke_snapshots,
+                            stroke_id: self.stroke_id,
+                            canvas_width: self.canvas_width,
+                            canvas_height: self.canvas_height,
+                            lock_canvas_bounds: self.lock_canvas_bounds,
+                            selection_mask: Some(&self.selection_mask),
+                            brush_texture,
+                            brush_texture_width: tex_w,
+                            brush_texture_height: tex_h,
+                            brush_texture_scale: preset.texture_scale,
+                            active_mask_editing: self.active_mask_editing,
+                        };
+
+                        if !needs_symmetry {
+                            active_brush.stroke_to(
+                                active_brush_state, &mut stroke_surface,
+                                sx, sy, pressure, tilt_x, tilt_y, dt,
+                            );
+                            self.performance_hud.note_stroke_point(egui_ctx.input(|i| i.time) as f32);
+                        } else {
+                            active_brush.stroke_to(
+                                active_brush_state, &mut stroke_surface,
+                                sx, sy, pressure, tilt_x, tilt_y, dt,
+                            );
+                            self.performance_hud.note_stroke_point(egui_ctx.input(|i| i.time) as f32);
+                            for (idx, (mx, my)) in stroke_points.iter().enumerate().skip(1) {
+                                if let Some(s) = self.symmetry_brush_states.get_mut(idx - 1) {
+                                    if !s.started { *s = active_brush_state.clone(); }
+                                    active_brush.stroke_to(
+                                        s, &mut stroke_surface,
+                                        *mx, *my, pressure, tilt_x, tilt_y, dt,
+                                    );
+                                    self.performance_hud.note_stroke_point(egui_ctx.input(|i| i.time) as f32);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                self.last_ptr_pos = Some(Pos2::new(sx, sy));
+                egui_ctx.request_repaint();
+            }
+        }
+
+        // ── End-of-stroke cleanup ──
+        if !pointer_down && self.stabilizer.is_drawing {
+            self.stabilizer.reset();
+            self.last_ptr_pos = None;
+            self.brush_states[self.active_preset_index].reset();
+            for s in &mut self.symmetry_brush_states { s.reset(); }
+
+            let is_vector = if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                active_layer.kind == crate::canvas::LayerType::Vector
+            } else {
+                false
+            };
+
+            if is_vector && self.current_vector_points.len() >= 2 {
+                self.sync_brush_settings();
+                let len = self.current_vector_points.len();
+                let p0 = if len >= 3 { &self.current_vector_points[len - 3] } else { &self.current_vector_points[len - 2] };
+                let p1 = &self.current_vector_points[len - 2];
+                let p2 = &self.current_vector_points[len - 1];
+                let p3 = &self.current_vector_points[len - 1];
+
+                let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
+                let steps = ((dist / 2.0) as usize).clamp(2, 100);
+                let start_i = if len == 2 { 0 } else { 1 };
+
+                let active_brush = &self.brushes[self.active_preset_index];
+                let active_brush_state = &mut self.brush_states[self.active_preset_index];
+
+                if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                    for i in start_i..=steps {
+                        let t = i as f32 / steps as f32;
+                        let pt = Self::catmull_rom(p0, p1, p2, p3, t);
+                        let preset = &self.presets[self.active_preset_index];
+                        let tex_idx = preset.texture_id as usize;
+                        let (brush_texture, tex_w, tex_h) =
+                            if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                                let t = &self.brush_textures[tex_idx];
+                                (Some(t.pixels.as_slice()), t.width, t.height)
+                            } else {
+                                (None, 256, 256)
+                            };
+
+                        let mut stroke_surface = StrokeSurface {
+                            layer: active_layer,
+                            history: &mut self.history,
+                            snapshots: &mut self.current_stroke_snapshots,
+                            stroke_id: self.stroke_id,
+                            canvas_width: self.canvas_width,
+                            canvas_height: self.canvas_height,
+                            lock_canvas_bounds: self.lock_canvas_bounds,
+                            selection_mask: Some(&self.selection_mask),
+                            brush_texture,
+                            brush_texture_width: tex_w,
+                            brush_texture_height: tex_h,
+                            brush_texture_scale: preset.texture_scale,
+                            active_mask_editing: self.active_mask_editing,
+                        };
+
+                        active_brush.stroke_to(
+                            active_brush_state, &mut stroke_surface,
+                            pt.x, pt.y, pt.pressure, pt.tilt_x, pt.tilt_y, 0.016 / steps as f64,
+                        );
+                        self.performance_hud.note_stroke_point(egui_ctx.input(|i| i.time) as f32);
+                    }
+                }
+            }
+
+            // Store vector stroke data
+            let stroke_color = self.active_color();
+            if is_vector && !self.current_vector_points.is_empty() {
+                if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                    let stroke = crate::canvas::VectorStroke {
+                        control_points: self.current_vector_points.clone(),
+                        brush_preset_id: self.presets[self.active_preset_index].id,
+                        color: stroke_color,
+                        width: 1.0,
+                    };
+                    if active_layer.vector_data.is_none() {
+                        active_layer.vector_data = Some(crate::canvas::VectorLayer {
+                            strokes: Vec::new(),
+                            display_mode: Default::default(),
+                        });
+                    }
+                    if let Some(v_data) = &mut active_layer.vector_data {
+                        v_data.strokes.push(stroke);
+                    }
+                }
+            }
+            self.current_vector_points.clear();
+
+            if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                let _dirty = active_layer.end_atomic();
+            }
+
+            let snapshots = std::mem::take(&mut self.current_stroke_snapshots);
+            if !snapshots.is_empty() {
+                self.history.push_command(HistoryCommand::TileEdit { snapshots });
+                self.document_modified = true;
+            }
+        }
+    }
+
+    /// Set cursor icon based on which transform handle is hovered (only when not actively dragging).
+    fn draw_transform_cursor(&self, rect: egui::Rect, ui: &egui::Ui, trait_handled: bool) {
+        if !trait_handled && self.transform_active {
+            if let Some(ptr_pos) = ui.input(|i| i.pointer.hover_pos()) {
+                if let Some(h) = self.hit_test_transform_handle(ptr_pos, rect) {
+                    let cursor = match h {
+                        8 => egui::CursorIcon::PointingHand,
+                        9 => egui::CursorIcon::Crosshair,
+                        0 | 4 => egui::CursorIcon::ResizeNwSe,
+                        2 | 6 => egui::CursorIcon::ResizeNeSw,
+                        1 | 5 => egui::CursorIcon::ResizeVertical,
+                        3 | 7 => egui::CursorIcon::ResizeHorizontal,
+                        10 => egui::CursorIcon::Move,
+                        _ => egui::CursorIcon::Default,
+                    };
+                    ui.ctx().set_cursor_icon(cursor);
+                }
+            }
+        }
+    }
+
+    /// Draw the transform bounding box, rotation handle, corner handles, and pivot.
+    fn draw_transform_overlay(&self, rect: egui::Rect, ui: &egui::Ui) {
+        let ob = self.transform_orig_bounds;
+        let stroke_blue = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
+
+        let p0 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.min.x, ob.min.y)), rect);
+        let p1 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.max.x, ob.min.y)), rect);
+        let p2 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.max.x, ob.max.y)), rect);
+        let p3 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.min.x, ob.max.y)), rect);
+
+        ui.painter().line_segment([p0, p1], stroke_blue);
+        ui.painter().line_segment([p1, p2], stroke_blue);
+        ui.painter().line_segment([p2, p3], stroke_blue);
+        ui.painter().line_segment([p3, p0], stroke_blue);
+
+        let rot_h_orig = egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
+        let rot_h_screen = self.world_to_screen(self.transform_point(rot_h_orig), rect);
+        let top_center_screen = self.world_to_screen(
+            self.transform_point(egui::Pos2::new(ob.center().x, ob.min.y)), rect,
+        );
+        ui.painter().line_segment([top_center_screen, rot_h_screen], stroke_blue);
+        ui.painter().circle_filled(rot_h_screen, 6.0, egui::Color32::from_rgb(40, 200, 40));
+        ui.painter().circle_stroke(rot_h_screen, 6.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+
+        let orig_corners = [
+            egui::Pos2::new(ob.min.x, ob.min.y),
+            egui::Pos2::new(ob.center().x, ob.min.y),
+            egui::Pos2::new(ob.max.x, ob.min.y),
+            egui::Pos2::new(ob.max.x, ob.center().y),
+            egui::Pos2::new(ob.max.x, ob.max.y),
+            egui::Pos2::new(ob.center().x, ob.max.y),
+            egui::Pos2::new(ob.min.x, ob.max.y),
+            egui::Pos2::new(ob.min.x, ob.center().y),
+        ];
+        for corner in &orig_corners {
+            let h_screen = self.world_to_screen(self.transform_point(*corner), rect);
+            ui.painter().rect_filled(
+                egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)), 0.0, egui::Color32::WHITE,
+            );
+            ui.painter().rect_stroke(
+                egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)), 0.0, stroke_blue,
+            );
+        }
+
+        let pivot_screen = self.world_to_screen(self.transform_pivot + self.transform_translation, rect);
+        ui.painter().circle_stroke(pivot_screen, 8.0, stroke_blue);
+        ui.painter().circle_filled(pivot_screen, 2.0, egui::Color32::from_rgb(0, 120, 215));
+    }
+
+    /// Draw vector stroke control points for EditCP tool.
+    fn draw_editcp_overlay(&self, rect: egui::Rect, ui: &egui::Ui) {
+        if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+            if let Some(v_data) = &active_layer.vector_data {
+                let cp_color = egui::Color32::from_rgb(0, 200, 100);
+                let sel_color = egui::Color32::from_rgb(255, 200, 0);
+                for (si, stroke) in v_data.strokes.iter().enumerate() {
+                    for (pi, cp) in stroke.control_points.iter().enumerate() {
+                        let screen_pt = self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
+                        let is_selected = self.edit_cp_selection == Some((si, pi));
+                        let color = if is_selected { sel_color } else { cp_color };
+                        let radius = if is_selected { 5.0 } else { 3.0 };
+                        ui.painter().circle_filled(screen_pt, radius, color);
+                        ui.painter().circle_stroke(screen_pt, radius, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                    }
+                    if stroke.control_points.len() >= 2 {
+                        for i in 0..stroke.control_points.len() - 1 {
+                            let a = self.world_to_screen(
+                                egui::Pos2::new(stroke.control_points[i].x, stroke.control_points[i].y), rect,
+                            );
+                            let b = self.world_to_screen(
+                                egui::Pos2::new(stroke.control_points[i + 1].x, stroke.control_points[i + 1].y), rect,
+                            );
+                            ui.painter().line_segment([a, b], egui::Stroke::new(
+                                0.5, egui::Color32::from_rgba_premultiplied(0, 200, 100, 80),
+                            ));
+                        }
+                    }
+                }
             }
         }
     }
@@ -4189,6 +4764,56 @@ impl PaintApp {
         }
     }
 
+    fn hit_test_transform_handle(&self, ptr_pos: egui::Pos2, view_rect: egui::Rect) -> Option<usize> {
+        let ob = self.transform_orig_bounds;
+        let handle_radius = 8.0;
+        // Rotation handle (index 8)
+        let rot_h_orig = egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
+        let rot_h_screen = self.world_to_screen(self.transform_point(rot_h_orig), view_rect);
+        if ptr_pos.distance(rot_h_screen) <= handle_radius {
+            return Some(8);
+        }
+        // Pivot handle (index 9)
+        let pivot_screen = self.world_to_screen(
+            self.transform_pivot + self.transform_translation,
+            view_rect,
+        );
+        if ptr_pos.distance(pivot_screen) <= handle_radius {
+            return Some(9);
+        }
+        // 8 corner/midpoint handles (indices 0-7)
+        let orig_corners = [
+            egui::Pos2::new(ob.min.x, ob.min.y),
+            egui::Pos2::new(ob.center().x, ob.min.y),
+            egui::Pos2::new(ob.max.x, ob.min.y),
+            egui::Pos2::new(ob.max.x, ob.center().y),
+            egui::Pos2::new(ob.max.x, ob.max.y),
+            egui::Pos2::new(ob.center().x, ob.max.y),
+            egui::Pos2::new(ob.min.x, ob.max.y),
+            egui::Pos2::new(ob.min.x, ob.center().y),
+        ];
+        for (i, &corner) in orig_corners.iter().enumerate() {
+            let h_screen = self.world_to_screen(self.transform_point(corner), view_rect);
+            if ptr_pos.distance(h_screen) <= handle_radius {
+                return Some(i);
+            }
+        }
+        // Body hit-test (index 10)
+        let ptr_world = self.screen_to_world(ptr_pos, view_rect);
+        let rx = ptr_world.x - (self.transform_pivot.x + self.transform_translation.x);
+        let ry = ptr_world.y - (self.transform_pivot.y + self.transform_translation.y);
+        let cos = (-self.transform_rotation).cos();
+        let sin = (-self.transform_rotation).sin();
+        let ux = rx * cos - ry * sin;
+        let uy = rx * sin + ry * cos;
+        let x_orig = ux / self.transform_scale.x + self.transform_pivot.x;
+        let y_orig = uy / self.transform_scale.y + self.transform_pivot.y;
+        if x_orig >= ob.min.x && x_orig <= ob.max.x && y_orig >= ob.min.y && y_orig <= ob.max.y {
+            return Some(10);
+        }
+        None
+    }
+
     fn transform_point(&self, p: egui::Pos2) -> egui::Pos2 {
         let px = self.transform_pivot.x;
         let py = self.transform_pivot.y;
@@ -4543,12 +5168,12 @@ impl eframe::App for PaintApp {
                 }
 
                 // STROKE DRAWING INTERACTION
-                let mut pointer_down = (response.dragged_by(egui::PointerButton::Primary)
+                let pointer_down = (response.dragged_by(egui::PointerButton::Primary)
                     || (response.is_pointer_button_down_on()
                         && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
                     && !space_down
                     && !r_down;
-                let mut pointer_clicked =
+                let pointer_clicked =
                     response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
 
                 // ── Trait-based tool event dispatch (runs first) ──
@@ -4572,660 +5197,8 @@ impl eframe::App for PaintApp {
                     ctx.request_repaint();
                 }
 
-                // ── Inline fallback: non-ported tools ──
-                if !trait_handled {
-                // Reference Image Dragging Interaction
-                if matches!(self.active_tool, ToolId::Move | ToolId::Reference)
-                    && ui.input(|i| i.pointer.any_pressed())
-                {
-                    if let Some(ptr_pos) = ui.input(|i| i.pointer.press_origin()) {
-                        if response.hovered() {
-                            let mut hit_idx = None;
-                            for (idx, img) in self.reference_images.iter().enumerate().rev() {
-                                if !img.visible {
-                                    continue;
-                                }
-                                let quad = self.ref_image_corners(img, rect);
-                                if point_in_quad(ptr_pos, &quad) {
-                                    hit_idx = Some(idx);
-                                    break;
-                                }
-                            }
-                            if let Some(idx) = hit_idx {
-                                self.selected_reference_idx = Some(idx);
-                                self.ref_image_dragging = Some(idx);
-                                let img = &self.reference_images[idx];
-                                if img.pinned_to_view {
-                                    self.ref_image_drag_offset =
-                                        img.world_pos - (ptr_pos - rect.min);
-                                } else {
-                                    let ptr_world = self.screen_to_world(ptr_pos, rect);
-                                    self.ref_image_drag_offset = img.world_pos - ptr_world;
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Some(idx) = self.ref_image_dragging {
-                    if idx < self.reference_images.len() {
-                        if ui.input(|i| i.pointer.any_down()) {
-                            if let Some(curr_ptr) = ui.input(|i| i.pointer.hover_pos()) {
-                                let pinned_to_view = self.reference_images[idx].pinned_to_view;
-                                if pinned_to_view {
-                                    let screen_drag_pos =
-                                        (curr_ptr - rect.min) + self.ref_image_drag_offset;
-                                    self.reference_images[idx].world_pos = screen_drag_pos;
-                                } else {
-                                    let curr_world = self.screen_to_world(curr_ptr, rect);
-                                    let world_drag_pos = curr_world + self.ref_image_drag_offset;
-                                    self.reference_images[idx].world_pos = world_drag_pos;
-                                }
-                                ctx.request_repaint();
-                            }
-                            pointer_down = false;
-                            pointer_clicked = false;
-                        } else {
-                            self.ref_image_dragging = None;
-                        }
-                    } else {
-                        self.ref_image_dragging = None;
-                    }
-                }
-
-                if self.transform_active {
-                    if let Some(ptr_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                        let view_rect = rect;
-                        let ob = self.transform_orig_bounds;
-                        let handle_radius = 8.0;
-                        let mut hovered_handle = None;
-                        let rot_h_orig =
-                            egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
-                        let rot_h_screen =
-                            self.world_to_screen(self.transform_point(rot_h_orig), view_rect);
-                        if ptr_pos.distance(rot_h_screen) <= handle_radius {
-                            hovered_handle = Some(8);
-                        }
-                        if hovered_handle.is_none() {
-                            let pivot_screen = self.world_to_screen(
-                                self.transform_pivot + self.transform_translation,
-                                view_rect,
-                            );
-                            if ptr_pos.distance(pivot_screen) <= handle_radius {
-                                hovered_handle = Some(9);
-                            }
-                        }
-                        if hovered_handle.is_none() {
-                            let orig_corners = [
-                                egui::Pos2::new(ob.min.x, ob.min.y),
-                                egui::Pos2::new(ob.center().x, ob.min.y),
-                                egui::Pos2::new(ob.max.x, ob.min.y),
-                                egui::Pos2::new(ob.max.x, ob.center().y),
-                                egui::Pos2::new(ob.max.x, ob.max.y),
-                                egui::Pos2::new(ob.center().x, ob.max.y),
-                                egui::Pos2::new(ob.min.x, ob.max.y),
-                                egui::Pos2::new(ob.min.x, ob.center().y),
-                            ];
-                            for (i, &corner) in orig_corners.iter().enumerate() {
-                                let h_screen =
-                                    self.world_to_screen(self.transform_point(corner), view_rect);
-                                if ptr_pos.distance(h_screen) <= handle_radius {
-                                    hovered_handle = Some(i);
-                                    break;
-                                }
-                            }
-                        }
-                        if hovered_handle.is_none() {
-                            let ptr_world = self.screen_to_world(ptr_pos, view_rect);
-                            let rx = ptr_world.x
-                                - (self.transform_pivot.x + self.transform_translation.x);
-                            let ry = ptr_world.y
-                                - (self.transform_pivot.y + self.transform_translation.y);
-                            let cos = (-self.transform_rotation).cos();
-                            let sin = (-self.transform_rotation).sin();
-                            let ux = rx * cos - ry * sin;
-                            let uy = rx * sin + ry * cos;
-                            let x_orig = ux / self.transform_scale.x + self.transform_pivot.x;
-                            let y_orig = uy / self.transform_scale.y + self.transform_pivot.y;
-                            if x_orig >= ob.min.x
-                                && x_orig <= ob.max.x
-                                && y_orig >= ob.min.y
-                                && y_orig <= ob.max.y
-                            {
-                                hovered_handle = Some(10);
-                            }
-                        }
-                        if let Some(h) = hovered_handle {
-                            let cursor = match h {
-                                8 => egui::CursorIcon::PointingHand,
-                                9 => egui::CursorIcon::Crosshair,
-                                0 | 4 => egui::CursorIcon::ResizeNwSe,
-                                2 | 6 => egui::CursorIcon::ResizeNeSw,
-                                1 | 5 => egui::CursorIcon::ResizeVertical,
-                                3 | 7 => egui::CursorIcon::ResizeHorizontal,
-                                10 => egui::CursorIcon::Move,
-                                _ => egui::CursorIcon::Default,
-                            };
-                            ui.ctx().set_cursor_icon(cursor);
-                        }
-                        if ui.input(|i| i.pointer.any_pressed()) {
-                            if let Some(h) = hovered_handle {
-                                self.transform_dragging = Some(h);
-                                self.transform_drag_start_ptr = Some(ptr_pos);
-                                self.transform_drag_start_translation = self.transform_translation;
-                                self.transform_drag_start_scale = self.transform_scale;
-                                self.transform_drag_start_rotation = self.transform_rotation;
-                            }
-                        }
-                    }
-                    if let Some(h) = self.transform_dragging {
-                        if ui.input(|i| i.pointer.any_down()) {
-                            if let (Some(start_ptr), Some(curr_ptr)) = (
-                                self.transform_drag_start_ptr,
-                                ui.input(|i| i.pointer.hover_pos()),
-                            ) {
-                                let start_w = self.screen_to_world(start_ptr, rect);
-                                let curr_w = self.screen_to_world(curr_ptr, rect);
-                                let delta_w = curr_w - start_w;
-                                match h {
-                                    10 => {
-                                        self.transform_translation =
-                                            self.transform_drag_start_translation + delta_w;
-                                    }
-                                    9 => {
-                                        let orig_pivot = self.transform_pivot;
-                                        let new_pivot = orig_pivot + delta_w;
-                                        let ob = self.transform_orig_bounds;
-                                        self.transform_pivot = egui::Pos2::new(
-                                            new_pivot.x.clamp(ob.min.x, ob.max.x),
-                                            new_pivot.y.clamp(ob.min.y, ob.max.y),
-                                        );
-                                    }
-                                    8 => {
-                                        let pivot_w =
-                                            self.transform_pivot + self.transform_translation;
-                                        let start_vec = start_w - pivot_w.to_vec2();
-                                        let curr_vec = curr_w - pivot_w.to_vec2();
-                                        let start_ang = start_vec.y.atan2(start_vec.x);
-                                        let curr_ang = curr_vec.y.atan2(curr_vec.x);
-                                        let diff_ang = curr_ang - start_ang;
-                                        self.transform_rotation =
-                                            self.transform_drag_start_rotation + diff_ang;
-                                    }
-                                    0..=7 => {
-                                        let ob = self.transform_orig_bounds;
-                                        let orig_corners = [
-                                            egui::Pos2::new(ob.min.x, ob.min.y),
-                                            egui::Pos2::new(ob.center().x, ob.min.y),
-                                            egui::Pos2::new(ob.max.x, ob.min.y),
-                                            egui::Pos2::new(ob.max.x, ob.center().y),
-                                            egui::Pos2::new(ob.max.x, ob.max.y),
-                                            egui::Pos2::new(ob.center().x, ob.max.y),
-                                            egui::Pos2::new(ob.min.x, ob.max.y),
-                                            egui::Pos2::new(ob.min.x, ob.center().y),
-                                        ];
-                                        let orig_h = orig_corners[h];
-                                        let orig_offset = orig_h - self.transform_pivot;
-                                        let cos = (-self.transform_drag_start_rotation).cos();
-                                        let sin = (-self.transform_drag_start_rotation).sin();
-                                        let local_delta_x = delta_w.x * cos - delta_w.y * sin;
-                                        let local_delta_y = delta_w.x * sin + delta_w.y * cos;
-                                        let mut scale_x = self.transform_drag_start_scale.x;
-                                        let mut scale_y = self.transform_drag_start_scale.y;
-                                        if orig_offset.x.abs() > 0.01 {
-                                            let new_local_x = orig_offset.x
-                                                * self.transform_drag_start_scale.x
-                                                + local_delta_x;
-                                            scale_x = new_local_x / orig_offset.x;
-                                        }
-                                        if orig_offset.y.abs() > 0.01 {
-                                            let new_local_y = orig_offset.y
-                                                * self.transform_drag_start_scale.y
-                                                + local_delta_y;
-                                            scale_y = new_local_y / orig_offset.y;
-                                        }
-                                        scale_x = scale_x.max(0.05);
-                                        scale_y = scale_y.max(0.05);
-                                        if ui.input(|i| i.modifiers.shift)
-                                            && (h == 0 || h == 2 || h == 4 || h == 6)
-                                        {
-                                            let avg_scale = (scale_x + scale_y) * 0.5;
-                                            scale_x = avg_scale;
-                                            scale_y = avg_scale;
-                                        }
-                                        self.transform_scale = egui::Vec2::new(scale_x, scale_y);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        } else {
-                            self.transform_dragging = None;
-                            self.transform_drag_start_ptr = None;
-                        }
-                    }
-                    pointer_down = false;
-                    pointer_clicked = false;
-                }
-
-                } // end if !trait_handled
-                // Handle brush/eraser stroke drawing
-                if pointer_down
-                    && matches!(
-                        self.active_tool,
-                        ToolId::Brush | ToolId::Eraser | ToolId::VectorPen
-                    )
-                    && !self.is_active_layer_locked()
-                    && self.panel_drag.is_none()
-                    && self.floating_drag_panel.is_none()
-                {
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let world_pos = self.screen_to_world(ptr_pos, rect);
-                        let cx = world_pos.x;
-                        let cy = world_pos.y;
-
-                        // Initialize the drawing state if this is a fresh stroke
-                        if !self.stabilizer.is_drawing {
-                            self.stabilizer.reset();
-                            self.stabilizer.is_drawing = true;
-                            self.stroke_id = self.stroke_id.wrapping_add(1);
-                            self.last_event_time = ctx.input(|i| i.time) - 0.016; // Seed last event time
-                            self.current_stroke_snapshots.clear();
-                            self.current_vector_points.clear();
-
-                            // Call begin_atomic on active drawing layer
-                            if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
-                                active_layer.begin_atomic();
-                            }
-                        }
-
-                        let cur_time = ctx.input(|i| i.time);
-                        let dt = (cur_time - self.last_event_time).max(0.001);
-                        self.last_event_time = cur_time;
-
-                        // =============================================================
-                        // PRESSURE & TILT: pen pressure with velocity simulation fallback
-                        // =============================================================
-                        let raw_tilt_x = self.tablet_axis.tilt_x.unwrap_or(0.0);
-                        let raw_tilt_y = self.tablet_axis.tilt_y.unwrap_or(0.0);
-
-                        let raw_pressure = if let Some(force) = self.egui_touch_pressure {
-                            force.max(0.05)
-                        } else if self.input_manager.is_some() {
-                            // Native tablet connected — use real hardware pressure.
-                            self.tablet_axis.pressure.max(0.05)
-                        } else {
-                            // No tablet detected — use velocity simulation as fallback based on raw cursor position
-                            if let Some(last_pos) = self.last_ptr_pos {
-                                let dx = cx - last_pos.x;
-                                let dy = cy - last_pos.y;
-                                let dist = (dx * dx + dy * dy).sqrt();
-                                let velocity = dist / dt as f32;
-                                // Exponential decay for natural mouse-pressure response
-                                let speed_factor = (-velocity / 400.0).exp();
-                                let pressure = speed_factor * 0.85 + 0.10; // Range [0.10, 0.95]
-                                pressure.clamp(0.05, 0.95)
-                            } else {
-                                0.25 // Tapered start of stroke
-                            }
-                        };
-
-                        // Stabilize position, pressure, and tilt together!
-                        let (sx_raw, sy_raw, smoothed_pressure, smoothed_tilt_x, smoothed_tilt_y) =
-                            self.stabilizer.process(
-                                cx,
-                                cy,
-                                raw_pressure,
-                                raw_tilt_x,
-                                raw_tilt_y,
-                                dt as f32,
-                            );
-
-                        // Shift-constrain angle snapping
-                        let shift_held = ctx.input(|i| i.modifiers.shift);
-                        let (sx, sy) = if self.shift_snap_enabled && shift_held {
-                            if self.stroke_start_pos.is_none() {
-                                self.stroke_start_pos = Some(egui::Pos2::new(sx_raw, sy_raw));
-                            }
-                            let start = self.stroke_start_pos.unwrap();
-                            Self::snap_to_angle(start.x, start.y, sx_raw, sy_raw)
-                        } else {
-                            self.stroke_start_pos = None;
-                            (sx_raw, sy_raw)
-                        };
-
-                        let sx = sx.clamp(0.0, self.canvas_width as f32);
-                        let sy = sy.clamp(0.0, self.canvas_height as f32);
-
-                        // Remap pressure if it comes from real hardware
-                        let pressure =
-                            if self.egui_touch_pressure.is_some() || self.input_manager.is_some() {
-                                self.remap_pressure(smoothed_pressure)
-                            } else {
-                                smoothed_pressure
-                            };
-                        let pressure = self.pressure_response.calibrate(pressure);
-                        self.last_ptr_pressure = pressure;
-
-                        let tilt_x = smoothed_tilt_x;
-                        let tilt_y = smoothed_tilt_y;
-
-                        let is_vector = if let Some(layer) = self.layers.get(&self.active_layer_id)
-                        {
-                            layer.kind == crate::canvas::LayerType::Vector
-                        } else {
-                            false
-                        };
-
-                        if is_vector {
-                            let cp = crate::canvas::VectorControlPoint {
-                                x: sx,
-                                y: sy,
-                                pressure,
-                                tilt_x,
-                                tilt_y,
-                            };
-                            self.current_vector_points.push(cp);
-
-                            self.sync_brush_settings();
-                            let k = self.current_vector_points.len();
-                            if k >= 3 {
-                                // Draw segment between P_{k-3} and P_{k-2}
-                                let p0 = if k >= 4 {
-                                    &self.current_vector_points[k - 4]
-                                } else {
-                                    &self.current_vector_points[k - 3]
-                                };
-                                let p1 = &self.current_vector_points[k - 3];
-                                let p2 = &self.current_vector_points[k - 2];
-                                let p3 = &self.current_vector_points[k - 1];
-
-                                let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-                                let steps = ((dist / 2.0) as usize).clamp(2, 100);
-
-                                let start_i = if k == 3 { 0 } else { 1 };
-
-                                let active_brush = &self.brushes[self.active_preset_index];
-                                let active_brush_state =
-                                    &mut self.brush_states[self.active_preset_index];
-
-                                if let Some(active_layer) =
-                                    self.layers.get_mut(&self.active_layer_id)
-                                {
-                                    let preset = &self.presets[self.active_preset_index];
-                                    let tex_idx = preset.texture_id as usize;
-                                    let (brush_texture, tex_w, tex_h) =
-                                        if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                                            let t = &self.brush_textures[tex_idx];
-                                            (Some(t.pixels.as_slice()), t.width, t.height)
-                                        } else {
-                                            (None, 256, 256)
-                                        };
-                                    for i in start_i..=steps {
-                                        let t = i as f32 / steps as f32;
-                                        let pt = Self::catmull_rom(p0, p1, p2, p3, t);
-
-                                        let mut stroke_surface = StrokeSurface {
-                                            layer: active_layer,
-                                            history: &mut self.history,
-                                            snapshots: &mut self.current_stroke_snapshots,
-                                            stroke_id: self.stroke_id,
-                                            canvas_width: self.canvas_width,
-                                            canvas_height: self.canvas_height,
-                                            lock_canvas_bounds: self.lock_canvas_bounds,
-                                            selection_mask: Some(&self.selection_mask),
-                                            brush_texture,
-                                            brush_texture_width: tex_w,
-                                            brush_texture_height: tex_h,
-                                            brush_texture_scale: preset.texture_scale,
-                                            active_mask_editing: self.active_mask_editing,
-                                        };
-
-                                        active_brush.stroke_to(
-                                            active_brush_state,
-                                            &mut stroke_surface,
-                                            pt.x,
-                                            pt.y,
-                                            pt.pressure,
-                                            pt.tilt_x,
-                                            pt.tilt_y,
-                                            dt / steps as f64,
-                                        );
-                                        self.performance_hud
-                                            .note_stroke_point(ctx.input(|i| i.time) as f32);
-                                    }
-                                }
-                            }
-                        } else {
-                            // Execute Hokusai Brush Stroke to the Layer!
-                            self.sync_brush_settings();
-                            let active_brush = &self.brushes[self.active_preset_index];
-
-                            // Compute symmetry mirror points BEFORE borrowing layers
-                            let stroke_points = self.compute_symmetry_points(sx, sy);
-                            let needs_symmetry = stroke_points.len() > 1;
-
-                            // Ensure we have enough parallel brush states for symmetry
-                            if needs_symmetry {
-                                while self.symmetry_brush_states.len() < stroke_points.len() - 1 {
-                                    self.symmetry_brush_states
-                                        .push(self.brush_states[self.active_preset_index].clone());
-                                }
-                            }
-
-                            let active_brush_state =
-                                &mut self.brush_states[self.active_preset_index];
-
-                            if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
-                                let preset = &self.presets[self.active_preset_index];
-                                let tex_idx = preset.texture_id as usize;
-                                let (brush_texture, tex_w, tex_h) =
-                                    if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                                        let t = &self.brush_textures[tex_idx];
-                                        (Some(t.pixels.as_slice()), t.width, t.height)
-                                    } else {
-                                        (None, 256, 256)
-                                    };
-
-                                let mut stroke_surface = StrokeSurface {
-                                    layer: active_layer,
-                                    history: &mut self.history,
-                                    snapshots: &mut self.current_stroke_snapshots,
-                                    stroke_id: self.stroke_id,
-                                    canvas_width: self.canvas_width,
-                                    canvas_height: self.canvas_height,
-                                    lock_canvas_bounds: self.lock_canvas_bounds,
-                                    selection_mask: Some(&self.selection_mask),
-                                    brush_texture,
-                                    brush_texture_width: tex_w,
-                                    brush_texture_height: tex_h,
-                                    brush_texture_scale: preset.texture_scale,
-                                    active_mask_editing: self.active_mask_editing,
-                                };
-
-                                // Feed the stabilized stroke points to the Hokusai brush engine
-                                // with REAL pressure and tilt from the Bosto 16HD!
-                                if !needs_symmetry {
-                                    active_brush.stroke_to(
-                                        active_brush_state,
-                                        &mut stroke_surface,
-                                        sx,
-                                        sy,
-                                        pressure,
-                                        tilt_x,
-                                        tilt_y,
-                                        dt,
-                                    );
-                                    self.performance_hud
-                                        .note_stroke_point(ctx.input(|i| i.time) as f32);
-                                } else {
-                                    // Draw each stroke point (main + mirrors)
-                                    active_brush.stroke_to(
-                                        active_brush_state,
-                                        &mut stroke_surface,
-                                        sx,
-                                        sy,
-                                        pressure,
-                                        tilt_x,
-                                        tilt_y,
-                                        dt,
-                                    );
-                                    self.performance_hud
-                                        .note_stroke_point(ctx.input(|i| i.time) as f32);
-                                    for (idx, (mx, my)) in stroke_points.iter().enumerate().skip(1)
-                                    {
-                                        if let Some(s) = self.symmetry_brush_states.get_mut(idx - 1)
-                                        {
-                                            if !s.started {
-                                                *s = active_brush_state.clone();
-                                            }
-                                            active_brush.stroke_to(
-                                                s,
-                                                &mut stroke_surface,
-                                                *mx,
-                                                *my,
-                                                pressure,
-                                                tilt_x,
-                                                tilt_y,
-                                                dt,
-                                            );
-                                            self.performance_hud
-                                                .note_stroke_point(ctx.input(|i| i.time) as f32);
-                                        }
-                                    }
-                                }
-                            } else {
-                                let _ = active_brush;
-                            }
-                        }
-
-                        self.last_ptr_pos = Some(Pos2::new(sx, sy));
-                        ctx.request_repaint();
-                    }
-                }
-
-                if !pointer_down {
-                    // Stroke ended! Save the command and reset stabilizer
-                    if self.stabilizer.is_drawing {
-                        self.stabilizer.reset();
-                        self.last_ptr_pos = None;
-
-                        // Reset active brush state so the next stroke doesn't connect to the last one!
-                        self.brush_states[self.active_preset_index].reset();
-                        for s in &mut self.symmetry_brush_states {
-                            s.reset();
-                        }
-
-                        let is_vector =
-                            if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
-                                active_layer.kind == crate::canvas::LayerType::Vector
-                            } else {
-                                false
-                            };
-
-                        if is_vector && self.current_vector_points.len() >= 2 {
-                            self.sync_brush_settings();
-                            // Draw final segment between P_{len-2} and P_{len-1}
-                            let len = self.current_vector_points.len();
-                            let p0 = if len >= 3 {
-                                &self.current_vector_points[len - 3]
-                            } else {
-                                &self.current_vector_points[len - 2]
-                            };
-                            let p1 = &self.current_vector_points[len - 2];
-                            let p2 = &self.current_vector_points[len - 1];
-                            let p3 = &self.current_vector_points[len - 1];
-
-                            let dist = ((p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2)).sqrt();
-                            let steps = ((dist / 2.0) as usize).clamp(2, 100);
-
-                            let start_i = if len == 2 { 0 } else { 1 };
-
-                            let active_brush = &self.brushes[self.active_preset_index];
-                            let active_brush_state =
-                                &mut self.brush_states[self.active_preset_index];
-
-                            if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
-                                for i in start_i..=steps {
-                                    let t = i as f32 / steps as f32;
-                                    let pt = Self::catmull_rom(p0, p1, p2, p3, t);
-
-                                    let preset = &self.presets[self.active_preset_index];
-                                    let tex_idx = preset.texture_id as usize;
-                                    let (brush_texture, tex_w, tex_h) =
-                                        if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                                            let t = &self.brush_textures[tex_idx];
-                                            (Some(t.pixels.as_slice()), t.width, t.height)
-                                        } else {
-                                            (None, 256, 256)
-                                        };
-
-                                    let mut stroke_surface = StrokeSurface {
-                                        layer: active_layer,
-                                        history: &mut self.history,
-                                        snapshots: &mut self.current_stroke_snapshots,
-                                        stroke_id: self.stroke_id,
-                                        canvas_width: self.canvas_width,
-                                        canvas_height: self.canvas_height,
-                                        lock_canvas_bounds: self.lock_canvas_bounds,
-                                        selection_mask: Some(&self.selection_mask),
-                                        brush_texture,
-                                        brush_texture_width: tex_w,
-                                        brush_texture_height: tex_h,
-                                        brush_texture_scale: preset.texture_scale,
-                                        active_mask_editing: self.active_mask_editing,
-                                    };
-
-                                    active_brush.stroke_to(
-                                        active_brush_state,
-                                        &mut stroke_surface,
-                                        pt.x,
-                                        pt.y,
-                                        pt.pressure,
-                                        pt.tilt_x,
-                                        pt.tilt_y,
-                                        0.016 / steps as f64,
-                                    );
-                                    self.performance_hud
-                                        .note_stroke_point(ctx.input(|i| i.time) as f32);
-                                }
-                            }
-                        }
-
-                        // Store the vector stroke in vector_data
-                        let stroke_color = self.active_color();
-                        if is_vector && !self.current_vector_points.is_empty() {
-                            if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
-                                let stroke = crate::canvas::VectorStroke {
-                                    control_points: self.current_vector_points.clone(),
-                                    brush_preset_id: self.presets[self.active_preset_index].id,
-                                    color: stroke_color,
-                                    width: 1.0,
-                                };
-                                if active_layer.vector_data.is_none() {
-                                    active_layer.vector_data = Some(crate::canvas::VectorLayer {
-                                        strokes: Vec::new(),
-                                        display_mode: Default::default(),
-                                    });
-                                }
-                                if let Some(v_data) = &mut active_layer.vector_data {
-                                    v_data.strokes.push(stroke);
-                                }
-                            }
-                        }
-                        self.current_vector_points.clear();
-
-                        if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
-                            let _dirty = active_layer.end_atomic();
-                        }
-
-                        // Push the stroke command to the HistoryManager
-                        let snapshots = std::mem::take(&mut self.current_stroke_snapshots);
-                        if !snapshots.is_empty() {
-                            self.history
-                                .push_command(HistoryCommand::TileEdit { snapshots });
-                            self.document_modified = true;
-                        }
-                    }
-                }
+                self.draw_transform_cursor(rect, ui, trait_handled);
+                self.exec_brush_pipeline(pointer_down, pointer_clicked, &response, ctx, rect);
 
                 // 4. RENDERING & DISPLAY VIEWPORT
                 if let Some(renderer) = &mut self.renderer {
@@ -5654,141 +5627,11 @@ impl eframe::App for PaintApp {
                     }
                 }
 
-                // TRANSFORM OVERLAY
                 if self.transform_active {
-                    let ob = self.transform_orig_bounds;
-                    let stroke_blue = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
-
-                    let p0 = self.world_to_screen(
-                        self.transform_point(egui::Pos2::new(ob.min.x, ob.min.y)),
-                        rect,
-                    );
-                    let p1 = self.world_to_screen(
-                        self.transform_point(egui::Pos2::new(ob.max.x, ob.min.y)),
-                        rect,
-                    );
-                    let p2 = self.world_to_screen(
-                        self.transform_point(egui::Pos2::new(ob.max.x, ob.max.y)),
-                        rect,
-                    );
-                    let p3 = self.world_to_screen(
-                        self.transform_point(egui::Pos2::new(ob.min.x, ob.max.y)),
-                        rect,
-                    );
-
-                    ui.painter().line_segment([p0, p1], stroke_blue);
-                    ui.painter().line_segment([p1, p2], stroke_blue);
-                    ui.painter().line_segment([p2, p3], stroke_blue);
-                    ui.painter().line_segment([p3, p0], stroke_blue);
-
-                    let rot_h_orig =
-                        egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
-                    let rot_h_screen = self.world_to_screen(self.transform_point(rot_h_orig), rect);
-                    let top_center_screen = self.world_to_screen(
-                        self.transform_point(egui::Pos2::new(ob.center().x, ob.min.y)),
-                        rect,
-                    );
-                    ui.painter()
-                        .line_segment([top_center_screen, rot_h_screen], stroke_blue);
-
-                    ui.painter().circle_filled(
-                        rot_h_screen,
-                        6.0,
-                        egui::Color32::from_rgb(40, 200, 40),
-                    );
-                    ui.painter().circle_stroke(
-                        rot_h_screen,
-                        6.0,
-                        egui::Stroke::new(1.0, egui::Color32::WHITE),
-                    );
-
-                    let orig_corners = [
-                        egui::Pos2::new(ob.min.x, ob.min.y),      // TL (0)
-                        egui::Pos2::new(ob.center().x, ob.min.y), // TC (1)
-                        egui::Pos2::new(ob.max.x, ob.min.y),      // TR (2)
-                        egui::Pos2::new(ob.max.x, ob.center().y), // MR (3)
-                        egui::Pos2::new(ob.max.x, ob.max.y),      // BR (4)
-                        egui::Pos2::new(ob.center().x, ob.max.y), // BC (5)
-                        egui::Pos2::new(ob.min.x, ob.max.y),      // BL (6)
-                        egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
-                    ];
-
-                    for corner in &orig_corners {
-                        let h_screen = self.world_to_screen(self.transform_point(*corner), rect);
-                        ui.painter().rect_filled(
-                            egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)),
-                            0.0,
-                            egui::Color32::WHITE,
-                        );
-                        ui.painter().rect_stroke(
-                            egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)),
-                            0.0,
-                            stroke_blue,
-                        );
-                    }
-
-                    let pivot_screen = self
-                        .world_to_screen(self.transform_pivot + self.transform_translation, rect);
-                    ui.painter().circle_stroke(pivot_screen, 8.0, stroke_blue);
-                    ui.painter().circle_filled(
-                        pivot_screen,
-                        2.0,
-                        egui::Color32::from_rgb(0, 120, 215),
-                    );
+                    self.draw_transform_overlay(rect, ui);
                 }
-
-                // Show vector stroke control points (EditCP tool)
-                if matches!(self.active_tool, ToolId::EditCP) {
-                    if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
-                        if let Some(v_data) = &active_layer.vector_data {
-                            let cp_color = egui::Color32::from_rgb(0, 200, 100);
-                            let sel_color = egui::Color32::from_rgb(255, 200, 0);
-                            for (si, stroke) in v_data.strokes.iter().enumerate() {
-                                for (pi, cp) in stroke.control_points.iter().enumerate() {
-                                    let screen_pt =
-                                        self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
-                                    let is_selected = self.edit_cp_selection == Some((si, pi));
-                                    let color = if is_selected { sel_color } else { cp_color };
-                                    let radius = if is_selected { 5.0 } else { 3.0 };
-                                    ui.painter().circle_filled(screen_pt, radius, color);
-                                    ui.painter().circle_stroke(
-                                        screen_pt,
-                                        radius,
-                                        egui::Stroke::new(1.0, egui::Color32::WHITE),
-                                    );
-                                }
-
-                                // Draw stroke connection lines
-                                if stroke.control_points.len() >= 2 {
-                                    for i in 0..stroke.control_points.len() - 1 {
-                                        let a = self.world_to_screen(
-                                            egui::Pos2::new(
-                                                stroke.control_points[i].x,
-                                                stroke.control_points[i].y,
-                                            ),
-                                            rect,
-                                        );
-                                        let b = self.world_to_screen(
-                                            egui::Pos2::new(
-                                                stroke.control_points[i + 1].x,
-                                                stroke.control_points[i + 1].y,
-                                            ),
-                                            rect,
-                                        );
-                                        ui.painter().line_segment(
-                                            [a, b],
-                                            egui::Stroke::new(
-                                                0.5,
-                                                egui::Color32::from_rgba_premultiplied(
-                                                    0, 200, 100, 80,
-                                                ),
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if matches!(self.active_tool(), ToolId::EditCP) {
+                    self.draw_editcp_overlay(rect, ui);
                 }
 
                 // =============================================================
@@ -5905,7 +5748,7 @@ impl eframe::App for PaintApp {
                     // Let trait tools draw custom cursors first
                     let custom_drawn = self.tool_registry.draw_active_cursor(pos, ui.painter());
                     if !custom_drawn {
-                        if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
+                        if matches!(self.active_tool(), ToolId::Brush | ToolId::Eraser) {
                             ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
                             let radius = (self.brush_radius_log.exp() * self.viewport_zoom)
                                 .clamp(1.0, 512.0);
@@ -6747,7 +6590,7 @@ mod tests {
             brush_settings_dirty: true,
             renderer: None,
             shortcuts: ShortcutManager::new(),
-            active_tool: ToolId::Brush,
+
             fill_options: fill::FillOptions::default(),
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
@@ -6951,7 +6794,7 @@ mod tests {
             brush_settings_dirty: true,
             renderer: None,
             shortcuts: ShortcutManager::new(),
-            active_tool: ToolId::Brush,
+
             fill_options: fill::FillOptions::default(),
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
