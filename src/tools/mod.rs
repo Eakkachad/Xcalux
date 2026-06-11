@@ -89,6 +89,8 @@ pub enum ToolOutcome {
     MagicWandSelect { x: i32, y: i32 },
     /// Polygon lasso completed with the given world-space points.
     PolygonLassoComplete { points: Vec<(f32, f32)> },
+    /// Flood fill at the given world-space pixel.
+    Fill { x: i32, y: i32 },
 }
 
 // ── Tool trait ──
@@ -346,6 +348,30 @@ impl Tool for PolygonLassoTool {
             );
         }
     }
+
+    fn draw_cursor(&self, _screen_pos: egui::Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+pub struct FillTool;
+impl Tool for FillTool {
+    fn name(&self) -> &'static str { "Fill" }
+    fn tool_id(&self) -> ToolId { ToolId::Fill }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                let fx = world.x as i32;
+                let fy = world.y as i32;
+                if fx >= 0 && fy >= 0 {
+                    return ToolOutcome::Fill { x: fx, y: fy };
+                }
+            }
+        }
+        ToolOutcome::None
+    }
+
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
     fn draw_cursor(&self, _screen_pos: egui::Pos2, _painter: &egui::Painter) -> bool { false }
 }

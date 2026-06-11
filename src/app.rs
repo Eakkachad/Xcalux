@@ -1053,6 +1053,7 @@ impl PaintApp {
                 reg.register(Box::new(crate::tools::ZoomTool));
                 reg.register(Box::new(crate::tools::RotateViewTool));
                 reg.register(Box::new(crate::tools::ColorPickerTool));
+                reg.register(Box::new(crate::tools::FillTool));
                 reg.register(Box::new(crate::tools::PolygonLassoTool::new()));
                 reg.register(Box::new(crate::tools::MagicWandTool));
                 reg.register(Box::new(crate::tools::MoveTool));
@@ -2163,6 +2164,80 @@ impl PaintApp {
                     }
                 }
                 true
+            }
+            tools::ToolOutcome::Fill { x, y } => {
+                self.fill_tool_execute(x, y);
+                true
+            }
+        }
+    }
+
+    /// Execute a flood fill at the given world-space pixel position.
+    fn fill_tool_execute(&mut self, fx: i32, fy: i32) {
+        if fx < 0
+            || fx >= self.canvas_width as i32
+            || fy < 0
+            || fy >= self.canvas_height as i32
+        {
+            return;
+        }
+        let active_col = self.active_color();
+        let fill_color: [u16; 4] = [
+            (active_col[0] * 32768.0) as u16,
+            (active_col[1] * 32768.0) as u16,
+            (active_col[2] * 32768.0) as u16,
+            32768,
+        ];
+        let cloned_layers: Vec<Layer> = self.layers.values().cloned().collect();
+        let all_layers: Vec<&Layer> = cloned_layers.iter().collect();
+        if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
+            let mut snapshots: Vec<crate::history::TileSnapshot> = Vec::new();
+            let tile_keys: Vec<(i32, i32)> =
+                layer.tiles.keys().copied().collect();
+            for &tk in &tile_keys {
+                if let Some(tile) = layer.tiles.get(&tk) {
+                    let mut pixels = self.history.alloc_tile();
+                    *pixels = *tile.pixels;
+                    snapshots.push(crate::history::TileSnapshot {
+                        layer_id: layer.id,
+                        coords: tk,
+                        pixels: Some(pixels),
+                        is_mask: false,
+                    });
+                }
+            }
+
+            let dirty = fill::flood_fill(
+                layer,
+                &all_layers,
+                &self.selection_mask,
+                fx,
+                fy,
+                fill_color,
+                &self.fill_options,
+                self.canvas_width as i32,
+                self.canvas_height as i32,
+            );
+            if !dirty.is_empty() {
+                let new_keys: Vec<(i32, i32)> =
+                    layer.tiles.keys().copied().collect();
+                for &tk in &new_keys {
+                    if !tile_keys.contains(&tk) {
+                        snapshots.push(crate::history::TileSnapshot {
+                            layer_id: layer.id,
+                            coords: tk,
+                            pixels: None,
+                            is_mask: false,
+                        });
+                    }
+                }
+
+                self.history
+                    .push_command(HistoryCommand::TileEdit { snapshots });
+                self.document_modified = true;
+                if let Some(r) = &mut self.renderer {
+                    r.clear_cache();
+                }
             }
         }
     }
@@ -4418,82 +4493,6 @@ impl eframe::App for PaintApp {
                             lp.points.push((world_pos.x, world_pos.y));
                         }
                         ctx.request_repaint();
-                    }
-                }
-
-                // Handle fill tool click
-                if pointer_clicked && matches!(self.active_tool, ToolId::Fill) {
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let world_pos = self.screen_to_world(ptr_pos, rect);
-                        let fx = world_pos.x as i32;
-                        let fy = world_pos.y as i32;
-                        if fx >= 0
-                            && fx < self.canvas_width as i32
-                            && fy >= 0
-                            && fy < self.canvas_height as i32
-                        {
-                            let active_col = self.active_color();
-                            let fill_color: [u16; 4] = [
-                                (active_col[0] * 32768.0) as u16,
-                                (active_col[1] * 32768.0) as u16,
-                                (active_col[2] * 32768.0) as u16,
-                                32768,
-                            ];
-                            let cloned_layers: Vec<Layer> = self.layers.values().cloned().collect();
-                            let all_layers: Vec<&Layer> = cloned_layers.iter().collect();
-                            if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                                // Capture pre-fill snapshots of all existing tiles
-                                let mut snapshots: Vec<crate::history::TileSnapshot> = Vec::new();
-                                let tile_keys: Vec<(i32, i32)> =
-                                    layer.tiles.keys().copied().collect();
-                                for &tk in &tile_keys {
-                                    if let Some(tile) = layer.tiles.get(&tk) {
-                                        let mut pixels = self.history.alloc_tile();
-                                        *pixels = *tile.pixels;
-                                        snapshots.push(crate::history::TileSnapshot {
-                                            layer_id: layer.id,
-                                            coords: tk,
-                                            pixels: Some(pixels),
-                                            is_mask: false,
-                                        });
-                                    }
-                                }
-
-                                let dirty = fill::flood_fill(
-                                    layer,
-                                    &all_layers,
-                                    &self.selection_mask,
-                                    fx,
-                                    fy,
-                                    fill_color,
-                                    &self.fill_options,
-                                    self.canvas_width as i32,
-                                    self.canvas_height as i32,
-                                );
-                                if !dirty.is_empty() {
-                                    // Capture snapshots for any newly created tiles
-                                    let new_keys: Vec<(i32, i32)> =
-                                        layer.tiles.keys().copied().collect();
-                                    for &tk in &new_keys {
-                                        if !tile_keys.contains(&tk) {
-                                            snapshots.push(crate::history::TileSnapshot {
-                                                layer_id: layer.id,
-                                                coords: tk,
-                                                pixels: None,
-                                                is_mask: false,
-                                            });
-                                        }
-                                    }
-
-                                    self.history
-                                        .push_command(HistoryCommand::TileEdit { snapshots });
-                                    self.document_modified = true;
-                                    if let Some(r) = &mut self.renderer {
-                                        r.clear_cache();
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
 
