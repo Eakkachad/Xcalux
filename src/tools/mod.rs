@@ -91,6 +91,20 @@ pub enum ToolOutcome {
     PolygonLassoComplete { points: Vec<(f32, f32)> },
     /// Flood fill at the given world-space pixel.
     Fill { x: i32, y: i32 },
+    /// Vector pen: ensure the active layer is a vector layer.
+    VectorPenActivate,
+    /// Curve tool completed a stroke from the given control points.
+    CurveComplete { points: Vec<crate::canvas::VectorControlPoint> },
+    /// EditCP: click at world position (dispatch does hit-test).
+    EditCPClick { world_pos: egui::Vec2 },
+    /// EditCP: drag to world position.
+    EditCPDrag { world_pos: egui::Vec2 },
+    /// EditCP: drag released.
+    EditCPRelease,
+    /// Gradient tool: drag in progress.
+    GradientDrag { world_pos: egui::Vec2 },
+    /// Gradient tool: drag complete; PaintApp applies the gradient.
+    GradientComplete { start: egui::Vec2, end: egui::Vec2 },
 }
 
 // ── Tool trait ──
@@ -410,6 +424,238 @@ impl Tool for MoveTool {
     }
 
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// VECTOR PEN TOOL
+// =============================================================
+pub struct VectorPenTool;
+impl Tool for VectorPenTool {
+    fn name(&self) -> &'static str { "Vector Pen" }
+    fn tool_id(&self) -> ToolId { ToolId::VectorPen }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked {
+            ToolOutcome::VectorPenActivate
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// CURVE TOOL
+// =============================================================
+pub struct CurveTool {
+    points: Vec<crate::canvas::VectorControlPoint>,
+}
+
+impl CurveTool {
+    pub fn new() -> Self {
+        Self { points: Vec::new() }
+    }
+}
+
+impl Tool for CurveTool {
+    fn name(&self) -> &'static str { "Curve" }
+    fn tool_id(&self) -> ToolId { ToolId::Curve }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                self.points.push(crate::canvas::VectorControlPoint {
+                    x: world.x,
+                    y: world.y,
+                    pressure: ctx.pointer_pressure,
+                    tilt_x: 0.0,
+                    tilt_y: 0.0,
+                });
+                if self.points.len() >= 4 {
+                    ToolOutcome::CurveComplete {
+                        points: std::mem::take(&mut self.points),
+                    }
+                } else {
+                    ToolOutcome::Handled
+                }
+            } else {
+                ToolOutcome::None
+            }
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
+        if self.points.is_empty() {
+            return;
+        }
+        let cp_color = egui::Color32::from_rgb(0, 180, 255);
+        for cp in &self.points {
+            let screen_pt = ctx.world_to_screen(egui::Vec2::new(cp.x, cp.y));
+            painter.circle_filled(screen_pt, 4.0, cp_color);
+            painter.circle_stroke(screen_pt, 4.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+        }
+
+        if self.points.len() >= 2 {
+            for i in 0..self.points.len() - 1 {
+                let a = ctx.world_to_screen(egui::Vec2::new(self.points[i].x, self.points[i].y));
+                let b = ctx.world_to_screen(egui::Vec2::new(self.points[i + 1].x, self.points[i + 1].y));
+                painter.line_segment(
+                    [a, b],
+                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 100)),
+                );
+            }
+        }
+
+        let num_label = format!("{}/4 points placed", self.points.len());
+        if let Some(cp) = self.points.last() {
+            let screen_pt = ctx.world_to_screen(egui::Vec2::new(cp.x + 10.0, cp.y - 20.0));
+            painter.text(
+                screen_pt,
+                egui::Align2::LEFT_BOTTOM,
+                num_label,
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            );
+        }
+    }
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// EDIT CONTROL POINT TOOL
+// =============================================================
+pub struct EditCPTool {
+    pub selection: Option<(usize, usize)>,
+    pub dragging: bool,
+}
+
+impl EditCPTool {
+    pub fn new() -> Self {
+        Self {
+            selection: None,
+            dragging: false,
+        }
+    }
+}
+
+impl Tool for EditCPTool {
+    fn name(&self) -> &'static str { "Edit CP" }
+    fn tool_id(&self) -> ToolId { ToolId::EditCP }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                ToolOutcome::EditCPClick { world_pos: world }
+            } else {
+                ToolOutcome::None
+            }
+        } else if self.dragging && ctx.pointer_down {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                ToolOutcome::EditCPDrag { world_pos: world }
+            } else {
+                ToolOutcome::None
+            }
+        } else if !ctx.pointer_down && self.dragging {
+            ToolOutcome::EditCPRelease
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
+        // EditCP overlay requires layer data; drawn inline via PaintApp
+        let _ = painter;
+        let _ = ctx;
+    }
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// GRADIENT TOOL
+// =============================================================
+pub struct GradientTool {
+    pub start: Option<egui::Vec2>,
+    pub end: Option<egui::Vec2>,
+    pub dragging: bool,
+}
+
+impl GradientTool {
+    pub fn new() -> Self {
+        Self {
+            start: None,
+            end: None,
+            dragging: false,
+        }
+    }
+}
+
+impl Tool for GradientTool {
+    fn name(&self) -> &'static str { "Gradient" }
+    fn tool_id(&self) -> ToolId { ToolId::Gradient }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_down {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                if !self.dragging {
+                    self.dragging = true;
+                    self.start = Some(world);
+                }
+                self.end = Some(world);
+            }
+            ToolOutcome::GradientDrag { world_pos: self.end.unwrap_or_default() }
+        } else if self.dragging && !ctx.pointer_down {
+            let result = ToolOutcome::GradientComplete {
+                start: self.start.unwrap_or_default(),
+                end: self.end.unwrap_or_default(),
+            };
+            self.dragging = false;
+            self.start = None;
+            self.end = None;
+            result
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
+        if !self.dragging {
+            return;
+        }
+        if let (Some(start), Some(end)) = (self.start, self.end) {
+            let a = ctx.world_to_screen(egui::Vec2::new(start.x, start.y));
+            let b = ctx.world_to_screen(egui::Vec2::new(end.x, end.y));
+            painter.line_segment(
+                [a, b],
+                egui::Stroke::new(2.0, egui::Color32::from_rgba_premultiplied(100, 200, 255, 200)),
+            );
+            painter.circle_filled(a, 4.0, egui::Color32::from_rgb(100, 200, 255));
+            painter.circle_filled(b, 4.0, egui::Color32::from_rgb(255, 200, 100));
+
+            let dir = (b - a).normalized();
+            let perp = egui::vec2(-dir.y, dir.x);
+            for (pt, col) in [
+                (a, egui::Color32::WHITE),
+                (b, egui::Color32::from_gray(100)),
+            ] {
+                let p1 = pt + perp * 10.0;
+                let p2 = pt - perp * 10.0;
+                painter.line_segment([p1, p2], egui::Stroke::new(1.5, col));
+            }
+        }
+    }
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }

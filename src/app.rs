@@ -265,7 +265,6 @@ pub struct PaintApp {
 
     pub(crate) save_sender: std::sync::mpsc::Sender<crate::save::SaveTask>,
     pub(crate) current_vector_points: Vec<crate::canvas::VectorControlPoint>,
-    pub(crate) curve_points: Vec<crate::canvas::VectorControlPoint>,
     pub(crate) edit_cp_selection: Option<(usize, usize)>,
     pub(crate) edit_cp_dragging: bool,
     pub(crate) document_path: String,
@@ -295,9 +294,6 @@ pub struct PaintApp {
     pub selection_mode: selection::SelectionMode,
     pub selection_rect: Option<selection::SelectionRect>,
     pub lasso_points: Option<selection::LassoPoints>,
-    pub gradient_start: Option<egui::Vec2>,
-    pub gradient_end: Option<egui::Vec2>,
-    pub gradient_dragging: bool,
     pub gradient_mode: u32, // 0=Linear, 1=Radial
     pub gradient_type: u32, // 0=FG→BG, 1=FG→Transparent, 2=BG→Transparent
     pub is_selecting: bool,
@@ -1035,7 +1031,6 @@ impl PaintApp {
             brush_textures: scan_and_load_textures(),
             save_sender,
             current_vector_points: Vec::with_capacity(10000),
-            curve_points: Vec::new(),
             edit_cp_selection: None,
             edit_cp_dragging: false,
             document_path: "canvas.arty".to_string(),
@@ -1057,15 +1052,16 @@ impl PaintApp {
                 reg.register(Box::new(crate::tools::PolygonLassoTool::new()));
                 reg.register(Box::new(crate::tools::MagicWandTool));
                 reg.register(Box::new(crate::tools::MoveTool));
+                reg.register(Box::new(crate::tools::VectorPenTool));
+                reg.register(Box::new(crate::tools::CurveTool::new()));
+                reg.register(Box::new(crate::tools::EditCPTool::new()));
+                reg.register(Box::new(crate::tools::GradientTool::new()));
                 reg
             },
             fill_options: fill::FillOptions::default(),
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
-            gradient_start: None,
-            gradient_end: None,
-            gradient_dragging: false,
             gradient_mode: 0,
             gradient_type: 0,
             is_selecting: false,
@@ -2169,6 +2165,66 @@ impl PaintApp {
                 self.fill_tool_execute(x, y);
                 true
             }
+            tools::ToolOutcome::VectorPenActivate => {
+                let is_vector = self
+                    .layers
+                    .get(&self.active_layer_id)
+                    .map(|l| matches!(l.kind, crate::canvas::LayerType::Vector))
+                    .unwrap_or(false);
+                if !is_vector {
+                    self.create_vector_layer();
+                }
+                true
+            }
+            tools::ToolOutcome::CurveComplete { points } => {
+                self.curve_tool_complete(points);
+                true
+            }
+            tools::ToolOutcome::EditCPClick { world_pos } => {
+                self.edit_cp_dragging = false;
+                self.edit_cp_selection = None;
+                if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                    if let Some(v_data) = &active_layer.vector_data {
+                        let hit = crate::vector::hit_test_control_point(
+                            &v_data.strokes,
+                            world_pos.x,
+                            world_pos.y,
+                        );
+                        if let Some((si, pi)) = hit {
+                            self.edit_cp_selection = Some((si, pi));
+                            self.edit_cp_dragging = true;
+                        }
+                    }
+                }
+                true
+            }
+            tools::ToolOutcome::EditCPDrag { world_pos } => {
+                if let Some((si, pi)) = self.edit_cp_selection {
+                    if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+                        if let Some(v_data) = &mut active_layer.vector_data {
+                            if si < v_data.strokes.len()
+                                && pi < v_data.strokes[si].control_points.len()
+                            {
+                                v_data.strokes[si].control_points[pi].x = world_pos.x;
+                                v_data.strokes[si].control_points[pi].y = world_pos.y;
+                            }
+                        }
+                    }
+                    self.redraw_vector_layer(self.active_layer_id);
+                }
+                true
+            }
+            tools::ToolOutcome::EditCPRelease => {
+                self.edit_cp_dragging = false;
+                true
+            }
+            tools::ToolOutcome::GradientDrag { .. } => {
+                true
+            }
+            tools::ToolOutcome::GradientComplete { start, end } => {
+                self.gradient_tool_execute(start, end);
+                true
+            }
         }
     }
 
@@ -2232,6 +2288,229 @@ impl PaintApp {
                     }
                 }
 
+                self.history
+                    .push_command(HistoryCommand::TileEdit { snapshots });
+                self.document_modified = true;
+                if let Some(r) = &mut self.renderer {
+                    r.clear_cache();
+                }
+            }
+        }
+    }
+
+    fn curve_tool_complete(&mut self, points: Vec<crate::canvas::VectorControlPoint>) {
+        let layer_id = self.active_layer_id;
+        let layer_exists = self.layers.contains_key(&layer_id);
+        if !layer_exists {
+            self.create_vector_layer();
+        }
+
+        let preset_id;
+        let brush_texture_info;
+        let brush_texture_scale;
+        {
+            self.sync_brush_settings();
+            let preset = &self.presets[self.active_preset_index];
+            preset_id = preset.id;
+            brush_texture_scale = preset.texture_scale;
+            let tex_idx = preset.texture_id as usize;
+            brush_texture_info =
+                if tex_idx > 0 && tex_idx < self.brush_textures.len() {
+                    let t = &self.brush_textures[tex_idx];
+                    (Some(t.pixels.as_slice()), t.width, t.height)
+                } else {
+                    (None, 256, 256)
+                };
+        }
+        let (brush_texture, tex_w, tex_h) = brush_texture_info;
+
+        let sampled = crate::vector::sample_stroke(&points, 2.0, 0.5);
+        let active_brush = &self.brushes[self.active_preset_index];
+        let mut active_brush_state =
+            self.brush_states[self.active_preset_index].clone();
+        let stroke_color = self.active_color();
+
+        if let Some(active_layer) = self.layers.get_mut(&layer_id) {
+            active_layer.begin_atomic();
+
+            for pt in &sampled {
+                let mut stroke_surface = StrokeSurface {
+                    layer: active_layer,
+                    history: &mut self.history,
+                    snapshots: &mut self.current_stroke_snapshots,
+                    stroke_id: self.stroke_id,
+                    canvas_width: self.canvas_width,
+                    canvas_height: self.canvas_height,
+                    lock_canvas_bounds: self.lock_canvas_bounds,
+                    selection_mask: Some(&self.selection_mask),
+                    brush_texture,
+                    brush_texture_width: tex_w,
+                    brush_texture_height: tex_h,
+                    brush_texture_scale,
+                    active_mask_editing: self.active_mask_editing,
+                };
+                active_brush.stroke_to(
+                    &mut active_brush_state,
+                    &mut stroke_surface,
+                    pt.x,
+                    pt.y,
+                    pt.pressure,
+                    pt.tilt_x,
+                    pt.tilt_y,
+                    0.016,
+                );
+                self.stroke_id = self.stroke_id.wrapping_add(1);
+            }
+
+            active_layer.end_atomic();
+            self.history
+                .push_command(HistoryCommand::TileEdit {
+                    snapshots: std::mem::take(&mut self.current_stroke_snapshots),
+                });
+            self.document_modified = true;
+            if let Some(r) = &mut self.renderer {
+                r.clear_cache();
+            }
+
+            // Store as vector stroke metadata
+            let v_stroke = crate::canvas::VectorStroke {
+                control_points: points,
+                brush_preset_id: preset_id,
+                color: stroke_color,
+                width: 1.0,
+            };
+            if active_layer.vector_data.is_none() {
+                active_layer.vector_data = Some(crate::canvas::VectorLayer {
+                    strokes: Vec::new(),
+                    display_mode: Default::default(),
+                });
+            }
+            if let Some(v_data) = &mut active_layer.vector_data {
+                v_data.strokes.push(v_stroke);
+            }
+        }
+    }
+
+    fn gradient_tool_execute(&mut self, start: egui::Vec2, end: egui::Vec2) {
+        let fg = self.active_color();
+        let bg = self.background_color;
+        let mode = self.gradient_mode;
+        let gtype = self.gradient_type;
+
+        let mut dirty: Vec<(i32, i32)> = Vec::new();
+        let mut snapshots: Vec<crate::history::TileSnapshot> = Vec::new();
+        if let Some(active_layer) = self.layers.get_mut(&self.active_layer_id) {
+            let tile_keys: Vec<(i32, i32)> =
+                active_layer.tiles.keys().copied().collect();
+            for &tk in &tile_keys {
+                if let Some(tile) = active_layer.tiles.get(&tk) {
+                    let mut pixels = self.history.alloc_tile();
+                    *pixels = *tile.pixels;
+                    snapshots.push(crate::history::TileSnapshot {
+                        layer_id: active_layer.id,
+                        coords: tk,
+                        pixels: Some(pixels),
+                        is_mask: false,
+                    });
+                }
+            }
+
+            let tx_min = (0f32.max(0.0) as i32).div_euclid(64);
+            let ty_min = (0f32.max(0.0) as i32).div_euclid(64);
+            let tx_max =
+                ((self.canvas_width as f32 - 1.0).max(0.0) as i32).div_euclid(64);
+            let ty_max =
+                ((self.canvas_height as f32 - 1.0).max(0.0) as i32).div_euclid(64);
+            for ty in ty_min..=ty_max {
+                for tx in tx_min..=tx_max {
+                    let tile = active_layer
+                        .tiles
+                        .entry((tx, ty))
+                        .or_insert_with(|| crate::canvas::Tile::new());
+                    let mut modified = false;
+                    for ly in 0i32..64 {
+                        for lx in 0i32..64 {
+                            let wx = (tx * 64 + lx) as f32;
+                            let wy = (ty * 64 + ly) as f32;
+                            if self.selection_mask.is_active {
+                                let sel = self
+                                    .selection_mask
+                                    .get_value(wx as i32, wy as i32);
+                                if sel == 0 {
+                                    continue;
+                                }
+                            }
+                            let t = if mode == 0 {
+                                let dx = end.x - start.x;
+                                let dy = end.y - start.y;
+                                let len_sq = dx * dx + dy * dy;
+                                if len_sq < 1.0 {
+                                    0.0
+                                } else {
+                                    ((wx - start.x) * dx + (wy - start.y) * dy) / len_sq
+                                }
+                            } else {
+                                let dx = wx - start.x;
+                                let dy = wy - start.y;
+                                let edx = end.x - start.x;
+                                let edy = end.y - start.y;
+                                let er = (edx * edx + edy * edy).sqrt().max(1.0);
+                                (dx * dx + dy * dy).sqrt() / er
+                            };
+                            let t = t.clamp(0.0, 1.0);
+                            let color = match gtype {
+                                1 => {
+                                    let a = (1.0 - t) * 32768.0;
+                                    [
+                                        (fg[0] * 32768.0) as u16,
+                                        (fg[1] * 32768.0) as u16,
+                                        (fg[2] * 32768.0) as u16,
+                                        a as u16,
+                                    ]
+                                }
+                                2 => {
+                                    let a = (1.0 - t) * 32768.0;
+                                    [
+                                        (bg[0] * 32768.0) as u16,
+                                        (bg[1] * 32768.0) as u16,
+                                        (bg[2] * 32768.0) as u16,
+                                        a as u16,
+                                    ]
+                                }
+                                _ => {
+                                    let r = fg[0] * (1.0 - t) + bg[0] * t;
+                                    let g = fg[1] * (1.0 - t) + bg[1] * t;
+                                    let b = fg[2] * (1.0 - t) + bg[2] * t;
+                                    [
+                                        (r * 32768.0) as u16,
+                                        (g * 32768.0) as u16,
+                                        (b * 32768.0) as u16,
+                                        32768,
+                                    ]
+                                }
+                            };
+                            tile.pixels[ly as usize][lx as usize] = color;
+                            modified = true;
+                        }
+                    }
+                    if modified {
+                        dirty.push((tx, ty));
+                    }
+                }
+            }
+            if !dirty.is_empty() {
+                let new_keys: Vec<(i32, i32)> =
+                    active_layer.tiles.keys().copied().collect();
+                for &tk in &new_keys {
+                    if !tile_keys.contains(&tk) {
+                        snapshots.push(crate::history::TileSnapshot {
+                            layer_id: active_layer.id,
+                            coords: tk,
+                            pixels: None,
+                            is_mask: false,
+                        });
+                    }
+                }
                 self.history
                     .push_command(HistoryCommand::TileEdit { snapshots });
                 self.document_modified = true;
@@ -4496,160 +4775,6 @@ impl eframe::App for PaintApp {
                     }
                 }
 
-                // Handle gradient tool drag
-                if pointer_down
-                    && matches!(self.active_tool, ToolId::Gradient)
-                    && self.panel_drag.is_none()
-                    && self.floating_drag_panel.is_none()
-                {
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let world_pos = self.screen_to_world(ptr_pos, rect);
-                        if !self.gradient_dragging {
-                            self.gradient_dragging = true;
-                            self.gradient_start = Some(world_pos);
-                        }
-                        self.gradient_end = Some(world_pos);
-                        ctx.request_repaint();
-                    }
-                }
-                if !pointer_down
-                    && self.gradient_dragging
-                    && matches!(self.active_tool, ToolId::Gradient)
-                {
-                    if let (Some(start), Some(end)) = (self.gradient_start, self.gradient_end) {
-                        let fg = self.active_color();
-                        let bg = self.background_color;
-                        let mode = self.gradient_mode;
-                        let gtype = self.gradient_type;
-                        if let Some(layer) = self.layers.get_mut(&self.active_layer_id) {
-                            // Capture snapshots
-                            let mut snapshots: Vec<crate::history::TileSnapshot> = Vec::new();
-                            let tile_keys: Vec<(i32, i32)> = layer.tiles.keys().copied().collect();
-                            for &tk in &tile_keys {
-                                if let Some(tile) = layer.tiles.get(&tk) {
-                                    let mut pixels = self.history.alloc_tile();
-                                    *pixels = *tile.pixels;
-                                    snapshots.push(crate::history::TileSnapshot {
-                                        layer_id: layer.id,
-                                        coords: tk,
-                                        pixels: Some(pixels),
-                                        is_mask: false,
-                                    });
-                                }
-                            }
-                            let mut dirty = Vec::new();
-                            let tx_min = (0f32.max(0.0) as i32).div_euclid(64);
-                            let ty_min = (0f32.max(0.0) as i32).div_euclid(64);
-                            let tx_max =
-                                ((self.canvas_width as f32 - 1.0).max(0.0) as i32).div_euclid(64);
-                            let ty_max =
-                                ((self.canvas_height as f32 - 1.0).max(0.0) as i32).div_euclid(64);
-                            for ty in ty_min..=ty_max {
-                                for tx in tx_min..=tx_max {
-                                    let tile = layer
-                                        .tiles
-                                        .entry((tx, ty))
-                                        .or_insert_with(|| crate::canvas::Tile::new());
-                                    let mut modified = false;
-                                    for ly in 0i32..64 {
-                                        for lx in 0i32..64 {
-                                            let wx = (tx * 64 + lx) as f32;
-                                            let wy = (ty * 64 + ly) as f32;
-                                            if self.selection_mask.is_active {
-                                                let sel = self
-                                                    .selection_mask
-                                                    .get_value(wx as i32, wy as i32);
-                                                if sel == 0 {
-                                                    continue;
-                                                }
-                                            }
-                                            let t = if mode == 0 {
-                                                let dx = end.x - start.x;
-                                                let dy = end.y - start.y;
-                                                let len_sq = dx * dx + dy * dy;
-                                                if len_sq < 1.0 {
-                                                    0.0
-                                                } else {
-                                                    ((wx - start.x) * dx + (wy - start.y) * dy)
-                                                        / len_sq
-                                                }
-                                            } else {
-                                                let dx = wx - start.x;
-                                                let dy = wy - start.y;
-                                                let edx = end.x - start.x;
-                                                let edy = end.y - start.y;
-                                                let er = (edx * edx + edy * edy).sqrt().max(1.0);
-                                                (dx * dx + dy * dy).sqrt() / er
-                                            };
-                                            let t = t.clamp(0.0, 1.0);
-                                            let color = match gtype {
-                                                1 => {
-                                                    let a = (1.0 - t) * 32768.0;
-                                                    [
-                                                        (fg[0] * 32768.0) as u16,
-                                                        (fg[1] * 32768.0) as u16,
-                                                        (fg[2] * 32768.0) as u16,
-                                                        a as u16,
-                                                    ]
-                                                }
-                                                2 => {
-                                                    let a = (1.0 - t) * 32768.0;
-                                                    [
-                                                        (bg[0] * 32768.0) as u16,
-                                                        (bg[1] * 32768.0) as u16,
-                                                        (bg[2] * 32768.0) as u16,
-                                                        a as u16,
-                                                    ]
-                                                }
-                                                _ => {
-                                                    let r = fg[0] * (1.0 - t) + bg[0] * t;
-                                                    let g = fg[1] * (1.0 - t) + bg[1] * t;
-                                                    let b = fg[2] * (1.0 - t) + bg[2] * t;
-                                                    [
-                                                        (r * 32768.0) as u16,
-                                                        (g * 32768.0) as u16,
-                                                        (b * 32768.0) as u16,
-                                                        32768,
-                                                    ]
-                                                }
-                                            };
-                                            tile.pixels[ly as usize][lx as usize] = color;
-                                            modified = true;
-                                        }
-                                    }
-                                    if modified {
-                                        dirty.push((tx, ty));
-                                    }
-                                }
-                            }
-                            if !dirty.is_empty() {
-                                let new_keys: Vec<(i32, i32)> =
-                                    layer.tiles.keys().copied().collect();
-                                for &tk in &new_keys {
-                                    if !tile_keys.contains(&tk) {
-                                        snapshots.push(crate::history::TileSnapshot {
-                                            layer_id: layer.id,
-                                            coords: tk,
-                                            pixels: None,
-                                            is_mask: false,
-                                        });
-                                    }
-                                }
-                                self.history
-                                    .push_command(HistoryCommand::TileEdit { snapshots });
-                                self.document_modified = true;
-                                if let Some(r) = &mut self.renderer {
-                                    r.clear_cache();
-                                }
-                            }
-                        }
-                    }
-                    self.gradient_dragging = false;
-                    self.gradient_start = None;
-                    self.gradient_end = None;
-                    ctx.request_repaint();
-                }
-
                 // ── Trait-based tool event dispatch ──
                 let trait_handled = {
                     let tool_ctx = tools::ToolContext {
@@ -4750,201 +4875,6 @@ impl eframe::App for PaintApp {
                                 self.record_color(col);
                             }
                         }
-                    }
-                }
-
-                // =============================================================
-                // VECTOR PEN TOOL — auto-switch to vector layer and draw
-                // =============================================================
-                if pointer_clicked && matches!(self.active_tool, ToolId::VectorPen) {
-                    let is_vector = self
-                        .layers
-                        .get(&self.active_layer_id)
-                        .map(|l| matches!(l.kind, crate::canvas::LayerType::Vector))
-                        .unwrap_or(false);
-                    if !is_vector {
-                        self.create_vector_layer();
-                        ctx.request_repaint();
-                    }
-                }
-
-                // =============================================================
-                // CURVE TOOL — place 4 control points, then generate a curve
-                // =============================================================
-                if pointer_clicked && matches!(self.active_tool, ToolId::Curve) {
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let world_pos = self.screen_to_world(ptr_pos, rect);
-                        let pressure = self.last_ptr_pressure;
-
-                        let is_vector = self
-                            .layers
-                            .get(&self.active_layer_id)
-                            .map(|l| matches!(l.kind, crate::canvas::LayerType::Vector))
-                            .unwrap_or(false);
-                        if !is_vector {
-                            self.create_vector_layer();
-                        }
-
-                        self.curve_points.push(crate::canvas::VectorControlPoint {
-                            x: world_pos.x,
-                            y: world_pos.y,
-                            pressure,
-                            tilt_x: 0.0,
-                            tilt_y: 0.0,
-                        });
-
-                        if self.curve_points.len() >= 4 {
-                            // Generate a smooth stroke through the 4 control points
-                            let sampled =
-                                crate::vector::sample_stroke(&self.curve_points, 2.0, 0.5);
-
-                            let layer_id = self.active_layer_id;
-                            let layer_exists = self.layers.contains_key(&layer_id);
-                            if !layer_exists {
-                                self.create_vector_layer();
-                            }
-
-                            let preset_id;
-                            let brush_texture_info;
-                            let brush_texture_scale;
-                            {
-                                self.sync_brush_settings();
-                                let preset = &self.presets[self.active_preset_index];
-                                preset_id = preset.id;
-                                brush_texture_scale = preset.texture_scale;
-                                let tex_idx = preset.texture_id as usize;
-                                brush_texture_info =
-                                    if tex_idx > 0 && tex_idx < self.brush_textures.len() {
-                                        let t = &self.brush_textures[tex_idx];
-                                        (Some(t.pixels.as_slice()), t.width, t.height)
-                                    } else {
-                                        (None, 256, 256)
-                                    };
-                            }
-                            let (brush_texture, tex_w, tex_h) = brush_texture_info;
-
-                            let active_brush = &self.brushes[self.active_preset_index];
-                            let mut active_brush_state =
-                                self.brush_states[self.active_preset_index].clone();
-                            let stroke_color = self.active_color();
-
-                            if let Some(active_layer) = self.layers.get_mut(&layer_id) {
-                                active_layer.begin_atomic();
-
-                                for pt in &sampled {
-                                    let mut stroke_surface = StrokeSurface {
-                                        layer: active_layer,
-                                        history: &mut self.history,
-                                        snapshots: &mut self.current_stroke_snapshots,
-                                        stroke_id: self.stroke_id,
-                                        canvas_width: self.canvas_width,
-                                        canvas_height: self.canvas_height,
-                                        lock_canvas_bounds: self.lock_canvas_bounds,
-                                        selection_mask: Some(&self.selection_mask),
-                                        brush_texture,
-                                        brush_texture_width: tex_w,
-                                        brush_texture_height: tex_h,
-                                        brush_texture_scale,
-                                        active_mask_editing: self.active_mask_editing,
-                                    };
-                                    active_brush.stroke_to(
-                                        &mut active_brush_state,
-                                        &mut stroke_surface,
-                                        pt.x,
-                                        pt.y,
-                                        pt.pressure,
-                                        pt.tilt_x,
-                                        pt.tilt_y,
-                                        0.016,
-                                    );
-                                    self.performance_hud
-                                        .note_stroke_point(ctx.input(|i| i.time) as f32);
-                                }
-
-                                let _dirty = active_layer.end_atomic();
-                                let snapshots = std::mem::take(&mut self.current_stroke_snapshots);
-                                if !snapshots.is_empty() {
-                                    self.history
-                                        .push_command(HistoryCommand::TileEdit { snapshots });
-                                    self.document_modified = true;
-                                }
-                                if let Some(r) = &mut self.renderer {
-                                    r.clear_cache();
-                                }
-
-                                // Store as vector stroke
-                                let v_stroke = crate::canvas::VectorStroke {
-                                    control_points: self.curve_points.clone(),
-                                    brush_preset_id: preset_id,
-                                    color: stroke_color,
-                                    width: 1.0,
-                                };
-                                if active_layer.vector_data.is_none() {
-                                    active_layer.vector_data = Some(crate::canvas::VectorLayer {
-                                        strokes: Vec::new(),
-                                        display_mode: Default::default(),
-                                    });
-                                }
-                                if let Some(v_data) = &mut active_layer.vector_data {
-                                    v_data.strokes.push(v_stroke);
-                                }
-                            }
-                            self.curve_points.clear();
-                            ctx.request_repaint();
-                        }
-                    }
-                }
-
-                // =============================================================
-                // EDIT CP TOOL — select and drag vector control points
-                // =============================================================
-                if matches!(self.active_tool, ToolId::EditCP) {
-                    if pointer_clicked {
-                        if let Some(ptr_pos) = response.hover_pos() {
-                            let world_pos = self.screen_to_world(ptr_pos, rect);
-                            if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
-                                if let Some(v_data) = &active_layer.vector_data {
-                                    let hit = crate::vector::hit_test_control_point(
-                                        &v_data.strokes,
-                                        world_pos.x,
-                                        world_pos.y,
-                                    );
-                                    if let Some((si, pi)) = hit {
-                                        self.edit_cp_selection = Some((si, pi));
-                                        self.edit_cp_dragging = true;
-                                    } else {
-                                        self.edit_cp_selection = None;
-                                        self.edit_cp_dragging = false;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if self.edit_cp_dragging && pointer_down {
-                        if let Some(ptr_pos) = response.hover_pos() {
-                            let world_pos = self.screen_to_world(ptr_pos, rect);
-                            if let Some((si, pi)) = self.edit_cp_selection {
-                                if let Some(active_layer) =
-                                    self.layers.get_mut(&self.active_layer_id)
-                                {
-                                    if let Some(v_data) = &mut active_layer.vector_data {
-                                        if si < v_data.strokes.len()
-                                            && pi < v_data.strokes[si].control_points.len()
-                                        {
-                                            v_data.strokes[si].control_points[pi].x = world_pos.x;
-                                            v_data.strokes[si].control_points[pi].y = world_pos.y;
-                                        }
-                                    }
-                                }
-                                // Live-preview update of vector layer rasterization
-                                self.redraw_vector_layer(self.active_layer_id);
-                            }
-                        }
-                    }
-
-                    if !pointer_down {
-                        self.edit_cp_dragging = false;
                     }
                 }
                 } // end if !trait_handled — inline dispatch skip
@@ -5661,37 +5591,6 @@ impl eframe::App for PaintApp {
                     }
                 }
 
-                // GRADIENT TOOL PREVIEW
-                if matches!(self.active_tool, ToolId::Gradient) && self.gradient_dragging {
-                    if let (Some(start), Some(end)) = (self.gradient_start, self.gradient_end) {
-                        let a = self.world_to_screen(egui::pos2(start.x, start.y), rect);
-                        let b = self.world_to_screen(egui::pos2(end.x, end.y), rect);
-                        ui.painter().line_segment(
-                            [a, b],
-                            egui::Stroke::new(
-                                2.0,
-                                egui::Color32::from_rgba_premultiplied(100, 200, 255, 200),
-                            ),
-                        );
-                        ui.painter()
-                            .circle_filled(a, 4.0, egui::Color32::from_rgb(100, 200, 255));
-                        ui.painter()
-                            .circle_filled(b, 4.0, egui::Color32::from_rgb(255, 200, 100));
-                        // Draw perpendicular bars at start/end to indicate fill region
-                        let dir = (b - a).normalized();
-                        let perp = egui::vec2(-dir.y, dir.x);
-                        for (pt, col) in [
-                            (a, egui::Color32::WHITE),
-                            (b, egui::Color32::from_gray(100)),
-                        ] {
-                            let p1 = pt + perp * 10.0;
-                            let p2 = pt - perp * 10.0;
-                            ui.painter()
-                                .line_segment([p1, p2], egui::Stroke::new(1.5, col));
-                        }
-                    }
-                }
-
                 // ── Trait-based tool overlay drawing ──
                 self.tool_registry.draw_active_overlay(
                     ui.painter(),
@@ -5958,113 +5857,53 @@ impl eframe::App for PaintApp {
                     );
                 }
 
-                // =============================================================
-                // VECTOR TOOLS OVERLAY — show control points and previews
-                // =============================================================
-                if matches!(
-                    self.active_tool,
-                    ToolId::VectorPen | ToolId::Curve | ToolId::EditCP
-                ) {
-                    // Show curve preview points
-                    if !self.curve_points.is_empty() && matches!(self.active_tool, ToolId::Curve) {
-                        let cp_color = egui::Color32::from_rgb(0, 180, 255);
-                        for cp in &self.curve_points {
-                            let screen_pt = self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
-                            ui.painter().circle_filled(screen_pt, 4.0, cp_color);
-                            ui.painter().circle_stroke(
-                                screen_pt,
-                                4.0,
-                                egui::Stroke::new(1.0, egui::Color32::WHITE),
-                            );
-                        }
+                // Show vector stroke control points (EditCP tool)
+                if matches!(self.active_tool, ToolId::EditCP) {
+                    if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                        if let Some(v_data) = &active_layer.vector_data {
+                            let cp_color = egui::Color32::from_rgb(0, 200, 100);
+                            let sel_color = egui::Color32::from_rgb(255, 200, 0);
+                            for (si, stroke) in v_data.strokes.iter().enumerate() {
+                                for (pi, cp) in stroke.control_points.iter().enumerate() {
+                                    let screen_pt =
+                                        self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
+                                    let is_selected = self.edit_cp_selection == Some((si, pi));
+                                    let color = if is_selected { sel_color } else { cp_color };
+                                    let radius = if is_selected { 5.0 } else { 3.0 };
+                                    ui.painter().circle_filled(screen_pt, radius, color);
+                                    ui.painter().circle_stroke(
+                                        screen_pt,
+                                        radius,
+                                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                                    );
+                                }
 
-                        // Preview curve connection lines
-                        if self.curve_points.len() >= 2 {
-                            for i in 0..self.curve_points.len() - 1 {
-                                let a = self.world_to_screen(
-                                    egui::Pos2::new(self.curve_points[i].x, self.curve_points[i].y),
-                                    rect,
-                                );
-                                let b = self.world_to_screen(
-                                    egui::Pos2::new(
-                                        self.curve_points[i + 1].x,
-                                        self.curve_points[i + 1].y,
-                                    ),
-                                    rect,
-                                );
-                                ui.painter().line_segment(
-                                    [a, b],
-                                    egui::Stroke::new(
-                                        1.0,
-                                        egui::Color32::from_rgba_premultiplied(0, 180, 255, 100),
-                                    ),
-                                );
-                            }
-                        }
-
-                        // Show number of points placed
-                        let num_label = format!("{}/4 points placed", self.curve_points.len());
-                        if let Some(cp) = self.curve_points.last() {
-                            let screen_pt = self
-                                .world_to_screen(egui::Pos2::new(cp.x + 10.0, cp.y - 20.0), rect);
-                            ui.painter().text(
-                                screen_pt,
-                                egui::Align2::LEFT_BOTTOM,
-                                num_label,
-                                egui::FontId::proportional(12.0),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                    }
-
-                    // Show vector stroke control points (EditCP tool)
-                    if matches!(self.active_tool, ToolId::EditCP) {
-                        if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
-                            if let Some(v_data) = &active_layer.vector_data {
-                                let cp_color = egui::Color32::from_rgb(0, 200, 100);
-                                let sel_color = egui::Color32::from_rgb(255, 200, 0);
-                                for (si, stroke) in v_data.strokes.iter().enumerate() {
-                                    for (pi, cp) in stroke.control_points.iter().enumerate() {
-                                        let screen_pt =
-                                            self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
-                                        let is_selected = self.edit_cp_selection == Some((si, pi));
-                                        let color = if is_selected { sel_color } else { cp_color };
-                                        let radius = if is_selected { 5.0 } else { 3.0 };
-                                        ui.painter().circle_filled(screen_pt, radius, color);
-                                        ui.painter().circle_stroke(
-                                            screen_pt,
-                                            radius,
-                                            egui::Stroke::new(1.0, egui::Color32::WHITE),
+                                // Draw stroke connection lines
+                                if stroke.control_points.len() >= 2 {
+                                    for i in 0..stroke.control_points.len() - 1 {
+                                        let a = self.world_to_screen(
+                                            egui::Pos2::new(
+                                                stroke.control_points[i].x,
+                                                stroke.control_points[i].y,
+                                            ),
+                                            rect,
                                         );
-                                    }
-
-                                    // Draw stroke connection lines
-                                    if stroke.control_points.len() >= 2 {
-                                        for i in 0..stroke.control_points.len() - 1 {
-                                            let a = self.world_to_screen(
-                                                egui::Pos2::new(
-                                                    stroke.control_points[i].x,
-                                                    stroke.control_points[i].y,
+                                        let b = self.world_to_screen(
+                                            egui::Pos2::new(
+                                                stroke.control_points[i + 1].x,
+                                                stroke.control_points[i + 1].y,
+                                            ),
+                                            rect,
+                                        );
+                                        ui.painter().line_segment(
+                                            [a, b],
+                                            egui::Stroke::new(
+                                                0.5,
+                                                egui::Color32::from_rgba_premultiplied(
+                                                    0, 200, 100, 80,
                                                 ),
-                                                rect,
-                                            );
-                                            let b = self.world_to_screen(
-                                                egui::Pos2::new(
-                                                    stroke.control_points[i + 1].x,
-                                                    stroke.control_points[i + 1].y,
-                                                ),
-                                                rect,
-                                            );
-                                            ui.painter().line_segment(
-                                                [a, b],
-                                                egui::Stroke::new(
-                                                    0.5,
-                                                    egui::Color32::from_rgba_premultiplied(
-                                                        0, 200, 100, 80,
-                                                    ),
-                                                ),
-                                            );
-                                        }
+                                            ),
+                                        );
                                     }
                                 }
                             }
@@ -7018,7 +6857,6 @@ mod tests {
             brush_textures: Vec::new(),
             save_sender: std::sync::mpsc::channel().0,
             current_vector_points: Vec::new(),
-            curve_points: Vec::new(),
             edit_cp_selection: None,
             edit_cp_dragging: false,
             document_path: String::new(),
@@ -7034,9 +6872,6 @@ mod tests {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
-            gradient_start: None,
-            gradient_end: None,
-            gradient_dragging: false,
             gradient_mode: 0,
             gradient_type: 0,
             is_selecting: false,
@@ -7227,7 +7062,6 @@ mod tests {
             brush_textures: Vec::new(),
             save_sender: std::sync::mpsc::channel().0,
             current_vector_points: Vec::new(),
-            curve_points: Vec::new(),
             edit_cp_selection: None,
             edit_cp_dragging: false,
             document_path: String::new(),
@@ -7243,9 +7077,6 @@ mod tests {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
-            gradient_start: None,
-            gradient_end: None,
-            gradient_dragging: false,
             gradient_mode: 0,
             gradient_type: 0,
             is_selecting: false,
