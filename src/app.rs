@@ -7,7 +7,7 @@ use crate::input::{
 };
 use crate::renderer::WgpuRenderer;
 use crate::shortcuts::ShortcutManager;
-use crate::tools::{fill, selection, transform as transform_tool};
+use crate::tools::{self, fill, selection, transform as transform_tool};
 
 use ahash::AHashMap;
 use egui::{Color32, Pos2, Rect, Vec2, Visuals};
@@ -2077,6 +2077,54 @@ impl PaintApp {
     pub fn set_active_tool(&mut self, id: ToolId) {
         self.active_tool = id;
         self.tool_registry.activate(id);
+    }
+
+    /// Dispatch events to the trait-based tool system.
+    /// Returns true if the trait tool handled the event (prevents inline dispatch).
+    pub fn dispatch_tool_event(&mut self, ctx: &tools::ToolContext) -> bool {
+        match self.tool_registry.handle_active_event(ctx) {
+            tools::ToolOutcome::None => false,
+            tools::ToolOutcome::Handled => true,
+            tools::ToolOutcome::ColorPicked { x, y } => {
+                if x >= 0
+                    && x < self.canvas_width as i32
+                    && y >= 0
+                    && y < self.canvas_height as i32
+                {
+                    let all_layers: Vec<&Layer> = self
+                        .layer_order
+                        .iter()
+                        .filter_map(|id| self.layers.get(id))
+                        .collect();
+                    if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                        let sampled = fill::sample_reference(
+                            &all_layers,
+                            active_layer,
+                            fill::FillReference::AllVisibleLayers,
+                            x,
+                            y,
+                        );
+                        let a = sampled[3] as f32 / 32768.0;
+                        let mut col = [0.0; 3];
+                        if a > 0.0 {
+                            col[0] = (sampled[0] as f32 / 32768.0) / a;
+                            col[1] = (sampled[1] as f32 / 32768.0) / a;
+                            col[2] = (sampled[2] as f32 / 32768.0) / a;
+                        } else {
+                            col[0] = sampled[0] as f32 / 32768.0;
+                            col[1] = sampled[1] as f32 / 32768.0;
+                            col[2] = sampled[2] as f32 / 32768.0;
+                        }
+                        col[0] = col[0].clamp(0.0, 1.0);
+                        col[1] = col[1].clamp(0.0, 1.0);
+                        col[2] = col[2].clamp(0.0, 1.0);
+                        self.set_active_color(col);
+                        self.record_color(col);
+                    }
+                }
+                true
+            }
+        }
     }
 
     pub fn command(&mut self, cmd: CommandId) {
@@ -4606,12 +4654,27 @@ impl eframe::App for PaintApp {
                     ctx.request_repaint();
                 }
 
-                // ── Trait-based tool event dispatch (reserved) ──
-                // TODO: Wire trait dispatch once tools are fully ported.
-                // The borrow split between tool_registry and PaintApp is handled
-                // via PaintApp::dispatch_tool_event() when needed.
-                let trait_handled = false;
-
+                // ── Trait-based tool event dispatch ──
+                let trait_handled = {
+                    let tool_ctx = tools::ToolContext {
+                        viewport_offset: self.viewport_offset,
+                        viewport_zoom: self.viewport_zoom,
+                        rotation_angle: self.rotation_angle,
+                        mirror_horizontal: self.mirror_horizontal,
+                        screen_rect: rect,
+                        pointer_down: response.dragged(),
+                        pointer_clicked,
+                        pointer_drag_stopped: response.drag_stopped(),
+                        pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
+                        pointer_pressure: self.last_ptr_pressure,
+                    };
+                    self.dispatch_tool_event(&tool_ctx)
+                };
+                if trait_handled {
+                    // Trait tool consumed the event; skip inline dispatch.
+                    // All the remaining inline dispatch blocks are inside
+                    // `if !trait_handled { ... }` below.
+                }
                 if !trait_handled {
                 // Handle magic wand click
                 if pointer_clicked && matches!(self.active_tool, ToolId::MagicWand) {

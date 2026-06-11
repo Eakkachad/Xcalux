@@ -20,6 +20,7 @@ pub struct ToolContext {
     pub screen_rect: Rect,
     pub pointer_down: bool,
     pub pointer_clicked: bool,
+    pub pointer_drag_stopped: bool,
     pub pointer_pos: Option<Pos2>,
     pub pointer_pressure: f32,
 }
@@ -74,21 +75,31 @@ impl ToolContext {
     }
 }
 
+// ── Outcome returned by Tool::handle_event ──
+
+pub enum ToolOutcome {
+    /// Tool did not handle the event; fall through to inline dispatch.
+    None,
+    /// Tool handled the event; no further processing needed.
+    Handled,
+    /// Color picker sampled a color at the given world-space pixel.
+    ColorPicked { x: i32, y: i32 },
+}
+
 // ── Tool trait ──
 
 pub trait Tool: Send {
     fn name(&self) -> &'static str;
     fn tool_id(&self) -> ToolId;
 
-    /// Handle a pointer event on the canvas. Return true if the event was consumed
-    /// (prevents further tool processing for this frame).
-    fn handle_event(&mut self, app: &mut crate::app::PaintApp, ctx: &ToolContext) -> bool;
+    /// Handle a pointer event on the canvas.
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome;
 
     /// Draw tool-specific overlays on top of the canvas but below the cursor.
-    fn draw_overlay(&self, app: &crate::app::PaintApp, painter: &egui::Painter, ctx: &ToolContext);
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext);
 
     /// Draw a tool-specific cursor. Return true if a custom cursor was drawn (hides the default).
-    fn draw_cursor(&self, app: &crate::app::PaintApp, screen_pos: Pos2, painter: &egui::Painter) -> bool;
+    fn draw_cursor(&self, screen_pos: Pos2, painter: &egui::Painter) -> bool;
 }
 
 // ── ToolRegistry ──
@@ -115,23 +126,23 @@ impl ToolRegistry {
         self.tools.get(&self.active).map(|t| t.as_ref())
     }
 
-    pub fn handle_active_event(&mut self, app: &mut crate::app::PaintApp, ctx: &ToolContext) -> bool {
+    pub fn handle_active_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
         self.tools
             .get_mut(&self.active)
-            .map(|t| t.handle_event(app, ctx))
-            .unwrap_or(false)
+            .map(|t| t.handle_event(ctx))
+            .unwrap_or(ToolOutcome::None)
     }
 
-    pub fn draw_active_overlay(&self, app: &crate::app::PaintApp, painter: &egui::Painter, ctx: &ToolContext) {
+    pub fn draw_active_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
         if let Some(tool) = self.tools.get(&self.active) {
-            tool.draw_overlay(app, painter, ctx);
+            tool.draw_overlay(painter, ctx);
         }
     }
 
-    pub fn draw_active_cursor(&self, app: &crate::app::PaintApp, screen_pos: egui::Pos2, painter: &egui::Painter) -> bool {
+    pub fn draw_active_cursor(&self, screen_pos: egui::Pos2, painter: &egui::Painter) -> bool {
         self.tools
             .get(&self.active)
-            .map(|t| t.draw_cursor(app, screen_pos, painter))
+            .map(|t| t.draw_cursor(screen_pos, painter))
             .unwrap_or(false)
     }
 
@@ -163,17 +174,13 @@ impl Tool for HandTool {
     fn name(&self) -> &'static str { "Hand" }
     fn tool_id(&self) -> ToolId { ToolId::Hand }
 
-    fn handle_event(&mut self, _app: &mut crate::app::PaintApp, _ctx: &ToolContext) -> bool {
-        // Hand tool panning is handled in the viewport (always active with Space key).
-        // The tool just needs to exist for toolbar/bookkeeping.
-        false
+    fn handle_event(&mut self, _ctx: &ToolContext) -> ToolOutcome {
+        ToolOutcome::None
     }
 
-    fn draw_overlay(&self, _app: &crate::app::PaintApp, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _app: &crate::app::PaintApp, _screen_pos: Pos2, _painter: &egui::Painter) -> bool {
-        false
-    }
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }
 
 pub struct ZoomTool;
@@ -181,15 +188,13 @@ impl Tool for ZoomTool {
     fn name(&self) -> &'static str { "Zoom" }
     fn tool_id(&self) -> ToolId { ToolId::Zoom }
 
-    fn handle_event(&mut self, _app: &mut crate::app::PaintApp, _ctx: &ToolContext) -> bool {
-        false
+    fn handle_event(&mut self, _ctx: &ToolContext) -> ToolOutcome {
+        ToolOutcome::None
     }
 
-    fn draw_overlay(&self, _app: &crate::app::PaintApp, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _app: &crate::app::PaintApp, _screen_pos: Pos2, _painter: &egui::Painter) -> bool {
-        false
-    }
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }
 
 pub struct RotateViewTool;
@@ -197,15 +202,13 @@ impl Tool for RotateViewTool {
     fn name(&self) -> &'static str { "Rotate View" }
     fn tool_id(&self) -> ToolId { ToolId::RotateView }
 
-    fn handle_event(&mut self, _app: &mut crate::app::PaintApp, _ctx: &ToolContext) -> bool {
-        false
+    fn handle_event(&mut self, _ctx: &ToolContext) -> ToolOutcome {
+        ToolOutcome::None
     }
 
-    fn draw_overlay(&self, _app: &crate::app::PaintApp, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _app: &crate::app::PaintApp, _screen_pos: Pos2, _painter: &egui::Painter) -> bool {
-        false
-    }
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }
 
 pub struct ColorPickerTool;
@@ -213,16 +216,19 @@ impl Tool for ColorPickerTool {
     fn name(&self) -> &'static str { "Color Picker" }
     fn tool_id(&self) -> ToolId { ToolId::ColorPicker }
 
-    fn handle_event(&mut self, _app: &mut crate::app::PaintApp, _ctx: &ToolContext) -> bool {
-        // ColorPicker is still handled by the inline dispatch in app.rs for now.
-        false
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked || ctx.pointer_drag_stopped {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                return ToolOutcome::ColorPicked { x: world.x as i32, y: world.y as i32 };
+            }
+        }
+        ToolOutcome::None
     }
 
-    fn draw_overlay(&self, _app: &crate::app::PaintApp, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _app: &crate::app::PaintApp, _screen_pos: Pos2, _painter: &egui::Painter) -> bool {
-        false
-    }
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }
 
 pub struct MoveTool;
@@ -230,14 +236,11 @@ impl Tool for MoveTool {
     fn name(&self) -> &'static str { "Move" }
     fn tool_id(&self) -> ToolId { ToolId::Move }
 
-    fn handle_event(&mut self, _app: &mut crate::app::PaintApp, _ctx: &ToolContext) -> bool {
-        // Move tool also handles reference image dragging in app.rs directly.
-        false
+    fn handle_event(&mut self, _ctx: &ToolContext) -> ToolOutcome {
+        ToolOutcome::None
     }
 
-    fn draw_overlay(&self, _app: &crate::app::PaintApp, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _app: &crate::app::PaintApp, _screen_pos: Pos2, _painter: &egui::Painter) -> bool {
-        false
-    }
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }
