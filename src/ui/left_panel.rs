@@ -280,7 +280,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 draw_dashed_circle(ui.painter(), center, 7.0, stroke);
             }
             if btn_resp.clicked() {
-                app.active_tool = active_shape_tool;
+                app.set_active_tool(active_shape_tool);
                 ctx.request_repaint();
             }
             btn_resp.context_menu(|ui| {
@@ -288,7 +288,7 @@ pub(crate) fn draw_tools_and_presets_content(
                     .selectable_label(app.active_tool == ToolId::RectSelect, "Rectangle Selection")
                     .clicked()
                 {
-                    app.active_tool = ToolId::RectSelect;
+                    app.set_active_tool(ToolId::RectSelect);
                     ui.close_menu();
                 }
                 if ui
@@ -298,7 +298,7 @@ pub(crate) fn draw_tools_and_presets_content(
                     )
                     .clicked()
                 {
-                    app.active_tool = ToolId::EllipseSelect;
+                    app.set_active_tool(ToolId::EllipseSelect);
                     ui.close_menu();
                 }
             });
@@ -348,7 +348,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 }
             }
             if btn_resp.clicked() {
-                app.active_tool = active_lasso_tool;
+                app.set_active_tool(active_lasso_tool);
                 ctx.request_repaint();
             }
             btn_resp.context_menu(|ui| {
@@ -356,7 +356,7 @@ pub(crate) fn draw_tools_and_presets_content(
                     .selectable_label(app.active_tool == ToolId::Lasso, "Free Lasso Selection")
                     .clicked()
                 {
-                    app.active_tool = ToolId::Lasso;
+                    app.set_active_tool(ToolId::Lasso);
                     ui.close_menu();
                 }
                 if ui
@@ -366,7 +366,7 @@ pub(crate) fn draw_tools_and_presets_content(
                     )
                     .clicked()
                 {
-                    app.active_tool = ToolId::PolygonLasso;
+                    app.set_active_tool(ToolId::PolygonLasso);
                     ui.close_menu();
                 }
             });
@@ -406,7 +406,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 sparkle_stroke,
             );
             if btn_resp.clicked() {
-                app.active_tool = ToolId::MagicWand;
+                app.set_active_tool(ToolId::MagicWand);
                 ctx.request_repaint();
             }
             btn_resp.on_hover_text("Magic Wand Selection");
@@ -438,7 +438,7 @@ pub(crate) fn draw_tools_and_presets_content(
                     .rect_filled(egui::Rect::from_center_size(c, h_size), 0.0, icon_color);
             }
             if btn_resp.clicked() {
-                app.active_tool = ToolId::Transform;
+                app.set_active_tool(ToolId::Transform);
                 ctx.request_repaint();
             }
             btn_resp.on_hover_text("Transform Tool [Ctrl+T]");
@@ -521,7 +521,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 stroke,
             );
             if btn_resp.clicked() {
-                app.active_tool = ToolId::Move;
+                app.set_active_tool(ToolId::Move);
                 ctx.request_repaint();
             }
             btn_resp.on_hover_text("Move Layer Tool");
@@ -546,7 +546,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 egui::Stroke::new(2.5, icon_color),
             );
             if btn_resp.clicked() {
-                app.active_tool = ToolId::Zoom;
+                app.set_active_tool(ToolId::Zoom);
                 ctx.request_repaint();
             }
             btn_resp.on_hover_text("Zoom Canvas");
@@ -578,7 +578,7 @@ pub(crate) fn draw_tools_and_presets_content(
             ui.painter()
                 .line_segment([tip, tip + egui::vec2(-3.0, 3.0)], stroke);
             if btn_resp.clicked() {
-                app.active_tool = ToolId::RotateView;
+                app.set_active_tool(ToolId::RotateView);
                 ctx.request_repaint();
             }
             btn_resp.on_hover_text("Rotate View [R]");
@@ -634,7 +634,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 stroke,
             );
             if btn_resp.clicked() {
-                app.active_tool = ToolId::Hand;
+                app.set_active_tool(ToolId::Hand);
                 ctx.request_repaint();
             }
             btn_resp.on_hover_text("Hand Panning Tool [Space]");
@@ -666,7 +666,7 @@ pub(crate) fn draw_tools_and_presets_content(
                 stroke,
             );
             if btn_resp.clicked() {
-                app.active_tool = ToolId::ColorPicker;
+                app.set_active_tool(ToolId::ColorPicker);
                 ctx.request_repaint();
             }
             btn_resp.on_hover_text("Color Picker (Eyedropper) [Alt/I]");
@@ -701,7 +701,7 @@ pub(crate) fn draw_tools_and_presets_content(
                     egui::Button::new(egui::RichText::new(label).size(12.0)).selected(is_active);
                 let r = ui.add_sized([26.0, 26.0], btn).on_hover_text(tooltip);
                 if r.clicked() {
-                    app.active_tool = tool_id;
+                    app.set_active_tool(tool_id);
                     if tool_id == ToolId::VectorPen {
                         let is_vector = app
                             .layers

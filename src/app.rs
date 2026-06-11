@@ -1459,12 +1459,14 @@ impl PaintApp {
 
         self.active_preset_index = idx;
 
-        let preset = &self.presets[idx];
-        self.active_tool = if preset.is_eraser {
+        let tool_id = if self.presets[idx].is_eraser {
             ToolId::Eraser
         } else {
             ToolId::Brush
         };
+        self.set_active_tool(tool_id);
+
+        let preset = &self.presets[idx];
         self.brush_radius_log = preset.radius_log;
         self.brush_opacity = preset.opacity;
         self.brush_hardness = preset.hardness;
@@ -2920,7 +2922,7 @@ impl PaintApp {
             CommandId::SelectionSmooth => self.selection_ops.show_smooth_dialog = true,
             CommandId::SelectionBorder => self.selection_ops.show_border_dialog = true,
             CommandId::TransformSelection => {
-                self.active_tool = ToolId::Transform;
+                self.set_active_tool(ToolId::Transform);
                 self.start_transform();
             }
             CommandId::ToggleSelectionOverlay => {
@@ -4549,13 +4551,35 @@ impl eframe::App for PaintApp {
                 let mut pointer_clicked =
                     response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
 
+                // ── Trait-based tool event dispatch (runs first) ──
+                let trait_handled = {
+                    let tool_ctx = tools::ToolContext {
+                        viewport_offset: self.viewport_offset,
+                        viewport_zoom: self.viewport_zoom,
+                        rotation_angle: self.rotation_angle,
+                        mirror_horizontal: self.mirror_horizontal,
+                        screen_rect: rect,
+                        pointer_down: response.dragged(),
+                        pointer_clicked,
+                        pointer_drag_stopped: response.drag_stopped(),
+                        pointer_double_clicked: response.double_clicked_by(egui::PointerButton::Primary),
+                        pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
+                        pointer_pressure: self.last_ptr_pressure,
+                    };
+                    self.dispatch_tool_event(&tool_ctx)
+                };
+                if trait_handled {
+                    ctx.request_repaint();
+                }
+
+                // ── Inline fallback: non-ported tools ──
+                if !trait_handled {
                 // Reference Image Dragging Interaction
                 if matches!(self.active_tool, ToolId::Move | ToolId::Reference)
                     && ui.input(|i| i.pointer.any_pressed())
                 {
                     if let Some(ptr_pos) = ui.input(|i| i.pointer.press_origin()) {
                         if response.hovered() {
-                            // Hit test visible reference images from top of stack to bottom
                             let mut hit_idx = None;
                             for (idx, img) in self.reference_images.iter().enumerate().rev() {
                                 if !img.visible {
@@ -4570,14 +4594,11 @@ impl eframe::App for PaintApp {
                             if let Some(idx) = hit_idx {
                                 self.selected_reference_idx = Some(idx);
                                 self.ref_image_dragging = Some(idx);
-
                                 let img = &self.reference_images[idx];
                                 if img.pinned_to_view {
-                                    // Position in viewport/screen space
                                     self.ref_image_drag_offset =
                                         img.world_pos - (ptr_pos - rect.min);
                                 } else {
-                                    // Position in world space
                                     let ptr_world = self.screen_to_world(ptr_pos, rect);
                                     self.ref_image_drag_offset = img.world_pos - ptr_world;
                                 }
@@ -4585,7 +4606,6 @@ impl eframe::App for PaintApp {
                         }
                     }
                 }
-
                 if let Some(idx) = self.ref_image_dragging {
                     if idx < self.reference_images.len() {
                         if ui.input(|i| i.pointer.any_down()) {
@@ -4617,10 +4637,7 @@ impl eframe::App for PaintApp {
                         let view_rect = rect;
                         let ob = self.transform_orig_bounds;
                         let handle_radius = 8.0;
-
                         let mut hovered_handle = None;
-
-                        // Check rotation handle
                         let rot_h_orig =
                             egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
                         let rot_h_screen =
@@ -4628,8 +4645,6 @@ impl eframe::App for PaintApp {
                         if ptr_pos.distance(rot_h_screen) <= handle_radius {
                             hovered_handle = Some(8);
                         }
-
-                        // Check pivot handle
                         if hovered_handle.is_none() {
                             let pivot_screen = self.world_to_screen(
                                 self.transform_pivot + self.transform_translation,
@@ -4639,18 +4654,16 @@ impl eframe::App for PaintApp {
                                 hovered_handle = Some(9);
                             }
                         }
-
-                        // Check 8 scaling handles
                         if hovered_handle.is_none() {
                             let orig_corners = [
-                                egui::Pos2::new(ob.min.x, ob.min.y),      // TL (0)
-                                egui::Pos2::new(ob.center().x, ob.min.y), // TC (1)
-                                egui::Pos2::new(ob.max.x, ob.min.y),      // TR (2)
-                                egui::Pos2::new(ob.max.x, ob.center().y), // MR (3)
-                                egui::Pos2::new(ob.max.x, ob.max.y),      // BR (4)
-                                egui::Pos2::new(ob.center().x, ob.max.y), // BC (5)
-                                egui::Pos2::new(ob.min.x, ob.max.y),      // BL (6)
-                                egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
+                                egui::Pos2::new(ob.min.x, ob.min.y),
+                                egui::Pos2::new(ob.center().x, ob.min.y),
+                                egui::Pos2::new(ob.max.x, ob.min.y),
+                                egui::Pos2::new(ob.max.x, ob.center().y),
+                                egui::Pos2::new(ob.max.x, ob.max.y),
+                                egui::Pos2::new(ob.center().x, ob.max.y),
+                                egui::Pos2::new(ob.min.x, ob.max.y),
+                                egui::Pos2::new(ob.min.x, ob.center().y),
                             ];
                             for (i, &corner) in orig_corners.iter().enumerate() {
                                 let h_screen =
@@ -4661,8 +4674,6 @@ impl eframe::App for PaintApp {
                                 }
                             }
                         }
-
-                        // Check inside bounds (Translate)
                         if hovered_handle.is_none() {
                             let ptr_world = self.screen_to_world(ptr_pos, view_rect);
                             let rx = ptr_world.x
@@ -4675,7 +4686,6 @@ impl eframe::App for PaintApp {
                             let uy = rx * sin + ry * cos;
                             let x_orig = ux / self.transform_scale.x + self.transform_pivot.x;
                             let y_orig = uy / self.transform_scale.y + self.transform_pivot.y;
-
                             if x_orig >= ob.min.x
                                 && x_orig <= ob.max.x
                                 && y_orig >= ob.min.y
@@ -4684,7 +4694,6 @@ impl eframe::App for PaintApp {
                                 hovered_handle = Some(10);
                             }
                         }
-
                         if let Some(h) = hovered_handle {
                             let cursor = match h {
                                 8 => egui::CursorIcon::PointingHand,
@@ -4698,7 +4707,6 @@ impl eframe::App for PaintApp {
                             };
                             ui.ctx().set_cursor_icon(cursor);
                         }
-
                         if ui.input(|i| i.pointer.any_pressed()) {
                             if let Some(h) = hovered_handle {
                                 self.transform_dragging = Some(h);
@@ -4709,7 +4717,6 @@ impl eframe::App for PaintApp {
                             }
                         }
                     }
-
                     if let Some(h) = self.transform_dragging {
                         if ui.input(|i| i.pointer.any_down()) {
                             if let (Some(start_ptr), Some(curr_ptr)) = (
@@ -4719,7 +4726,6 @@ impl eframe::App for PaintApp {
                                 let start_w = self.screen_to_world(start_ptr, rect);
                                 let curr_w = self.screen_to_world(curr_ptr, rect);
                                 let delta_w = curr_w - start_w;
-
                                 match h {
                                     10 => {
                                         self.transform_translation =
@@ -4748,26 +4754,23 @@ impl eframe::App for PaintApp {
                                     0..=7 => {
                                         let ob = self.transform_orig_bounds;
                                         let orig_corners = [
-                                            egui::Pos2::new(ob.min.x, ob.min.y),      // TL (0)
-                                            egui::Pos2::new(ob.center().x, ob.min.y), // TC (1)
-                                            egui::Pos2::new(ob.max.x, ob.min.y),      // TR (2)
-                                            egui::Pos2::new(ob.max.x, ob.center().y), // MR (3)
-                                            egui::Pos2::new(ob.max.x, ob.max.y),      // BR (4)
-                                            egui::Pos2::new(ob.center().x, ob.max.y), // BC (5)
-                                            egui::Pos2::new(ob.min.x, ob.max.y),      // BL (6)
-                                            egui::Pos2::new(ob.min.x, ob.center().y), // ML (7)
+                                            egui::Pos2::new(ob.min.x, ob.min.y),
+                                            egui::Pos2::new(ob.center().x, ob.min.y),
+                                            egui::Pos2::new(ob.max.x, ob.min.y),
+                                            egui::Pos2::new(ob.max.x, ob.center().y),
+                                            egui::Pos2::new(ob.max.x, ob.max.y),
+                                            egui::Pos2::new(ob.center().x, ob.max.y),
+                                            egui::Pos2::new(ob.min.x, ob.max.y),
+                                            egui::Pos2::new(ob.min.x, ob.center().y),
                                         ];
                                         let orig_h = orig_corners[h];
                                         let orig_offset = orig_h - self.transform_pivot;
-
                                         let cos = (-self.transform_drag_start_rotation).cos();
                                         let sin = (-self.transform_drag_start_rotation).sin();
                                         let local_delta_x = delta_w.x * cos - delta_w.y * sin;
                                         let local_delta_y = delta_w.x * sin + delta_w.y * cos;
-
                                         let mut scale_x = self.transform_drag_start_scale.x;
                                         let mut scale_y = self.transform_drag_start_scale.y;
-
                                         if orig_offset.x.abs() > 0.01 {
                                             let new_local_x = orig_offset.x
                                                 * self.transform_drag_start_scale.x
@@ -4780,10 +4783,8 @@ impl eframe::App for PaintApp {
                                                 + local_delta_y;
                                             scale_y = new_local_y / orig_offset.y;
                                         }
-
                                         scale_x = scale_x.max(0.05);
                                         scale_y = scale_y.max(0.05);
-
                                         if ui.input(|i| i.modifiers.shift)
                                             && (h == 0 || h == 2 || h == 4 || h == 6)
                                         {
@@ -4791,7 +4792,6 @@ impl eframe::App for PaintApp {
                                             scale_x = avg_scale;
                                             scale_y = avg_scale;
                                         }
-
                                         self.transform_scale = egui::Vec2::new(scale_x, scale_y);
                                     }
                                     _ => {}
@@ -4802,33 +4802,11 @@ impl eframe::App for PaintApp {
                             self.transform_drag_start_ptr = None;
                         }
                     }
-
                     pointer_down = false;
                     pointer_clicked = false;
                 }
 
-                // ── Trait-based tool event dispatch ──
-                let trait_handled = {
-                    let tool_ctx = tools::ToolContext {
-                        viewport_offset: self.viewport_offset,
-                        viewport_zoom: self.viewport_zoom,
-                        rotation_angle: self.rotation_angle,
-                        mirror_horizontal: self.mirror_horizontal,
-                        screen_rect: rect,
-                        pointer_down: response.dragged(),
-                        pointer_clicked,
-                        pointer_drag_stopped: response.drag_stopped(),
-                        pointer_double_clicked: response.double_clicked_by(egui::PointerButton::Primary),
-                        pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
-                        pointer_pressure: self.last_ptr_pressure,
-                    };
-                    self.dispatch_tool_event(&tool_ctx)
-                };
-                if trait_handled {
-                    // Trait tool consumed the event; request repaint and
-                    // skip the remaining inline dispatch blocks.
-                    ctx.request_repaint();
-                }
+                } // end if !trait_handled
                 // Handle brush/eraser stroke drawing
                 if pointer_down
                     && matches!(

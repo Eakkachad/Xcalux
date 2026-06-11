@@ -121,8 +121,15 @@ pub trait Tool: Send {
     fn name(&self) -> &'static str;
     fn tool_id(&self) -> ToolId;
 
-    /// Handle a pointer event on the canvas.
+    /// Handle a pointer event on the canvas (no PaintApp access).
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome;
+
+    /// Handle a pointer event with full PaintApp access.
+    /// Default implementation falls through to handle_event.
+    /// Override for complex tools (Brush, Eraser, Transform, etc.).
+    fn handle_event_full(&mut self, _app: &mut crate::app::PaintApp, ctx: &ToolContext) -> ToolOutcome {
+        self.handle_event(ctx)
+    }
 
     /// Draw tool-specific overlays on top of the canvas but below the cursor.
     fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext);
@@ -159,6 +166,13 @@ impl ToolRegistry {
         self.tools
             .get_mut(&self.active)
             .map(|t| t.handle_event(ctx))
+            .unwrap_or(ToolOutcome::None)
+    }
+
+    pub fn handle_active_event_full(&mut self, app: &mut crate::app::PaintApp, ctx: &ToolContext) -> ToolOutcome {
+        self.tools
+            .get_mut(&self.active)
+            .map(|t| t.handle_event_full(app, ctx))
             .unwrap_or(ToolOutcome::None)
     }
 
