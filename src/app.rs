@@ -293,7 +293,6 @@ pub struct PaintApp {
     // Selection state
     pub selection_mode: selection::SelectionMode,
     pub selection_rect: Option<selection::SelectionRect>,
-    pub lasso_points: Option<selection::LassoPoints>,
     pub gradient_mode: u32, // 0=Linear, 1=Radial
     pub gradient_type: u32, // 0=FG→BG, 1=FG→Transparent, 2=BG→Transparent
     pub is_selecting: bool,
@@ -1056,12 +1055,14 @@ impl PaintApp {
                 reg.register(Box::new(crate::tools::CurveTool::new()));
                 reg.register(Box::new(crate::tools::EditCPTool::new()));
                 reg.register(Box::new(crate::tools::GradientTool::new()));
+                reg.register(Box::new(crate::tools::RectSelectTool));
+                reg.register(Box::new(crate::tools::EllipseSelectTool));
+                reg.register(Box::new(crate::tools::LassoTool::new()));
                 reg
             },
             fill_options: fill::FillOptions::default(),
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
-            lasso_points: None,
             gradient_mode: 0,
             gradient_type: 0,
             is_selecting: false,
@@ -2223,6 +2224,87 @@ impl PaintApp {
             }
             tools::ToolOutcome::GradientComplete { start, end } => {
                 self.gradient_tool_execute(start, end);
+                true
+            }
+            tools::ToolOutcome::RectSelectUpdated { world_pos } => {
+                if !self.is_selecting {
+                    self.is_selecting = true;
+                    if self.selection_mode == selection::SelectionMode::Replace {
+                        selection::clear_selection(&mut self.selection_mask);
+                    }
+                    self.selection_rect = Some(selection::SelectionRect {
+                        x0: world_pos.x,
+                        y0: world_pos.y,
+                        x1: world_pos.x,
+                        y1: world_pos.y,
+                    });
+                } else if let Some(ref mut sr) = self.selection_rect {
+                    sr.x1 = world_pos.x;
+                    sr.y1 = world_pos.y;
+                }
+                true
+            }
+            tools::ToolOutcome::RectSelectComplete => {
+                if self.is_selecting {
+                    self.is_selecting = false;
+                    if let Some(rect) = self.selection_rect.take() {
+                        let w = (rect.x1 - rect.x0).abs();
+                        let h = (rect.y1 - rect.y0).abs();
+                        if w <= 1.0 && h <= 1.0 {
+                            if self.selection_mode == selection::SelectionMode::Replace {
+                                selection::clear_selection(&mut self.selection_mask);
+                            }
+                        } else {
+                            if self.active_tool == ToolId::RectSelect {
+                                selection::apply_rect_selection(
+                                    &mut self.selection_mask,
+                                    rect,
+                                    self.selection_mode,
+                                    self.selection_feather,
+                                    true,
+                                );
+                            } else if self.active_tool == ToolId::EllipseSelect {
+                                selection::apply_ellipse_selection(
+                                    &mut self.selection_mask,
+                                    rect,
+                                    self.selection_mode,
+                                    self.selection_feather,
+                                    true,
+                                );
+                            }
+                        }
+                    }
+                    self.show_selection_overlay = self.selection_mask.is_active;
+                }
+                true
+            }
+            tools::ToolOutcome::LassoUpdated { .. } => {
+                if !self.is_selecting {
+                    self.is_selecting = true;
+                    if self.selection_mode == selection::SelectionMode::Replace {
+                        selection::clear_selection(&mut self.selection_mask);
+                    }
+                }
+                true
+            }
+            tools::ToolOutcome::LassoComplete { points } => {
+                if self.is_selecting {
+                    self.is_selecting = false;
+                    if points.len() <= 2 {
+                        if self.selection_mode == selection::SelectionMode::Replace {
+                            selection::clear_selection(&mut self.selection_mask);
+                        }
+                    } else {
+                        selection::apply_lasso_selection(
+                            &mut self.selection_mask,
+                            &selection::LassoPoints { points },
+                            self.selection_mode,
+                            self.selection_feather,
+                            true,
+                        );
+                    }
+                    self.show_selection_overlay = self.selection_mask.is_active;
+                }
                 true
             }
         }
@@ -4725,56 +4807,6 @@ impl eframe::App for PaintApp {
                     pointer_clicked = false;
                 }
 
-                // Handle selection tool dragging
-                if pointer_down
-                    && matches!(self.active_tool, ToolId::RectSelect | ToolId::EllipseSelect)
-                    && self.panel_drag.is_none()
-                    && self.floating_drag_panel.is_none()
-                {
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let world_pos = self.screen_to_world(ptr_pos, rect);
-                        if !self.is_selecting {
-                            self.is_selecting = true;
-                            if self.selection_mode == selection::SelectionMode::Replace {
-                                selection::clear_selection(&mut self.selection_mask);
-                            }
-                            self.selection_rect = Some(selection::SelectionRect {
-                                x0: world_pos.x,
-                                y0: world_pos.y,
-                                x1: world_pos.x,
-                                y1: world_pos.y,
-                            });
-                        }
-                        if let Some(ref mut sr) = self.selection_rect {
-                            sr.x1 = world_pos.x;
-                            sr.y1 = world_pos.y;
-                        }
-                        ctx.request_repaint();
-                    }
-                }
-
-                // Handle lasso dragging
-                if pointer_down
-                    && matches!(self.active_tool, ToolId::Lasso)
-                    && self.panel_drag.is_none()
-                    && self.floating_drag_panel.is_none()
-                {
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let world_pos = self.screen_to_world(ptr_pos, rect);
-                        if !self.is_selecting {
-                            self.is_selecting = true;
-                            if self.selection_mode == selection::SelectionMode::Replace {
-                                selection::clear_selection(&mut self.selection_mask);
-                            }
-                            self.lasso_points = Some(selection::LassoPoints { points: Vec::new() });
-                        }
-                        if let Some(ref mut lp) = self.lasso_points {
-                            lp.points.push((world_pos.x, world_pos.y));
-                        }
-                        ctx.request_repaint();
-                    }
-                }
-
                 // ── Trait-based tool event dispatch ──
                 let trait_handled = {
                     let tool_ctx = tools::ToolContext {
@@ -5093,54 +5125,6 @@ impl eframe::App for PaintApp {
                 }
 
                 if !pointer_down {
-                    // Finalize selection if dragging ended
-                    if self.is_selecting {
-                        self.is_selecting = false;
-                        if let Some(rect) = self.selection_rect.take() {
-                            let w = (rect.x1 - rect.x0).abs();
-                            let h = (rect.y1 - rect.y0).abs();
-                            if w <= 1.0 && h <= 1.0 {
-                                if self.selection_mode == selection::SelectionMode::Replace {
-                                    selection::clear_selection(&mut self.selection_mask);
-                                }
-                            } else {
-                                if self.active_tool == ToolId::RectSelect {
-                                    selection::apply_rect_selection(
-                                        &mut self.selection_mask,
-                                        rect,
-                                        self.selection_mode,
-                                        self.selection_feather,
-                                        true,
-                                    );
-                                } else if self.active_tool == ToolId::EllipseSelect {
-                                    selection::apply_ellipse_selection(
-                                        &mut self.selection_mask,
-                                        rect,
-                                        self.selection_mode,
-                                        self.selection_feather,
-                                        true,
-                                    );
-                                }
-                            }
-                        }
-                        if let Some(lasso) = self.lasso_points.take() {
-                            if lasso.points.len() <= 2 {
-                                if self.selection_mode == selection::SelectionMode::Replace {
-                                    selection::clear_selection(&mut self.selection_mask);
-                                }
-                            } else if lasso.points.len() >= 3 {
-                                selection::apply_lasso_selection(
-                                    &mut self.selection_mask,
-                                    &lasso,
-                                    self.selection_mode,
-                                    self.selection_feather,
-                                    true,
-                                );
-                            }
-                        }
-                        self.show_selection_overlay = self.selection_mask.is_active;
-                    }
-
                     // Stroke ended! Save the command and reset stabilizer
                     if self.stabilizer.is_drawing {
                         self.stabilizer.reset();
@@ -6789,7 +6773,6 @@ mod tests {
             fill_options: fill::FillOptions::default(),
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
-            lasso_points: None,
             gradient_mode: 0,
             gradient_type: 0,
             is_selecting: false,
@@ -6994,7 +6977,6 @@ mod tests {
             fill_options: fill::FillOptions::default(),
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
-            lasso_points: None,
             gradient_mode: 0,
             gradient_type: 0,
             is_selecting: false,

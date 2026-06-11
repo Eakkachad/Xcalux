@@ -105,6 +105,14 @@ pub enum ToolOutcome {
     GradientDrag { world_pos: egui::Vec2 },
     /// Gradient tool: drag complete; PaintApp applies the gradient.
     GradientComplete { start: egui::Vec2, end: egui::Vec2 },
+    /// RectSelect / EllipseSelect: drag updated to world position.
+    RectSelectUpdated { world_pos: egui::Vec2 },
+    /// RectSelect / EllipseSelect: drag completed (dispatch applies selection).
+    RectSelectComplete,
+    /// Lasso freehand: drag updated at world position.
+    LassoUpdated { world_pos: egui::Vec2 },
+    /// Lasso freehand: drag completed with collected points.
+    LassoComplete { points: Vec<(f32, f32)> },
 }
 
 // ── Tool trait ──
@@ -528,6 +536,138 @@ impl Tool for MoveTool {
         );
         true
     }
+}
+
+// =============================================================
+// RECT SELECT TOOL
+// =============================================================
+pub struct RectSelectTool;
+impl Tool for RectSelectTool {
+    fn name(&self) -> &'static str { "Rect Select" }
+    fn tool_id(&self) -> ToolId { ToolId::RectSelect }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_down {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                ToolOutcome::RectSelectUpdated { world_pos: world }
+            } else {
+                ToolOutcome::None
+            }
+        } else if ctx.pointer_drag_stopped {
+            ToolOutcome::RectSelectComplete
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// ELLIPSE SELECT TOOL
+// =============================================================
+pub struct EllipseSelectTool;
+impl Tool for EllipseSelectTool {
+    fn name(&self) -> &'static str { "Ellipse Select" }
+    fn tool_id(&self) -> ToolId { ToolId::EllipseSelect }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_down {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                ToolOutcome::RectSelectUpdated { world_pos: world }
+            } else {
+                ToolOutcome::None
+            }
+        } else if ctx.pointer_drag_stopped {
+            ToolOutcome::RectSelectComplete
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+// =============================================================
+// LASSO TOOL (freehand selection)
+// =============================================================
+pub struct LassoTool {
+    points: Vec<(f32, f32)>,
+    active: bool,
+}
+
+impl LassoTool {
+    pub fn new() -> Self {
+        Self {
+            points: Vec::new(),
+            active: false,
+        }
+    }
+}
+
+impl Tool for LassoTool {
+    fn name(&self) -> &'static str { "Lasso" }
+    fn tool_id(&self) -> ToolId { ToolId::Lasso }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_down {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                if !self.active {
+                    self.active = true;
+                    self.points.clear();
+                }
+                self.points.push((world.x, world.y));
+                ToolOutcome::LassoUpdated { world_pos: world }
+            } else {
+                ToolOutcome::None
+            }
+        } else if ctx.pointer_drag_stopped && self.active {
+            self.active = false;
+            let points = std::mem::take(&mut self.points);
+            ToolOutcome::LassoComplete { points }
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
+        if !self.active || self.points.len() < 2 {
+            return;
+        }
+        // Draw lasso path
+        for i in 0..self.points.len() - 1 {
+            let a = ctx.world_to_screen(egui::Vec2::new(self.points[i].0, self.points[i].1));
+            let b = ctx.world_to_screen(egui::Vec2::new(self.points[i + 1].0, self.points[i + 1].1));
+            painter.line_segment(
+                [a, b],
+                egui::Stroke::new(
+                    2.0,
+                    egui::Color32::from_rgba_premultiplied(0, 180, 255, 220),
+                ),
+            );
+        }
+        // Draw rubber-band line from last point to cursor
+        if let Some(ptr_pos) = ctx.pointer_pos {
+            let last = self.points[self.points.len() - 1];
+            let last_screen = ctx.world_to_screen(egui::Vec2::new(last.0, last.1));
+            painter.line_segment(
+                [last_screen, ptr_pos],
+                egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_premultiplied(0, 180, 255, 120),
+                ),
+            );
+        }
+    }
+
+    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 }
 
 // =============================================================
