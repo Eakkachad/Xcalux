@@ -1055,6 +1055,7 @@ impl PaintApp {
                 reg.register(Box::new(crate::tools::ZoomTool));
                 reg.register(Box::new(crate::tools::RotateViewTool));
                 reg.register(Box::new(crate::tools::ColorPickerTool));
+                reg.register(Box::new(crate::tools::MagicWandTool));
                 reg.register(Box::new(crate::tools::MoveTool));
                 reg
             },
@@ -2085,6 +2086,34 @@ impl PaintApp {
         match self.tool_registry.handle_active_event(ctx) {
             tools::ToolOutcome::None => false,
             tools::ToolOutcome::Handled => true,
+            tools::ToolOutcome::MagicWandSelect { x, y } => {
+                if x >= 0
+                    && x < self.canvas_width as i32
+                    && y >= 0
+                    && y < self.canvas_height as i32
+                {
+                    let all_layers: Vec<&Layer> = self
+                        .layer_order
+                        .iter()
+                        .filter_map(|id| self.layers.get(id))
+                        .collect();
+                    if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                        selection::magic_wand_select(
+                            &mut self.selection_mask,
+                            &all_layers,
+                            active_layer,
+                            x,
+                            y,
+                            &self.fill_options,
+                            self.selection_mode,
+                            self.canvas_width as i32,
+                            self.canvas_height as i32,
+                        );
+                        self.show_selection_overlay = self.selection_mask.is_active;
+                    }
+                }
+                true
+            }
             tools::ToolOutcome::ColorPicked { x, y } => {
                 if x >= 0
                     && x < self.canvas_width as i32
@@ -5695,6 +5724,23 @@ impl eframe::App for PaintApp {
                     }
                 }
 
+                // ── Trait-based tool overlay drawing ──
+                self.tool_registry.draw_active_overlay(
+                    ui.painter(),
+                    &tools::ToolContext {
+                        viewport_offset: self.viewport_offset,
+                        viewport_zoom: self.viewport_zoom,
+                        rotation_angle: self.rotation_angle,
+                        mirror_horizontal: self.mirror_horizontal,
+                        screen_rect: rect,
+                        pointer_down: response.dragged(),
+                        pointer_clicked,
+                        pointer_drag_stopped: response.drag_stopped(),
+                        pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
+                        pointer_pressure: self.last_ptr_pressure,
+                    },
+                );
+
                 // POLYGON LASSO PREVIEW
                 if matches!(self.active_tool, ToolId::PolygonLasso)
                     && self.polygon_active
@@ -6223,24 +6269,28 @@ impl eframe::App for PaintApp {
                     );
                 }
 
-                // BRUSH CURSOR + COLOR PICKER CURSOR
+                // BRUSH CURSOR + TRAIT-BASED CURSOR
                 if let Some(pos) = response.hover_pos() {
-                    if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
-                        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-                        let radius =
-                            (self.brush_radius_log.exp() * self.viewport_zoom).clamp(1.0, 512.0);
-                        ui.painter().circle_stroke(
-                            pos,
-                            radius,
-                            egui::Stroke::new(1.0, Color32::from_black_alpha(220)),
-                        );
-                        ui.painter().circle_stroke(
-                            pos,
-                            radius + 1.0,
-                            egui::Stroke::new(1.0, Color32::from_white_alpha(180)),
-                        );
-                    } else {
-                        ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                    // Let trait tools draw custom cursors first
+                    let custom_drawn = self.tool_registry.draw_active_cursor(pos, ui.painter());
+                    if !custom_drawn {
+                        if matches!(self.active_tool, ToolId::Brush | ToolId::Eraser) {
+                            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                            let radius = (self.brush_radius_log.exp() * self.viewport_zoom)
+                                .clamp(1.0, 512.0);
+                            ui.painter().circle_stroke(
+                                pos,
+                                radius,
+                                egui::Stroke::new(1.0, Color32::from_black_alpha(220)),
+                            );
+                            ui.painter().circle_stroke(
+                                pos,
+                                radius + 1.0,
+                                egui::Stroke::new(1.0, Color32::from_white_alpha(180)),
+                            );
+                        } else {
+                            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                        }
                     }
                 }
             });

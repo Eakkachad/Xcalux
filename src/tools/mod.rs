@@ -84,6 +84,8 @@ pub enum ToolOutcome {
     Handled,
     /// Color picker sampled a color at the given world-space pixel.
     ColorPicked { x: i32, y: i32 },
+    /// Magic wand select at the given world-space pixel.
+    MagicWandSelect { x: i32, y: i32 },
 }
 
 // ── Tool trait ──
@@ -229,6 +231,30 @@ impl Tool for ColorPickerTool {
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+pub struct MagicWandTool;
+impl Tool for MagicWandTool {
+    fn name(&self) -> &'static str { "Magic Wand" }
+    fn tool_id(&self) -> ToolId { ToolId::MagicWand }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                let wx = world.x as i32;
+                let wy = world.y as i32;
+                if wx >= 0 && wy >= 0 {
+                    return ToolOutcome::MagicWandSelect { x: wx, y: wy };
+                }
+            }
+        }
+        ToolOutcome::None
+    }
+
+    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+
+    fn draw_cursor(&self, _screen_pos: egui::Pos2, _painter: &egui::Painter) -> bool { false }
 }
 
 pub struct MoveTool;
