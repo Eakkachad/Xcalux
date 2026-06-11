@@ -151,6 +151,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
             app.cleanup_autosave();
             app.canvas_width = app.new_canvas_width;
             app.canvas_height = app.new_canvas_height;
+            app.symmetry_center = egui::Pos2::new(app.new_canvas_width as f32 * 0.5, app.new_canvas_height as f32 * 0.5);
 
             app.layers.clear();
             app.layers.insert(1, Layer::new(1, "Layer 1".to_string()));
@@ -365,6 +366,7 @@ pub fn draw_dialogs(app: &mut PaintApp, ctx: &egui::Context) {
                 Ok(imported) => {
                     app.canvas_width = imported.width;
                     app.canvas_height = imported.height;
+                    app.symmetry_center = egui::Pos2::new(imported.width as f32 * 0.5, imported.height as f32 * 0.5);
                     crate::export::ora::apply_imported_canvas(
                         imported,
                         &mut app.layers,

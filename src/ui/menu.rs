@@ -321,6 +321,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                         {
                             app.canvas_width = 1024;
                             app.canvas_height = 1024;
+                            app.symmetry_center = egui::Pos2::new(512.0, 512.0);
                             if let Some(r) = &mut app.renderer {
                                 r.clear_cache();
                             }
@@ -334,6 +335,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                         {
                             app.canvas_width = 1920;
                             app.canvas_height = 1080;
+                            app.symmetry_center = egui::Pos2::new(960.0, 540.0);
                             if let Some(r) = &mut app.renderer {
                                 r.clear_cache();
                             }
@@ -347,6 +349,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                         {
                             app.canvas_width = 2048;
                             app.canvas_height = 2048;
+                            app.symmetry_center = egui::Pos2::new(1024.0, 1024.0);
                             if let Some(r) = &mut app.renderer {
                                 r.clear_cache();
                             }
@@ -360,6 +363,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                         {
                             app.canvas_width = 2480;
                             app.canvas_height = 3508;
+                            app.symmetry_center = egui::Pos2::new(1240.0, 1754.0);
                             if let Some(r) = &mut app.renderer {
                                 r.clear_cache();
                             }

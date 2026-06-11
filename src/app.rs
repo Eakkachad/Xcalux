@@ -1051,15 +1051,15 @@ impl PaintApp {
                 reg.register(Box::new(crate::tools::FillTool));
                 reg.register(Box::new(crate::tools::PolygonLassoTool::new()));
                 reg.register(Box::new(crate::tools::MagicWandTool));
-                reg.register(Box::new(crate::tools::MoveTool));
+                reg.register(Box::new(crate::tools::MoveTool::new()));
                 reg.register(Box::new(crate::tools::ReferenceTool));
-                reg.register(Box::new(crate::tools::TransformTool));
+                reg.register(Box::new(crate::tools::TransformTool::new()));
                 reg.register(Box::new(crate::tools::VectorPenTool));
                 reg.register(Box::new(crate::tools::CurveTool::new()));
                 reg.register(Box::new(crate::tools::EditCPTool::new()));
                 reg.register(Box::new(crate::tools::GradientTool::new()));
-                reg.register(Box::new(crate::tools::RectSelectTool));
-                reg.register(Box::new(crate::tools::EllipseSelectTool));
+                reg.register(Box::new(crate::tools::RectSelectTool::new()));
+                reg.register(Box::new(crate::tools::EllipseSelectTool::new()));
                 reg.register(Box::new(crate::tools::LassoTool::new()));
                 reg
             },
@@ -1089,7 +1089,7 @@ impl PaintApp {
             floating_drag_panel: None,
             workspace_layout: Default::default(),
             symmetry_mode: SymmetryMode::None,
-            symmetry_center: egui::Pos2::new(0.0, 0.0),
+            symmetry_center: egui::Pos2::new(512.0, 512.0),
             symmetry_radial_count: 4,
             symmetry_brush_states: Vec::new(),
             shift_snap_enabled: true,
@@ -2032,6 +2032,7 @@ impl PaintApp {
     pub fn load_from_document(&mut self, doc: crate::save::LoadedDocument) {
         self.canvas_width = doc.canvas_width;
         self.canvas_height = doc.canvas_height;
+        self.symmetry_center = egui::Pos2::new(doc.canvas_width as f32 * 0.5, doc.canvas_height as f32 * 0.5);
         self.layer_order = doc.layer_order;
         self.layers.clear();
         let mut max_id = 1;
@@ -2080,6 +2081,16 @@ impl PaintApp {
     }
 
     pub fn set_active_tool(&mut self, id: ToolId) {
+        if self.transform_active && id != ToolId::Transform && id != ToolId::Move {
+            self.commit_transform();
+        }
+
+        if self.stabilizer.is_drawing {
+            self.stabilizer.is_drawing = false;
+            self.stabilizer.reset();
+        }
+        self.is_selecting = false;
+
         self.tool_registry.activate(id);
     }
 
@@ -2170,6 +2181,45 @@ impl PaintApp {
                 }
                 true
             }
+            tools::ToolOutcome::ColorPickedBg { x, y } => {
+                if x >= 0
+                    && x < self.canvas_width as i32
+                    && y >= 0
+                    && y < self.canvas_height as i32
+                {
+                    let all_layers: Vec<&Layer> = self
+                        .layer_order
+                        .iter()
+                        .filter_map(|id| self.layers.get(id))
+                        .collect();
+                    if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                        let sampled = fill::sample_reference(
+                            &all_layers,
+                            active_layer,
+                            fill::FillReference::AllVisibleLayers,
+                            x,
+                            y,
+                        );
+                        let a = sampled[3] as f32 / 32768.0;
+                        let mut col = [0.0; 3];
+                        if a > 0.0 {
+                            col[0] = (sampled[0] as f32 / 32768.0) / a;
+                            col[1] = (sampled[1] as f32 / 32768.0) / a;
+                            col[2] = (sampled[2] as f32 / 32768.0) / a;
+                        } else {
+                            col[0] = sampled[0] as f32 / 32768.0;
+                            col[1] = sampled[1] as f32 / 32768.0;
+                            col[2] = sampled[2] as f32 / 32768.0;
+                        }
+                        col[0] = col[0].clamp(0.0, 1.0);
+                        col[1] = col[1].clamp(0.0, 1.0);
+                        col[2] = col[2].clamp(0.0, 1.0);
+                        self.background_color = col;
+                        self.brush_settings_dirty = true;
+                    }
+                }
+                true
+            }
             tools::ToolOutcome::Fill { x, y } => {
                 self.fill_tool_execute(x, y);
                 true
@@ -2256,29 +2306,40 @@ impl PaintApp {
                 if self.is_selecting {
                     self.is_selecting = false;
                     if let Some(rect) = self.selection_rect.take() {
-                        let w = (rect.x1 - rect.x0).abs();
-                        let h = (rect.y1 - rect.y0).abs();
-                        if w <= 1.0 && h <= 1.0 {
-                            if self.selection_mode == selection::SelectionMode::Replace {
-                                selection::clear_selection(&mut self.selection_mask);
+                        let mut cancel = false;
+                        if let Some(hover_pos) = ctx.pointer_pos {
+                            let world_pos = ctx.screen_to_world(hover_pos);
+                            if world_pos.x < 0.0 || world_pos.x > self.canvas_width as f32
+                                || world_pos.y < 0.0 || world_pos.y > self.canvas_height as f32
+                            {
+                                cancel = true;
                             }
-                        } else {
-                            if self.active_tool() == ToolId::RectSelect {
-                                selection::apply_rect_selection(
-                                    &mut self.selection_mask,
-                                    rect,
-                                    self.selection_mode,
-                                    self.selection_feather,
-                                    true,
-                                );
-                            } else if self.active_tool() == ToolId::EllipseSelect {
-                                selection::apply_ellipse_selection(
-                                    &mut self.selection_mask,
-                                    rect,
-                                    self.selection_mode,
-                                    self.selection_feather,
-                                    true,
-                                );
+                        }
+                        if !cancel {
+                            let w = (rect.x1 - rect.x0).abs();
+                            let h = (rect.y1 - rect.y0).abs();
+                            if w <= 1.0 && h <= 1.0 {
+                                if self.selection_mode == selection::SelectionMode::Replace {
+                                    selection::clear_selection(&mut self.selection_mask);
+                                }
+                            } else {
+                                if self.active_tool() == ToolId::RectSelect {
+                                    selection::apply_rect_selection(
+                                        &mut self.selection_mask,
+                                        rect,
+                                        self.selection_mode,
+                                        self.selection_feather,
+                                        true,
+                                    );
+                                } else if self.active_tool() == ToolId::EllipseSelect {
+                                    selection::apply_ellipse_selection(
+                                        &mut self.selection_mask,
+                                        rect,
+                                        self.selection_mode,
+                                        self.selection_feather,
+                                        true,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2298,18 +2359,29 @@ impl PaintApp {
             tools::ToolOutcome::LassoComplete { points } => {
                 if self.is_selecting {
                     self.is_selecting = false;
-                    if points.len() <= 2 {
-                        if self.selection_mode == selection::SelectionMode::Replace {
-                            selection::clear_selection(&mut self.selection_mask);
+                    let mut cancel = false;
+                    if let Some(hover_pos) = ctx.pointer_pos {
+                        let world_pos = ctx.screen_to_world(hover_pos);
+                        if world_pos.x < 0.0 || world_pos.x > self.canvas_width as f32
+                            || world_pos.y < 0.0 || world_pos.y > self.canvas_height as f32
+                        {
+                            cancel = true;
                         }
-                    } else {
-                        selection::apply_lasso_selection(
-                            &mut self.selection_mask,
-                            &selection::LassoPoints { points },
-                            self.selection_mode,
-                            self.selection_feather,
-                            true,
-                        );
+                    }
+                    if !cancel {
+                        if points.len() <= 2 {
+                            if self.selection_mode == selection::SelectionMode::Replace {
+                                selection::clear_selection(&mut self.selection_mask);
+                            }
+                        } else {
+                            selection::apply_lasso_selection(
+                                &mut self.selection_mask,
+                                &selection::LassoPoints { points },
+                                self.selection_mode,
+                                self.selection_feather,
+                                true,
+                            );
+                        }
                     }
                     self.show_selection_overlay = self.selection_mask.is_active;
                 }
@@ -2318,6 +2390,11 @@ impl PaintApp {
             tools::ToolOutcome::MoveClick { screen_pos } => {
                 // Released after dragging → clear state
                 if self.ref_image_dragging.take().is_some() {
+                    return true;
+                }
+                if self.transform_active {
+                    self.commit_transform();
+                    self.transform_drag_start_ptr = None;
                     return true;
                 }
                 // Hit-test visible reference images from top of stack to bottom
@@ -2343,6 +2420,44 @@ impl PaintApp {
                         let ptr_world = ctx.screen_to_world(screen_pos);
                         self.ref_image_drag_offset = img.world_pos - ptr_world;
                     }
+                } else if !self.is_active_layer_locked() {
+                    let mut min_tx = i32::MAX;
+                    let mut min_ty = i32::MAX;
+                    let mut max_tx = i32::MIN;
+                    let mut max_ty = i32::MIN;
+
+                    if let Some(layer) = self.layers.get(&self.active_layer_id) {
+                        for (&(tx, ty), _) in &layer.tiles {
+                            min_tx = min_tx.min(tx);
+                            min_ty = min_ty.min(ty);
+                            max_tx = max_tx.max(tx);
+                            max_ty = max_ty.max(ty);
+                        }
+                    }
+
+                    let layer_bounds = if min_tx != i32::MAX {
+                        egui::Rect::from_min_max(
+                            egui::Pos2::new(min_tx as f32 * 64.0, min_ty as f32 * 64.0),
+                            egui::Pos2::new((max_tx + 1) as f32 * 64.0, (max_ty + 1) as f32 * 64.0),
+                        )
+                    } else {
+                        egui::Rect::from_min_max(
+                            egui::Pos2::new(0.0, 0.0),
+                            egui::Pos2::new(self.canvas_width as f32, self.canvas_height as f32),
+                        )
+                    };
+                    self.transform_active = true;
+                    self.transform_orig_bounds = layer_bounds;
+                    self.transform_translation = egui::Vec2::ZERO;
+                    self.transform_scale = egui::Vec2::new(1.0, 1.0);
+                    self.transform_rotation = 0.0;
+                    self.transform_pivot = layer_bounds.center();
+                    self.transform_dragging = None;
+                    if let Some(layer) = self.layers.get(&self.active_layer_id) {
+                        self.transform_state.snap_layer(layer);
+                    }
+                    self.transform_drag_start_ptr = Some(screen_pos);
+                    self.transform_drag_start_translation = self.transform_translation;
                 }
                 true
             }
@@ -2359,6 +2474,13 @@ impl PaintApp {
                             let world_drag_pos = curr_world + self.ref_image_drag_offset;
                             self.reference_images[idx].world_pos = world_drag_pos;
                         }
+                    }
+                } else if self.transform_active {
+                    if let Some(start_ptr) = self.transform_drag_start_ptr {
+                        let start_w = ctx.screen_to_world(start_ptr);
+                        let curr_w = ctx.screen_to_world(screen_pos);
+                        let delta_w = curr_w - start_w;
+                        self.transform_translation = self.transform_drag_start_translation + delta_w;
                     }
                 }
                 true
@@ -2806,7 +2928,10 @@ impl PaintApp {
     }
 
     /// Draw the transform bounding box, rotation handle, corner handles, and pivot.
-    fn draw_transform_overlay(&self, rect: egui::Rect, ui: &egui::Ui) {
+    fn draw_transform_overlay(&self, rect: egui::Rect, painter: &egui::Painter) {
+        if self.active_tool() != ToolId::Transform {
+            return;
+        }
         let ob = self.transform_orig_bounds;
         let stroke_blue = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
 
@@ -2815,19 +2940,19 @@ impl PaintApp {
         let p2 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.max.x, ob.max.y)), rect);
         let p3 = self.world_to_screen(self.transform_point(egui::Pos2::new(ob.min.x, ob.max.y)), rect);
 
-        ui.painter().line_segment([p0, p1], stroke_blue);
-        ui.painter().line_segment([p1, p2], stroke_blue);
-        ui.painter().line_segment([p2, p3], stroke_blue);
-        ui.painter().line_segment([p3, p0], stroke_blue);
+        painter.line_segment([p0, p1], stroke_blue);
+        painter.line_segment([p1, p2], stroke_blue);
+        painter.line_segment([p2, p3], stroke_blue);
+        painter.line_segment([p3, p0], stroke_blue);
 
         let rot_h_orig = egui::Pos2::new(ob.center().x, ob.min.y - 30.0 / self.viewport_zoom);
         let rot_h_screen = self.world_to_screen(self.transform_point(rot_h_orig), rect);
         let top_center_screen = self.world_to_screen(
             self.transform_point(egui::Pos2::new(ob.center().x, ob.min.y)), rect,
         );
-        ui.painter().line_segment([top_center_screen, rot_h_screen], stroke_blue);
-        ui.painter().circle_filled(rot_h_screen, 6.0, egui::Color32::from_rgb(40, 200, 40));
-        ui.painter().circle_stroke(rot_h_screen, 6.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+        painter.line_segment([top_center_screen, rot_h_screen], stroke_blue);
+        painter.circle_filled(rot_h_screen, 6.0, egui::Color32::from_rgb(40, 200, 40));
+        painter.circle_stroke(rot_h_screen, 6.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
 
         let orig_corners = [
             egui::Pos2::new(ob.min.x, ob.min.y),
@@ -2841,21 +2966,21 @@ impl PaintApp {
         ];
         for corner in &orig_corners {
             let h_screen = self.world_to_screen(self.transform_point(*corner), rect);
-            ui.painter().rect_filled(
+            painter.rect_filled(
                 egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)), 0.0, egui::Color32::WHITE,
             );
-            ui.painter().rect_stroke(
+            painter.rect_stroke(
                 egui::Rect::from_center_size(h_screen, egui::Vec2::new(8.0, 8.0)), 0.0, stroke_blue,
             );
         }
 
         let pivot_screen = self.world_to_screen(self.transform_pivot + self.transform_translation, rect);
-        ui.painter().circle_stroke(pivot_screen, 8.0, stroke_blue);
-        ui.painter().circle_filled(pivot_screen, 2.0, egui::Color32::from_rgb(0, 120, 215));
+        painter.circle_stroke(pivot_screen, 8.0, stroke_blue);
+        painter.circle_filled(pivot_screen, 2.0, egui::Color32::from_rgb(0, 120, 215));
     }
 
     /// Draw vector stroke control points for EditCP tool.
-    fn draw_editcp_overlay(&self, rect: egui::Rect, ui: &egui::Ui) {
+    fn draw_editcp_overlay(&self, rect: egui::Rect, painter: &egui::Painter) {
         if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
             if let Some(v_data) = &active_layer.vector_data {
                 let cp_color = egui::Color32::from_rgb(0, 200, 100);
@@ -2866,8 +2991,8 @@ impl PaintApp {
                         let is_selected = self.edit_cp_selection == Some((si, pi));
                         let color = if is_selected { sel_color } else { cp_color };
                         let radius = if is_selected { 5.0 } else { 3.0 };
-                        ui.painter().circle_filled(screen_pt, radius, color);
-                        ui.painter().circle_stroke(screen_pt, radius, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                        painter.circle_filled(screen_pt, radius, color);
+                        painter.circle_stroke(screen_pt, radius, egui::Stroke::new(1.0, egui::Color32::WHITE));
                     }
                     if stroke.control_points.len() >= 2 {
                         for i in 0..stroke.control_points.len() - 1 {
@@ -2877,7 +3002,7 @@ impl PaintApp {
                             let b = self.world_to_screen(
                                 egui::Pos2::new(stroke.control_points[i + 1].x, stroke.control_points[i + 1].y), rect,
                             );
-                            ui.painter().line_segment([a, b], egui::Stroke::new(
+                            painter.line_segment([a, b], egui::Stroke::new(
                                 0.5, egui::Color32::from_rgba_premultiplied(0, 200, 100, 80),
                             ));
                         }
@@ -3659,6 +3784,7 @@ impl PaintApp {
         }
         self.canvas_width = new_w;
         self.canvas_height = new_h;
+        self.symmetry_center = egui::Pos2::new(new_w as f32 * 0.5, new_h as f32 * 0.5);
         self.selection_mask = crate::canvas::SelectionMask::new();
         self.show_selection_overlay = false;
         if let Some(r) = &mut self.renderer {
@@ -3773,6 +3899,7 @@ impl PaintApp {
         max_y = max_y.max(0).min(self.canvas_height as i32 - 1);
         self.canvas_width = (max_x - min_x + 1) as u32;
         self.canvas_height = (max_y - min_y + 1) as u32;
+        self.symmetry_center = egui::Pos2::new(self.canvas_width as f32 * 0.5, self.canvas_height as f32 * 0.5);
         // Use same shift logic as crop_to_selection
         for &id in &self.layer_order.clone() {
             if let Some(layer) = self.layers.get_mut(&id) {
@@ -5109,16 +5236,26 @@ impl eframe::App for PaintApp {
                 let r_down =
                     ui.input(|i| i.key_down(egui::Key::R)) && !ui.ctx().wants_keyboard_input();
 
-                if space_down {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                } else if r_down {
+                let active_tool = self.active_tool();
+                if space_down || active_tool == ToolId::Hand {
+                    if response.dragged_by(egui::PointerButton::Primary)
+                        || response.dragged_by(egui::PointerButton::Middle)
+                        || response.dragged_by(egui::PointerButton::Secondary)
+                    {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    } else {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    }
+                } else if r_down || active_tool == ToolId::RotateView {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                } else if active_tool == ToolId::Zoom {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
                 }
 
                 // Infinite canvas panning: drag with middle or right mouse button (transformed to view rotation/mirror)
                 if response.dragged_by(egui::PointerButton::Middle)
                     || response.dragged_by(egui::PointerButton::Secondary)
-                    || (space_down && response.dragged_by(egui::PointerButton::Primary))
+                    || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary))
                 {
                     let delta = response.drag_delta();
                     let half_w = rect.width() * 0.5;
@@ -5140,15 +5277,25 @@ impl eframe::App for PaintApp {
                     let ry = -py * half_h;
 
                     self.viewport_offset -= egui::vec2(rx, ry) / self.viewport_zoom;
-                    if space_down {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                    }
                 }
 
-                // Rotation dragging using R key + primary drag
-                if r_down && response.dragged_by(egui::PointerButton::Primary) {
+                // Rotation dragging using R key / RotateView tool + primary drag
+                if (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     self.rotation_angle += drag_delta.x * 0.005;
+                }
+
+                // Zoom dragging using Zoom tool + primary drag
+                if active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
+                    let drag_delta = response.drag_delta();
+                    let prev_zoom = self.viewport_zoom;
+                    self.viewport_zoom = (self.viewport_zoom + drag_delta.y * 0.01).clamp(0.1, 10.0);
+                    if let Some(hover_pos) = response.hover_pos() {
+                        let ptr_world = (hover_pos.to_vec2() - rect.min.to_vec2()) / prev_zoom
+                            + self.viewport_offset;
+                        self.viewport_offset = ptr_world
+                            - (hover_pos.to_vec2() - rect.min.to_vec2()) / self.viewport_zoom;
+                    }
                 }
 
                 // Infinite canvas zooming: mouse wheel scroll
@@ -5175,6 +5322,8 @@ impl eframe::App for PaintApp {
                     && !r_down;
                 let pointer_clicked =
                     response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+                let pointer_right_clicked =
+                    response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
 
                 // ── Trait-based tool event dispatch (runs first) ──
                 let trait_handled = {
@@ -5184,8 +5333,9 @@ impl eframe::App for PaintApp {
                         rotation_angle: self.rotation_angle,
                         mirror_horizontal: self.mirror_horizontal,
                         screen_rect: rect,
-                        pointer_down: response.dragged(),
+                        pointer_down,
                         pointer_clicked,
+                        pointer_right_clicked,
                         pointer_drag_stopped: response.drag_stopped(),
                         pointer_double_clicked: response.double_clicked_by(egui::PointerButton::Primary),
                         pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
@@ -5201,6 +5351,7 @@ impl eframe::App for PaintApp {
                 self.exec_brush_pipeline(pointer_down, pointer_clicked, &response, ctx, rect);
 
                 // 4. RENDERING & DISPLAY VIEWPORT
+                let clipped_painter = ui.painter().with_clip_rect(rect);
                 if let Some(renderer) = &mut self.renderer {
                     // Update GPU textures incrementally for dirty CPU tiles
                     let mut layer_refs: Vec<&mut Layer> = self.layers.values_mut().collect();
@@ -5305,26 +5456,26 @@ impl eframe::App for PaintApp {
                             }
                             mesh.add_triangle(0, 1, 2);
                             mesh.add_triangle(0, 2, 3);
-                            ui.painter().add(egui::Shape::mesh(mesh));
+                            clipped_painter.add(egui::Shape::mesh(mesh));
 
                             // If selected, draw active transform / selection dashed border
                             if self.selected_reference_idx == Some(ref_idx) {
                                 let border_color = egui::Color32::from_rgb(0, 120, 215);
                                 let stroke = egui::Stroke::new(1.5, border_color);
                                 for i in 0..4 {
-                                    ui.painter().line_segment(
+                                    clipped_painter.line_segment(
                                         [screen_pos[i], screen_pos[(i + 1) % 4]],
                                         stroke,
                                     );
                                 }
                                 // Draw a small square handle at each corner
                                 for pos in &screen_pos {
-                                    ui.painter().rect_filled(
+                                    clipped_painter.rect_filled(
                                         egui::Rect::from_center_size(*pos, egui::vec2(6.0, 6.0)),
                                         1.0,
                                         border_color,
                                     );
-                                    ui.painter().rect_stroke(
+                                    clipped_painter.rect_stroke(
                                         egui::Rect::from_center_size(*pos, egui::vec2(6.0, 6.0)),
                                         1.0,
                                         egui::Stroke::new(1.0, egui::Color32::WHITE),
@@ -5373,7 +5524,7 @@ impl eframe::App for PaintApp {
                         let bot_sy = ((canvas_bottom - self.viewport_offset.y)
                             * self.viewport_zoom)
                             + rect.min.y;
-                        ui.painter().line_segment(
+                        clipped_painter.line_segment(
                             [egui::Pos2::new(sx, top_sy), egui::Pos2::new(sx, bot_sy)],
                             egui::Stroke::new(0.5, Color32::from_black_alpha(40)),
                         );
@@ -5387,7 +5538,7 @@ impl eframe::App for PaintApp {
                         let right_sx = ((canvas_right - self.viewport_offset.x)
                             * self.viewport_zoom)
                             + rect.min.x;
-                        ui.painter().line_segment(
+                        clipped_painter.line_segment(
                             [egui::Pos2::new(left_sx, sy), egui::Pos2::new(right_sx, sy)],
                             egui::Stroke::new(0.5, Color32::from_black_alpha(40)),
                         );
@@ -5413,7 +5564,7 @@ impl eframe::App for PaintApp {
                                 egui::Pos2::new(self.symmetry_center.x, self.canvas_height as f32),
                                 rect,
                             );
-                            ui.painter().line_segment([p0, p1], stroke);
+                            clipped_painter.line_segment([p0, p1], stroke);
                         }
                         SymmetryMode::Vertical => {
                             let p0 = self.world_to_screen(
@@ -5424,7 +5575,7 @@ impl eframe::App for PaintApp {
                                 egui::Pos2::new(self.canvas_width as f32, self.symmetry_center.y),
                                 rect,
                             );
-                            ui.painter().line_segment([p0, p1], stroke);
+                            clipped_painter.line_segment([p0, p1], stroke);
                         }
                         SymmetryMode::Radial => {
                             let p_center = self.world_to_screen(self.symmetry_center, rect);
@@ -5438,7 +5589,7 @@ impl eframe::App for PaintApp {
                                 let pt_world = self.symmetry_center
                                     + egui::vec2(max_r * theta.cos(), max_r * theta.sin());
                                 let p_end = self.world_to_screen(pt_world, rect);
-                                ui.painter().line_segment([p_center, p_end], stroke);
+                                clipped_painter.line_segment([p_center, p_end], stroke);
                             }
                         }
                     }
@@ -5446,15 +5597,16 @@ impl eframe::App for PaintApp {
 
                 // ── Trait-based tool overlay drawing ──
                 self.tool_registry.draw_active_overlay(
-                    ui.painter(),
+                    &clipped_painter,
                     &tools::ToolContext {
                         viewport_offset: self.viewport_offset,
                         viewport_zoom: self.viewport_zoom,
                         rotation_angle: self.rotation_angle,
                         mirror_horizontal: self.mirror_horizontal,
                         screen_rect: rect,
-                        pointer_down: response.dragged(),
+                        pointer_down,
                         pointer_clicked,
+                        pointer_right_clicked,
                         pointer_drag_stopped: response.drag_stopped(),
                         pointer_double_clicked: response.double_clicked_by(egui::PointerButton::Primary),
                         pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
@@ -5485,7 +5637,7 @@ impl eframe::App for PaintApp {
                                         let p3 = self
                                             .world_to_screen(egui::Pos2::new(wx, wy + 1.0), rect);
 
-                                        ui.painter().add(egui::Shape::convex_polygon(
+                                        clipped_painter.add(egui::Shape::convex_polygon(
                                             vec![p0, p1, p2, p3],
                                             egui::Color32::from_rgba_premultiplied(
                                                 60,
@@ -5548,11 +5700,11 @@ impl eframe::App for PaintApp {
                                                 egui::Pos2::new(wx as f32 + 1.0, wy as f32 + 1.0),
                                                 rect,
                                             );
-                                            ui.painter().line_segment(
+                                            clipped_painter.line_segment(
                                                 [p0, p1],
                                                 egui::Stroke::new(1.0, egui::Color32::BLACK),
                                             );
-                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                            Self::draw_dashed_line(&clipped_painter, p0, p1, time);
                                         }
 
                                         // Check bottom neighbor
@@ -5570,11 +5722,11 @@ impl eframe::App for PaintApp {
                                                 egui::Pos2::new(wx as f32 + 1.0, wy as f32 + 1.0),
                                                 rect,
                                             );
-                                            ui.painter().line_segment(
+                                            clipped_painter.line_segment(
                                                 [p0, p1],
                                                 egui::Stroke::new(1.0, egui::Color32::BLACK),
                                             );
-                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                            Self::draw_dashed_line(&clipped_painter, p0, p1, time);
                                         }
 
                                         // Check left neighbor
@@ -5592,11 +5744,11 @@ impl eframe::App for PaintApp {
                                                 egui::Pos2::new(wx as f32, wy as f32 + 1.0),
                                                 rect,
                                             );
-                                            ui.painter().line_segment(
+                                            clipped_painter.line_segment(
                                                 [p0, p1],
                                                 egui::Stroke::new(1.0, egui::Color32::BLACK),
                                             );
-                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                            Self::draw_dashed_line(&clipped_painter, p0, p1, time);
                                         }
 
                                         // Check top neighbor
@@ -5614,11 +5766,11 @@ impl eframe::App for PaintApp {
                                                 egui::Pos2::new(wx as f32 + 1.0, wy as f32),
                                                 rect,
                                             );
-                                            ui.painter().line_segment(
+                                            clipped_painter.line_segment(
                                                 [p0, p1],
                                                 egui::Stroke::new(1.0, egui::Color32::BLACK),
                                             );
-                                            Self::draw_dashed_line(ui.painter(), p0, p1, time);
+                                            Self::draw_dashed_line(&clipped_painter, p0, p1, time);
                                         }
                                     }
                                 }
@@ -5627,11 +5779,44 @@ impl eframe::App for PaintApp {
                     }
                 }
 
-                if self.transform_active {
-                    self.draw_transform_overlay(rect, ui);
+                // Drag selection preview outline for Rect/Ellipse Selection
+                if self.is_selecting {
+                    if let Some(sr) = &self.selection_rect {
+                        let active_tool = self.active_tool();
+                        if active_tool == ToolId::RectSelect {
+                            let p0 = self.world_to_screen(egui::pos2(sr.x0, sr.y0), rect);
+                            let p1 = self.world_to_screen(egui::pos2(sr.x1, sr.y1), rect);
+                            let screen_rect = egui::Rect::from_two_pos(p0, p1);
+                            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
+                            clipped_painter.rect_stroke(screen_rect, 0.0, stroke);
+                        } else if active_tool == ToolId::EllipseSelect {
+                            let p0 = self.world_to_screen(egui::pos2(sr.x0, sr.y0), rect);
+                            let p1 = self.world_to_screen(egui::pos2(sr.x1, sr.y1), rect);
+                            let screen_rect = egui::Rect::from_two_pos(p0, p1);
+                            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
+                            let center = screen_rect.center();
+                            let rx = screen_rect.width() * 0.5;
+                            let ry = screen_rect.height() * 0.5;
+                            if rx > 0.0 && ry > 0.0 {
+                                let num_points = 64;
+                                let mut points = Vec::with_capacity(num_points);
+                                for i in 0..num_points {
+                                    let theta = (i as f32) * 2.0 * std::f32::consts::PI / (num_points as f32);
+                                    points.push(center + egui::vec2(rx * theta.cos(), ry * theta.sin()));
+                                }
+                                for i in 0..num_points {
+                                    clipped_painter.line_segment([points[i], points[(i + 1) % num_points]], stroke);
+                                }
+                            }
+                        }
+                    }
                 }
-                if matches!(self.active_tool(), ToolId::EditCP) {
-                    self.draw_editcp_overlay(rect, ui);
+
+                if self.transform_active {
+                    self.draw_transform_overlay(rect, &clipped_painter);
+                }
+                if matches!(self.active_tool(), ToolId::EditCP | ToolId::VectorPen | ToolId::Curve) {
+                    self.draw_editcp_overlay(rect, &clipped_painter);
                 }
 
                 // =============================================================
@@ -5675,7 +5860,7 @@ impl eframe::App for PaintApp {
                                         });
                                     }
                                     screen_mesh.indices = mesh.indices;
-                                    ui.painter().add(egui::Shape::mesh(screen_mesh));
+                                    clipped_painter.add(egui::Shape::mesh(screen_mesh));
                                 }
                             }
                         }
@@ -5745,6 +5930,60 @@ impl eframe::App for PaintApp {
 
                 // BRUSH CURSOR + TRAIT-BASED CURSOR
                 if let Some(pos) = response.hover_pos() {
+                    // Draw magnifying preview for Color Picker if active
+                    if self.active_tool() == ToolId::ColorPicker {
+                        let world_pos = self.screen_to_world(pos, rect);
+                        let wx = world_pos.x as i32;
+                        let wy = world_pos.y as i32;
+                        if wx >= 0 && wx < self.canvas_width as i32 && wy >= 0 && wy < self.canvas_height as i32 {
+                            let all_layers: Vec<&Layer> = self
+                                .layer_order
+                                .iter()
+                                .filter_map(|id| self.layers.get(id))
+                                .collect();
+                            if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+                                let sampled = fill::sample_reference(
+                                    &all_layers,
+                                    active_layer,
+                                    fill::FillReference::AllVisibleLayers,
+                                    wx,
+                                    wy,
+                                );
+                                let a = sampled[3] as f32 / 32768.0;
+                                let col = if a > 0.0 {
+                                    egui::Color32::from_rgb(
+                                        ((sampled[0] as f32 / 32768.0) / a * 255.0).clamp(0.0, 255.0) as u8,
+                                        ((sampled[1] as f32 / 32768.0) / a * 255.0).clamp(0.0, 255.0) as u8,
+                                        ((sampled[2] as f32 / 32768.0) / a * 255.0).clamp(0.0, 255.0) as u8,
+                                    )
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+
+                                let offset_pos = pos + egui::vec2(25.0, -25.0);
+                                if a < 1.0 {
+                                    ui.painter().circle_filled(offset_pos, 12.0, egui::Color32::from_rgb(150, 150, 150));
+                                }
+                                ui.painter().circle_filled(offset_pos, 12.0, col);
+                                ui.painter().circle_stroke(
+                                    offset_pos,
+                                    12.0,
+                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 200, 200)),
+                                );
+                                ui.painter().circle_stroke(
+                                    offset_pos,
+                                    16.0,
+                                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                                );
+                                ui.painter().circle_stroke(
+                                    offset_pos,
+                                    17.0,
+                                    egui::Stroke::new(1.0, egui::Color32::BLACK),
+                                );
+                            }
+                        }
+                    }
+
                     // Let trait tools draw custom cursors first
                     let custom_drawn = self.tool_registry.draw_active_cursor(pos, ui.painter());
                     if !custom_drawn {

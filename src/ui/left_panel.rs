@@ -671,6 +671,55 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Color Picker (Eyedropper) [Alt/I]");
             ui.end_row();
+
+            // ROW 3
+            // 1. Fill Tool
+            let is_active = app.active_tool() == ToolId::Fill;
+            let btn = egui::Button::new("").selected(is_active);
+            let btn_resp = ui.add_sized([26.0, 26.0], btn);
+            let icon_color = if is_active {
+                egui::Color32::from_rgb(0, 120, 215)
+            } else {
+                ui.style().visuals.widgets.inactive.text_color()
+            };
+            let center = btn_resp.rect.center();
+            let stroke = egui::Stroke::new(1.5, icon_color);
+            ui.painter().line_segment([center + egui::vec2(-4.0, 2.0), center + egui::vec2(2.0, -4.0)], stroke);
+            ui.painter().line_segment([center + egui::vec2(-4.0, 2.0), center + egui::vec2(-1.0, 5.0)], stroke);
+            ui.painter().line_segment([center + egui::vec2(-1.0, 5.0), center + egui::vec2(5.0, -1.0)], stroke);
+            ui.painter().line_segment([center + egui::vec2(5.0, -1.0), center + egui::vec2(2.0, -4.0)], stroke);
+            ui.painter().circle_stroke(center + egui::vec2(-4.0, -2.0), 3.0, egui::Stroke::new(1.0, icon_color));
+            if btn_resp.clicked() {
+                app.set_active_tool(ToolId::Fill);
+                ctx.request_repaint();
+            }
+            btn_resp.on_hover_text("Fill Tool [G]");
+
+            // 2. Gradient Tool
+            let is_active = app.active_tool() == ToolId::Gradient;
+            let btn = egui::Button::new("").selected(is_active);
+            let btn_resp = ui.add_sized([26.0, 26.0], btn);
+            let icon_color = if is_active {
+                egui::Color32::from_rgb(0, 120, 215)
+            } else {
+                ui.style().visuals.widgets.inactive.text_color()
+            };
+            let center = btn_resp.rect.center();
+            let stroke = egui::Stroke::new(1.5, icon_color);
+            ui.painter().line_segment([center - egui::vec2(5.0, 0.0), center + egui::vec2(5.0, 0.0)], stroke);
+            ui.painter().circle_filled(center - egui::vec2(5.0, 0.0), 2.5, icon_color);
+            ui.painter().circle_stroke(center + egui::vec2(5.0, 0.0), 2.5, egui::Stroke::new(1.0, icon_color));
+            if btn_resp.clicked() {
+                app.set_active_tool(ToolId::Gradient);
+                ctx.request_repaint();
+            }
+            btn_resp.on_hover_text("Gradient Tool [Shift+G]");
+
+            // 3, 4, 5. Empty space cells
+            ui.allocate_space(egui::vec2(26.0, 26.0));
+            ui.allocate_space(egui::vec2(26.0, 26.0));
+            ui.allocate_space(egui::vec2(26.0, 26.0));
+            ui.end_row();
         });
     ui.separator();
     ui.label("VECTOR TOOLS");

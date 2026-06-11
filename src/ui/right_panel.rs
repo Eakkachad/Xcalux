@@ -512,7 +512,7 @@ pub(crate) fn draw_navigator_content(app: &mut PaintApp, ui: &mut egui::Ui) {
                     if let Some(texture_id) = r.navigator_egui_id {
                         painter.image(
                             texture_id,
-                            rect,
+                            paper_rect,
                             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
                             egui::Color32::WHITE,
                         );

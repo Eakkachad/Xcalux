@@ -20,6 +20,7 @@ pub struct ToolContext {
     pub screen_rect: Rect,
     pub pointer_down: bool,
     pub pointer_clicked: bool,
+    pub pointer_right_clicked: bool,
     pub pointer_drag_stopped: bool,
     pub pointer_double_clicked: bool,
     pub pointer_pos: Option<Pos2>,
@@ -85,6 +86,8 @@ pub enum ToolOutcome {
     Handled,
     /// Color picker sampled a color at the given world-space pixel.
     ColorPicked { x: i32, y: i32 },
+    /// Color picker sampled a background color at the given world-space pixel.
+    ColorPickedBg { x: i32, y: i32 },
     /// Magic wand select at the given world-space pixel.
     MagicWandSelect { x: i32, y: i32 },
     /// Polygon lasso completed with the given world-space points.
@@ -140,6 +143,9 @@ pub trait Tool: Send {
 
     /// Draw a tool-specific cursor. Return true if a custom cursor was drawn (hides the default).
     fn draw_cursor(&self, screen_pos: Pos2, painter: &egui::Painter) -> bool;
+
+    /// Called when the tool is deactivated (switched away from).
+    fn deactivate(&mut self) {}
 }
 
 // ── ToolRegistry ──
@@ -199,6 +205,9 @@ impl ToolRegistry {
 
     pub fn activate(&mut self, id: ToolId) -> bool {
         if self.tools.contains_key(&id) {
+            if let Some(current_tool) = self.tools.get_mut(&self.active) {
+                current_tool.deactivate();
+            }
             self.active = id;
             true
         } else {
@@ -291,6 +300,11 @@ impl Tool for ColorPickerTool {
                 let world = ctx.screen_to_world(screen_pos);
                 return ToolOutcome::ColorPicked { x: world.x as i32, y: world.y as i32 };
             }
+        } else if ctx.pointer_right_clicked {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                return ToolOutcome::ColorPickedBg { x: world.x as i32, y: world.y as i32 };
+            }
         }
         ToolOutcome::None
     }
@@ -381,6 +395,11 @@ impl Tool for PolygonLassoTool {
         } else {
             ToolOutcome::None
         }
+    }
+
+    fn deactivate(&mut self) {
+        self.points.clear();
+        self.active = false;
     }
 
     fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
@@ -539,18 +558,29 @@ impl Tool for MagicWandTool {
     }
 }
 
-pub struct MoveTool;
+pub struct MoveTool {
+    active: bool,
+}
+impl MoveTool {
+    pub fn new() -> Self {
+        Self { active: false }
+    }
+}
 impl Tool for MoveTool {
     fn name(&self) -> &'static str { "Move" }
     fn tool_id(&self) -> ToolId { ToolId::Move }
 
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
-        if ctx.pointer_clicked || (ctx.pointer_down && ctx.pointer_drag_stopped) {
-            // Click or drag start
+        if ctx.pointer_down {
+            if !self.active {
+                self.active = true;
+                ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveClick { screen_pos: sp })
+            } else {
+                ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveDrag { screen_pos: sp })
+            }
+        } else if self.active {
+            self.active = false;
             ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveClick { screen_pos: sp })
-        } else if ctx.pointer_down {
-            // Continuous drag
-            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::MoveDrag { screen_pos: sp })
         } else {
             ToolOutcome::None
         }
@@ -584,12 +614,23 @@ impl Tool for MoveTool {
         );
         true
     }
+
+    fn deactivate(&mut self) {
+        self.active = false;
+    }
 }
 
 // =============================================================
 // RECT SELECT TOOL
 // =============================================================
-pub struct RectSelectTool;
+pub struct RectSelectTool {
+    active: bool,
+}
+impl RectSelectTool {
+    pub fn new() -> Self {
+        Self { active: false }
+    }
+}
 impl Tool for RectSelectTool {
     fn name(&self) -> &'static str { "Rect Select" }
     fn tool_id(&self) -> ToolId { ToolId::RectSelect }
@@ -597,12 +638,14 @@ impl Tool for RectSelectTool {
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
         if ctx.pointer_down {
             if let Some(screen_pos) = ctx.pointer_pos {
+                self.active = true;
                 let world = ctx.screen_to_world(screen_pos);
                 ToolOutcome::RectSelectUpdated { world_pos: world }
             } else {
                 ToolOutcome::None
             }
-        } else if ctx.pointer_drag_stopped {
+        } else if self.active {
+            self.active = false;
             ToolOutcome::RectSelectComplete
         } else {
             ToolOutcome::None
@@ -612,12 +655,23 @@ impl Tool for RectSelectTool {
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+
+    fn deactivate(&mut self) {
+        self.active = false;
+    }
 }
 
 // =============================================================
 // ELLIPSE SELECT TOOL
 // =============================================================
-pub struct EllipseSelectTool;
+pub struct EllipseSelectTool {
+    active: bool,
+}
+impl EllipseSelectTool {
+    pub fn new() -> Self {
+        Self { active: false }
+    }
+}
 impl Tool for EllipseSelectTool {
     fn name(&self) -> &'static str { "Ellipse Select" }
     fn tool_id(&self) -> ToolId { ToolId::EllipseSelect }
@@ -625,12 +679,14 @@ impl Tool for EllipseSelectTool {
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
         if ctx.pointer_down {
             if let Some(screen_pos) = ctx.pointer_pos {
+                self.active = true;
                 let world = ctx.screen_to_world(screen_pos);
                 ToolOutcome::RectSelectUpdated { world_pos: world }
             } else {
                 ToolOutcome::None
             }
-        } else if ctx.pointer_drag_stopped {
+        } else if self.active {
+            self.active = false;
             ToolOutcome::RectSelectComplete
         } else {
             ToolOutcome::None
@@ -640,6 +696,10 @@ impl Tool for EllipseSelectTool {
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+
+    fn deactivate(&mut self) {
+        self.active = false;
+    }
 }
 
 // =============================================================
@@ -676,13 +736,18 @@ impl Tool for LassoTool {
             } else {
                 ToolOutcome::None
             }
-        } else if ctx.pointer_drag_stopped && self.active {
+        } else if self.active {
             self.active = false;
             let points = std::mem::take(&mut self.points);
             ToolOutcome::LassoComplete { points }
         } else {
             ToolOutcome::None
         }
+    }
+
+    fn deactivate(&mut self) {
+        self.points.clear();
+        self.active = false;
     }
 
     fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
@@ -744,16 +809,29 @@ impl Tool for ReferenceTool {
 // =============================================================
 // TRANSFORM TOOL
 // =============================================================
-pub struct TransformTool;
+pub struct TransformTool {
+    active: bool,
+}
+impl TransformTool {
+    pub fn new() -> Self {
+        Self { active: false }
+    }
+}
 impl Tool for TransformTool {
     fn name(&self) -> &'static str { "Transform" }
     fn tool_id(&self) -> ToolId { ToolId::Transform }
 
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
-        if ctx.pointer_clicked || (ctx.pointer_down && ctx.pointer_drag_stopped) {
+        if ctx.pointer_down {
+            if !self.active {
+                self.active = true;
+                ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::TransformDown { screen_pos: sp })
+            } else {
+                ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::TransformDrag { screen_pos: sp })
+            }
+        } else if self.active {
+            self.active = false;
             ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::TransformDown { screen_pos: sp })
-        } else if ctx.pointer_down {
-            ctx.pointer_pos.map_or(ToolOutcome::None, |sp| ToolOutcome::TransformDrag { screen_pos: sp })
         } else {
             ToolOutcome::None
         }
@@ -762,6 +840,10 @@ impl Tool for TransformTool {
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+
+    fn deactivate(&mut self) {
+        self.active = false;
+    }
 }
 
 // =============================================================
@@ -864,6 +946,10 @@ impl Tool for CurveTool {
     }
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+
+    fn deactivate(&mut self) {
+        self.points.clear();
+    }
 }
 
 // =============================================================
@@ -916,6 +1002,11 @@ impl Tool for EditCPTool {
     }
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+
+    fn deactivate(&mut self) {
+        self.selection = None;
+        self.dragging = false;
+    }
 }
 
 // =============================================================
@@ -994,4 +1085,10 @@ impl Tool for GradientTool {
     }
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+
+    fn deactivate(&mut self) {
+        self.dragging = false;
+        self.start = None;
+        self.end = None;
+    }
 }

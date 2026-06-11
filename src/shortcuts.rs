@@ -446,6 +446,18 @@ pub fn default_shortcuts() -> Vec<ShortcutEntry> {
             category: "Tools",
         },
         ShortcutEntry {
+            command: CommandId::ToolGradient,
+            primary: Some(KeyBinding {
+                key: Key::G,
+                ctrl: false,
+                shift: true,
+                alt: false,
+            }),
+            secondary: None,
+            name: "Gradient Tool",
+            category: "Tools",
+        },
+        ShortcutEntry {
             command: CommandId::ToolRectSelect,
             primary: Some(KeyBinding {
                 key: Key::M,
