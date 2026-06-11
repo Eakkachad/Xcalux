@@ -249,7 +249,35 @@ impl Tool for ColorPickerTool {
 
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+    fn draw_cursor(&self, screen_pos: Pos2, painter: &egui::Painter) -> bool {
+        let (cx, cy) = (screen_pos.x, screen_pos.y);
+        // Eyedropper: small circle (bulb) + stem + tip
+        painter.circle_filled(
+            egui::pos2(cx, cy - 8.0),
+            4.0,
+            egui::Color32::from_rgb(180, 180, 220),
+        );
+        painter.circle_stroke(
+            egui::pos2(cx, cy - 8.0),
+            4.0,
+            egui::Stroke::new(1.0, egui::Color32::WHITE),
+        );
+        painter.line_segment(
+            [egui::pos2(cx, cy - 4.0), egui::pos2(cx, cy + 3.0)],
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(180, 180, 220)),
+        );
+        // Tip: small filled diamond
+        let tip_y = cy + 5.0;
+        painter.line_segment(
+            [egui::pos2(cx, tip_y + 2.0), egui::pos2(cx - 2.0, tip_y)],
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(180, 180, 220)),
+        );
+        painter.line_segment(
+            [egui::pos2(cx, tip_y + 2.0), egui::pos2(cx + 2.0, tip_y)],
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(180, 180, 220)),
+        );
+        true
+    }
 }
 
 pub struct PolygonLassoTool {
@@ -387,7 +415,31 @@ impl Tool for FillTool {
 
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _screen_pos: egui::Pos2, _painter: &egui::Painter) -> bool { false }
+    fn draw_cursor(&self, screen_pos: Pos2, painter: &egui::Painter) -> bool {
+        let (cx, cy) = (screen_pos.x, screen_pos.y);
+        // Paint bucket: trapezoid body
+        let pts = [
+            egui::pos2(cx - 5.0, cy - 2.0),
+            egui::pos2(cx + 5.0, cy - 2.0),
+            egui::pos2(cx + 4.0, cy + 6.0),
+            egui::pos2(cx - 4.0, cy + 6.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            pts.to_vec(),
+            egui::Color32::from_rgb(100, 160, 255),
+            egui::Stroke::new(1.0, egui::Color32::WHITE),
+        ));
+        // Handle (small arc at top)
+        painter.line_segment(
+            [egui::pos2(cx - 3.0, cy - 2.0), egui::pos2(cx - 3.0, cy - 5.0)],
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 160, 255)),
+        );
+        painter.line_segment(
+            [egui::pos2(cx - 3.0, cy - 5.0), egui::pos2(cx + 3.0, cy - 5.0)],
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 160, 255)),
+        );
+        true
+    }
 }
 
 pub struct MagicWandTool;
@@ -411,7 +463,32 @@ impl Tool for MagicWandTool {
 
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _screen_pos: egui::Pos2, _painter: &egui::Painter) -> bool { false }
+    fn draw_cursor(&self, screen_pos: Pos2, painter: &egui::Painter) -> bool {
+        let (cx, cy) = (screen_pos.x, screen_pos.y);
+        // Magic wand: 4-pointed sparkle star
+        let thin = egui::Stroke::new(2.5, egui::Color32::from_rgb(255, 220, 80));
+        let outer = 8.0;
+        let inner = 3.0;
+        for i in 0..4 {
+            let angle = i as f32 * std::f32::consts::FRAC_PI_2 + std::f32::consts::FRAC_PI_4;
+            let (sin_a, cos_a) = angle.sin_cos();
+            let x1 = cx + cos_a * inner;
+            let y1 = cy + sin_a * inner;
+            let x2 = cx + cos_a * outer;
+            let y2 = cy + sin_a * outer;
+            painter.line_segment(
+                [egui::pos2(x1, y1), egui::pos2(x2, y2)],
+                thin,
+            );
+        }
+        // Center glow
+        painter.circle_filled(
+            screen_pos,
+            2.0,
+            egui::Color32::from_rgb(255, 255, 200),
+        );
+        true
+    }
 }
 
 pub struct MoveTool;
@@ -425,7 +502,32 @@ impl Tool for MoveTool {
 
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
-    fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+    fn draw_cursor(&self, screen_pos: Pos2, painter: &egui::Painter) -> bool {
+        let (cx, cy) = (screen_pos.x, screen_pos.y);
+        // Crosshair with gradient indicator: small cross + two color dots
+        let cross_len = 6.0;
+        let col = egui::Color32::from_rgb(100, 200, 255);
+        painter.line_segment(
+            [egui::pos2(cx - cross_len, cy), egui::pos2(cx + cross_len, cy)],
+            egui::Stroke::new(1.0, col),
+        );
+        painter.line_segment(
+            [egui::pos2(cx, cy - cross_len), egui::pos2(cx, cy + cross_len)],
+            egui::Stroke::new(1.0, col),
+        );
+        // Start/end dots to indicate gradient direction
+        painter.circle_filled(
+            egui::pos2(cx - 3.0, cy - 3.0),
+            2.0,
+            egui::Color32::from_rgb(100, 200, 255),
+        );
+        painter.circle_filled(
+            egui::pos2(cx + 3.0, cy + 3.0),
+            2.0,
+            egui::Color32::from_rgb(255, 200, 100),
+        );
+        true
+    }
 }
 
 // =============================================================
