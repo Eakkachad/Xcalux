@@ -21,6 +21,7 @@ pub struct ToolContext {
     pub pointer_down: bool,
     pub pointer_clicked: bool,
     pub pointer_drag_stopped: bool,
+    pub pointer_double_clicked: bool,
     pub pointer_pos: Option<Pos2>,
     pub pointer_pressure: f32,
 }
@@ -86,6 +87,8 @@ pub enum ToolOutcome {
     ColorPicked { x: i32, y: i32 },
     /// Magic wand select at the given world-space pixel.
     MagicWandSelect { x: i32, y: i32 },
+    /// Polygon lasso completed with the given world-space points.
+    PolygonLassoComplete { points: Vec<(f32, f32)> },
 }
 
 // ── Tool trait ──
@@ -231,6 +234,120 @@ impl Tool for ColorPickerTool {
     fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
+}
+
+pub struct PolygonLassoTool {
+    points: Vec<(f32, f32)>,
+    active: bool,
+}
+
+impl PolygonLassoTool {
+    pub fn new() -> Self {
+        Self {
+            points: Vec::new(),
+            active: false,
+        }
+    }
+}
+
+impl Tool for PolygonLassoTool {
+    fn name(&self) -> &'static str { "Polygon Lasso" }
+    fn tool_id(&self) -> ToolId { ToolId::PolygonLasso }
+
+    fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if ctx.pointer_clicked {
+            if let Some(screen_pos) = ctx.pointer_pos {
+                let world = ctx.screen_to_world(screen_pos);
+                let wx = world.x;
+                let wy = world.y;
+
+                // Check if clicking near first point to close polygon
+                let close_threshold = 8.0;
+                let can_close = self.points.len() >= 3 && {
+                    let first = self.points[0];
+                    let dx = wx - first.0;
+                    let dy = wy - first.1;
+                    (dx * dx + dy * dy).sqrt() < close_threshold
+                };
+
+                if (can_close || ctx.pointer_double_clicked) && self.points.len() >= 3 {
+                    // Close polygon — return points and reset internal state
+                    let result = ToolOutcome::PolygonLassoComplete {
+                        points: std::mem::take(&mut self.points),
+                    };
+                    self.active = false;
+                    result
+                } else {
+                    // Add point
+                    self.points.push((wx, wy));
+                    self.active = true;
+                    ToolOutcome::Handled
+                }
+            } else {
+                ToolOutcome::None
+            }
+        } else {
+            ToolOutcome::None
+        }
+    }
+
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
+        if !self.active || self.points.len() < 2 {
+            return;
+        }
+        // Draw segment lines between consecutive points
+        for i in 0..self.points.len() - 1 {
+            let a = ctx.world_to_screen(egui::Vec2::new(self.points[i].0, self.points[i].1));
+            let b = ctx.world_to_screen(egui::Vec2::new(self.points[i + 1].0, self.points[i + 1].1));
+            painter.line_segment(
+                [a, b],
+                egui::Stroke::new(
+                    2.0,
+                    egui::Color32::from_rgba_premultiplied(0, 180, 255, 220),
+                ),
+            );
+        }
+        // Draw cursor line from last point to mouse cursor
+        if let Some(ptr_pos) = ctx.pointer_pos {
+            let last_world = egui::Vec2::new(
+                self.points[self.points.len() - 1].0,
+                self.points[self.points.len() - 1].1,
+            );
+            let last_screen = ctx.world_to_screen(last_world);
+            painter.line_segment(
+                [last_screen, ptr_pos],
+                egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_premultiplied(0, 180, 255, 120),
+                ),
+            );
+        }
+        // Draw control points as filled circles
+        for &(px, py) in self.points.iter() {
+            let screen_pt = ctx.world_to_screen(egui::Vec2::new(px, py));
+            painter.circle_filled(
+                screen_pt,
+                3.0,
+                egui::Color32::from_rgb(0, 180, 255),
+            );
+            painter.circle_stroke(
+                screen_pt,
+                3.0,
+                egui::Stroke::new(1.0, egui::Color32::WHITE),
+            );
+        }
+        // Draw first point slightly larger to indicate close-ability
+        if self.points.len() >= 3 {
+            let first_pt = ctx.world_to_screen(egui::Vec2::new(self.points[0].0, self.points[0].1));
+            painter.circle_stroke(
+                first_pt,
+                5.0,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 0)),
+            );
+        }
+    }
+
+    fn draw_cursor(&self, _screen_pos: egui::Pos2, _painter: &egui::Painter) -> bool { false }
 }
 
 pub struct MagicWandTool;

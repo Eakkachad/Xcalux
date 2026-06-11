@@ -295,8 +295,6 @@ pub struct PaintApp {
     pub selection_mode: selection::SelectionMode,
     pub selection_rect: Option<selection::SelectionRect>,
     pub lasso_points: Option<selection::LassoPoints>,
-    pub polygon_points: Vec<(f32, f32)>,
-    pub polygon_active: bool,
     pub gradient_start: Option<egui::Vec2>,
     pub gradient_end: Option<egui::Vec2>,
     pub gradient_dragging: bool,
@@ -1055,6 +1053,7 @@ impl PaintApp {
                 reg.register(Box::new(crate::tools::ZoomTool));
                 reg.register(Box::new(crate::tools::RotateViewTool));
                 reg.register(Box::new(crate::tools::ColorPickerTool));
+                reg.register(Box::new(crate::tools::PolygonLassoTool::new()));
                 reg.register(Box::new(crate::tools::MagicWandTool));
                 reg.register(Box::new(crate::tools::MoveTool));
                 reg
@@ -1063,8 +1062,6 @@ impl PaintApp {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
-            polygon_points: Vec::new(),
-            polygon_active: false,
             gradient_start: None,
             gradient_end: None,
             gradient_dragging: false,
@@ -2086,6 +2083,20 @@ impl PaintApp {
         match self.tool_registry.handle_active_event(ctx) {
             tools::ToolOutcome::None => false,
             tools::ToolOutcome::Handled => true,
+            tools::ToolOutcome::PolygonLassoComplete { points } => {
+                if self.selection_mode == selection::SelectionMode::Replace {
+                    selection::clear_selection(&mut self.selection_mask);
+                }
+                selection::apply_polygon_lasso_selection(
+                    &mut self.selection_mask,
+                    &points,
+                    self.selection_mode,
+                    self.selection_feather,
+                    true,
+                );
+                self.show_selection_overlay = self.selection_mask.is_active;
+                true
+            }
             tools::ToolOutcome::MagicWandSelect { x, y } => {
                 if x >= 0
                     && x < self.canvas_width as i32
@@ -4410,49 +4421,6 @@ impl eframe::App for PaintApp {
                     }
                 }
 
-                // Handle polygon lasso clicks
-                if pointer_clicked && matches!(self.active_tool, ToolId::PolygonLasso) {
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let world_pos = self.screen_to_world(ptr_pos, rect);
-                        let wx = world_pos.x;
-                        let wy = world_pos.y;
-
-                        // Check if clicking near first point to close polygon
-                        let close_threshold = 8.0;
-                        let can_close = self.polygon_points.len() >= 3 && {
-                            let first = self.polygon_points[0];
-                            let dx = wx - first.0;
-                            let dy = wy - first.1;
-                            (dx * dx + dy * dy).sqrt() < close_threshold
-                        };
-
-                        // Also close on double-click
-                        let double_click = response.double_clicked_by(egui::PointerButton::Primary);
-
-                        if (can_close || double_click) && self.polygon_points.len() >= 3 {
-                            // Close polygon and rasterize
-                            if self.selection_mode == selection::SelectionMode::Replace {
-                                selection::clear_selection(&mut self.selection_mask);
-                            }
-                            let points = std::mem::take(&mut self.polygon_points);
-                            self.polygon_active = false;
-                            selection::apply_polygon_lasso_selection(
-                                &mut self.selection_mask,
-                                &points,
-                                self.selection_mode,
-                                self.selection_feather,
-                                true,
-                            );
-                            self.show_selection_overlay = self.selection_mask.is_active;
-                        } else {
-                            // Add point to polygon
-                            self.polygon_points.push((wx, wy));
-                            self.polygon_active = true;
-                        }
-                        ctx.request_repaint();
-                    }
-                }
-
                 // Handle fill tool click
                 if pointer_clicked && matches!(self.active_tool, ToolId::Fill) {
                     if let Some(ptr_pos) = response.hover_pos() {
@@ -4694,15 +4662,16 @@ impl eframe::App for PaintApp {
                         pointer_down: response.dragged(),
                         pointer_clicked,
                         pointer_drag_stopped: response.drag_stopped(),
+                        pointer_double_clicked: response.double_clicked_by(egui::PointerButton::Primary),
                         pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
                         pointer_pressure: self.last_ptr_pressure,
                     };
                     self.dispatch_tool_event(&tool_ctx)
                 };
                 if trait_handled {
-                    // Trait tool consumed the event; skip inline dispatch.
-                    // All the remaining inline dispatch blocks are inside
-                    // `if !trait_handled { ... }` below.
+                    // Trait tool consumed the event; request repaint and
+                    // skip the remaining inline dispatch blocks.
+                    ctx.request_repaint();
                 }
                 if !trait_handled {
                 // Handle magic wand click
@@ -5736,67 +5705,11 @@ impl eframe::App for PaintApp {
                         pointer_down: response.dragged(),
                         pointer_clicked,
                         pointer_drag_stopped: response.drag_stopped(),
+                        pointer_double_clicked: response.double_clicked_by(egui::PointerButton::Primary),
                         pointer_pos: response.hover_pos().or_else(|| ui.input(|i| i.pointer.hover_pos())),
                         pointer_pressure: self.last_ptr_pressure,
                     },
                 );
-
-                // POLYGON LASSO PREVIEW
-                if matches!(self.active_tool, ToolId::PolygonLasso)
-                    && self.polygon_active
-                    && self.polygon_points.len() >= 2
-                {
-                    let pp = &self.polygon_points;
-                    // Draw segment lines
-                    for i in 0..pp.len() - 1 {
-                        let a = self.world_to_screen(egui::Pos2::new(pp[i].0, pp[i].1), rect);
-                        let b =
-                            self.world_to_screen(egui::Pos2::new(pp[i + 1].0, pp[i + 1].1), rect);
-                        ui.painter().line_segment(
-                            [a, b],
-                            egui::Stroke::new(
-                                2.0,
-                                egui::Color32::from_rgba_premultiplied(0, 180, 255, 220),
-                            ),
-                        );
-                    }
-                    // Draw cursor line from last point to mouse cursor
-                    if let Some(ptr_pos) = response.hover_pos() {
-                        let last_world = egui::Pos2::new(pp[pp.len() - 1].0, pp[pp.len() - 1].1);
-                        let last_screen = self.world_to_screen(last_world, rect);
-                        ui.painter().line_segment(
-                            [last_screen, ptr_pos],
-                            egui::Stroke::new(
-                                1.0,
-                                egui::Color32::from_rgba_premultiplied(0, 180, 255, 120),
-                            ),
-                        );
-                    }
-                    // Draw control points as filled circles
-                    for &(px, py) in pp.iter() {
-                        let screen_pt = self.world_to_screen(egui::Pos2::new(px, py), rect);
-                        ui.painter().circle_filled(
-                            screen_pt,
-                            3.0,
-                            egui::Color32::from_rgb(0, 180, 255),
-                        );
-                        ui.painter().circle_stroke(
-                            screen_pt,
-                            3.0,
-                            egui::Stroke::new(1.0, egui::Color32::WHITE),
-                        );
-                    }
-                    // Draw first point slightly larger to indicate close-ability
-                    if pp.len() >= 3 {
-                        let first_pt =
-                            self.world_to_screen(egui::Pos2::new(pp[0].0, pp[0].1), rect);
-                        ui.painter().circle_stroke(
-                            first_pt,
-                            5.0,
-                            egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 0)),
-                        );
-                    }
-                }
 
                 // SELECTION OVERLAY (marching ants or mask)
                 if self.show_selection_overlay && self.selection_mask.is_active {
@@ -7122,8 +7035,6 @@ mod tests {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
-            polygon_points: Vec::new(),
-            polygon_active: false,
             gradient_start: None,
             gradient_end: None,
             gradient_dragging: false,
@@ -7333,8 +7244,6 @@ mod tests {
             selection_mode: selection::SelectionMode::Replace,
             selection_rect: None,
             lasso_points: None,
-            polygon_points: Vec::new(),
-            polygon_active: false,
             gradient_start: None,
             gradient_end: None,
             gradient_dragging: false,
