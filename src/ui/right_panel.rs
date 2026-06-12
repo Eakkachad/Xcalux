@@ -154,6 +154,7 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         app.workspace_layout
                                             .toggle_panel_visibility(PanelKind::LayersManager);
                                     }
+                                    /*
                                     let ref_vis =
                                         app.workspace_layout.panel_visible(PanelKind::Reference);
                                     if ui
@@ -164,6 +165,7 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                         app.workspace_layout
                                             .toggle_panel_visibility(PanelKind::Reference);
                                     }
+                                    */
                                     let sym_vis =
                                         app.workspace_layout.panel_visible(PanelKind::Symmetry);
                                     if ui
@@ -326,6 +328,7 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 ui.add_space(5.0);
                             }
 
+                            /*
                             // ── REFERENCE ──
                             if app
                                 .workspace_layout
@@ -348,6 +351,7 @@ pub fn draw_right_panel(app: &mut PaintApp, ctx: &egui::Context) {
                                 });
                                 ui.add_space(5.0);
                             }
+                            */
                         }); // ui.vertical
                     }); // scroll area
             } // if !collapsed
@@ -417,9 +421,11 @@ pub fn render_floating_right_panels(app: &mut PaintApp, ctx: &egui::Context) {
                     PanelKind::LayersManager => {
                         draw_layers_manager_widget(app, ui, ctx);
                     }
+                    /*
                     PanelKind::Reference => {
                         draw_reference_widget(app, ui, ctx);
                     }
+                    */
                     _ => {}
                 }
             });
@@ -1046,6 +1052,7 @@ pub(crate) fn draw_color_history_content(app: &mut PaintApp, ui: &mut egui::Ui) 
     }
 }
 
+/*
 pub(crate) fn draw_reference_widget(app: &mut PaintApp, ui: &mut egui::Ui, _ctx: &egui::Context) {
     egui::CollapsingHeader::new("REFERENCE")
         .default_open(true)
@@ -1179,6 +1186,7 @@ pub(crate) fn draw_reference_widget(app: &mut PaintApp, ui: &mut egui::Ui, _ctx:
             });
         });
 }
+*/
 
 pub(crate) fn draw_layers_manager_widget(
     app: &mut PaintApp,

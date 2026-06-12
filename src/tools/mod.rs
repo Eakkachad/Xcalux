@@ -345,6 +345,7 @@ impl Tool for ColorPickerTool {
 pub struct PolygonLassoTool {
     points: Vec<(f32, f32)>,
     active: bool,
+    last_down_pos: Option<egui::Pos2>,
 }
 
 impl PolygonLassoTool {
@@ -352,6 +353,7 @@ impl PolygonLassoTool {
         Self {
             points: Vec::new(),
             active: false,
+            last_down_pos: None,
         }
     }
 }
@@ -361,38 +363,48 @@ impl Tool for PolygonLassoTool {
     fn tool_id(&self) -> ToolId { ToolId::PolygonLasso }
 
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
-        if ctx.pointer_clicked {
-            if let Some(screen_pos) = ctx.pointer_pos {
-                let world = ctx.screen_to_world(screen_pos);
-                let wx = world.x;
-                let wy = world.y;
-
-                // Check if clicking near first point to close polygon
-                let close_threshold = 8.0;
-                let can_close = self.points.len() >= 3 && {
-                    let first = self.points[0];
-                    let dx = wx - first.0;
-                    let dy = wy - first.1;
-                    (dx * dx + dy * dy).sqrt() < close_threshold
-                };
-
-                if (can_close || ctx.pointer_double_clicked) && self.points.len() >= 3 {
-                    // Close polygon — return points and reset internal state
-                    let result = ToolOutcome::PolygonLassoComplete {
-                        points: std::mem::take(&mut self.points),
-                    };
-                    self.active = false;
-                    result
-                } else {
-                    // Add point
-                    self.points.push((wx, wy));
-                    self.active = true;
-                    ToolOutcome::Handled
-                }
-            } else {
-                ToolOutcome::None
+        if ctx.pointer_down {
+            if self.last_down_pos.is_none() {
+                self.last_down_pos = ctx.pointer_pos;
             }
+            ToolOutcome::None
         } else {
+            if let Some(down_pos) = self.last_down_pos.take() {
+                if let Some(up_pos) = ctx.pointer_pos {
+                    let dx = up_pos.x - down_pos.x;
+                    let dy = up_pos.y - down_pos.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    // Threshold of 5.0 pixels to consider it a click rather than a drag
+                    if dist < 5.0 {
+                        let world = ctx.screen_to_world(up_pos);
+                        let wx = world.x;
+                        let wy = world.y;
+
+                        // Check if clicking near first point to close polygon
+                        let close_threshold = 8.0;
+                        let can_close = self.points.len() >= 3 && {
+                            let first = self.points[0];
+                            let dx = wx - first.0;
+                            let dy = wy - first.1;
+                            (dx * dx + dy * dy).sqrt() < close_threshold
+                        };
+
+                        if (can_close || ctx.pointer_double_clicked) && self.points.len() >= 3 {
+                            // Close polygon — return points and reset internal state
+                            let result = ToolOutcome::PolygonLassoComplete {
+                                points: std::mem::take(&mut self.points),
+                            };
+                            self.active = false;
+                            return result;
+                        } else {
+                            // Add point
+                            self.points.push((wx, wy));
+                            self.active = true;
+                            return ToolOutcome::Handled;
+                        }
+                    }
+                }
+            }
             ToolOutcome::None
         }
     }
@@ -400,6 +412,7 @@ impl Tool for PolygonLassoTool {
     fn deactivate(&mut self) {
         self.points.clear();
         self.active = false;
+        self.last_down_pos = None;
     }
 
     fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
@@ -724,6 +737,12 @@ impl Tool for LassoTool {
     fn tool_id(&self) -> ToolId { ToolId::Lasso }
 
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
+        if !ctx.pointer_down && self.active {
+            self.active = false;
+            let points = std::mem::take(&mut self.points);
+            return ToolOutcome::LassoComplete { points };
+        }
+
         if ctx.pointer_down {
             if let Some(screen_pos) = ctx.pointer_pos {
                 let world = ctx.screen_to_world(screen_pos);
@@ -736,10 +755,6 @@ impl Tool for LassoTool {
             } else {
                 ToolOutcome::None
             }
-        } else if self.active {
-            self.active = false;
-            let points = std::mem::take(&mut self.points);
-            ToolOutcome::LassoComplete { points }
         } else {
             ToolOutcome::None
         }

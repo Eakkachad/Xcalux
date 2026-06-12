@@ -405,11 +405,17 @@ pub struct PaintApp {
     pub show_performance_hud: bool,
 
     // Reference Images
+    #[allow(dead_code)]
     pub(crate) reference_images: Vec<ReferenceImage>,
+    #[allow(dead_code)]
     pub(crate) selected_reference_idx: Option<usize>,
+    #[allow(dead_code)]
     pub(crate) ref_image_path_input: String,
+    #[allow(dead_code)]
     pub(crate) reference_id_counter: u64,
+    #[allow(dead_code)]
     pub(crate) ref_image_dragging: Option<usize>,
+    #[allow(dead_code)]
     pub(crate) ref_image_drag_offset: egui::Vec2,
 
     // Adjustment dialogs
@@ -2092,6 +2098,10 @@ impl PaintApp {
         self.is_selecting = false;
 
         self.tool_registry.activate(id);
+
+        if id == ToolId::Transform {
+            self.start_transform();
+        }
     }
 
     /// Dispatch events to the trait-based tool system.
@@ -6118,6 +6128,7 @@ impl PaintApp {
         )
     }
 
+    #[allow(dead_code)]
     pub fn load_reference_image(
         &mut self,
         path_str: &str,
@@ -7164,5 +7175,186 @@ mod tests {
         let bad_path = std::path::Path::new("nonexistent_texture_path_123.bmp");
         let result = load_bmp_texture(bad_path);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transform_tool_activation() {
+        let mut app = PaintApp {
+            active_layer_id: 1,
+            layers: ahash::AHashMap::default(),
+            layer_order: vec![1],
+            layer_id_counter: 1,
+            active_preset_index: 0,
+            presets: vec![BrushPreset {
+                id: 1,
+                name: "Pencil".to_string(),
+                icon: PresetIcon::Pencil,
+                radius_log: 1.0,
+                opacity: 0.95,
+                hardness: 0.95,
+                min_size_fraction: 0.8,
+                color_blending: 0.0,
+                dilution: 0.0,
+                is_eraser: false,
+                texture_id: 0,
+                texture_scale: 1.0,
+                bristle_id: 0,
+                stabilizer_level: StabilizerLevel::default(),
+                stabilizer_mode: StabilizerMode::SpringMassDamper,
+                spacing: 2.0,
+                density: 1.0,
+            }],
+            preset_id_counter: 1,
+            brushes: vec![Brush::new()],
+            brush_states: vec![BrushState::default()],
+            foreground_color: [0.0, 0.0, 0.0],
+            background_color: [1.0, 1.0, 1.0],
+            active_color_is_bg: false,
+            active_color_is_transparent: false,
+            hex_color_input: String::new(),
+            toggle_fullscreen_requested: false,
+            palette: Vec::new(),
+            selected_palette_index: None,
+            brush_radius_log: 1.0,
+            brush_opacity: 1.0,
+            brush_hardness: 0.8,
+            brush_min_size_fraction: 0.8,
+            brush_color_blending: 0.0,
+            brush_dilution: 0.0,
+            brush_spacing: 2.0,
+            brush_density: 1.0,
+            pressure_curve: 0.5,
+            pressure_min: 0.0,
+            renaming_preset_index: None,
+            rename_input: String::new(),
+            input_manager: None,
+            tablet_axis: TabletAxisState::default(),
+            egui_touch_pressure: None,
+            egui_touch_active: false,
+            stabilizer: StrokeStabilizer::new(0),
+            performance_hud: PerformanceHud::default(),
+            tablet_diagnostics: TabletDiagnostics::default(),
+            last_ptr_pos: None,
+            last_ptr_pressure: 0.0,
+            last_event_time: 0.0,
+            viewport_offset: Vec2::ZERO,
+            viewport_zoom: 1.0,
+            mirror_horizontal: false,
+            rotation_angle: 0.0,
+            canvas_width: 100,
+            canvas_height: 100,
+            show_new_canvas_dialog: false,
+            new_canvas_width: 100,
+            new_canvas_height: 100,
+            history: HistoryManager::new(100),
+            current_stroke_snapshots: Vec::new(),
+            dragging_layer_id: None,
+            drag_start_order: None,
+            stroke_id: 1,
+            lock_canvas_bounds: false,
+            selection_mask: crate::canvas::SelectionMask::new(),
+            active_mask_editing: false,
+            brush_textures: Vec::new(),
+            save_sender: std::sync::mpsc::channel().0,
+            current_vector_points: Vec::new(),
+            edit_cp_selection: None,
+            edit_cp_dragging: false,
+            document_path: String::new(),
+            brush_import_path: String::new(),
+            brush_texture_id: 0,
+            brush_texture_scale: 1.0,
+            brush_bristle_id: 0,
+            brush_settings_dirty: true,
+            renderer: None,
+            shortcuts: ShortcutManager::new(),
+
+            fill_options: fill::FillOptions::default(),
+            selection_mode: selection::SelectionMode::Replace,
+            selection_rect: None,
+            gradient_mode: 0,
+            gradient_type: 0,
+            is_selecting: false,
+            show_selection_overlay: false,
+            selection_feather: 0.0,
+            transform_state: transform_tool::TransformState::new(),
+            export_dialogs: ExportDialogState::default(),
+            autosave_enabled: false,
+            autosave_interval_secs: 0.0,
+            autosave_path: String::new(),
+            last_autosave_time: 0.0,
+            document_modified: false,
+            autosave_status: String::new(),
+            show_minimal_ui: false,
+            show_grid: false,
+            show_symmetry: false,
+            quick_bar_visible: false,
+            show_tool_options: true,
+            layer_panel_on_left: false,
+            symmetry_mode: SymmetryMode::None,
+            symmetry_center: Pos2::ZERO,
+            symmetry_radial_count: 2,
+            symmetry_brush_states: Vec::new(),
+            shift_snap_enabled: false,
+            stroke_start_pos: None,
+            pressure_response: crate::pressure::PressureCurve::new_linear(),
+            show_pressure_calibration: false,
+            selection_ops: SelectionOperationState::default(),
+            color_history: Vec::new(),
+            color_history_max: 12,
+            color_wheel_drag_zone: None,
+            renaming_layer_id: None,
+            rename_layer_input: String::new(),
+            show_shortcut_editor: false,
+            show_panel_layout_settings: false,
+            shortcut_search: String::new(),
+            shortcut_edit_idx: None,
+            shortcut_listen_idx: None,
+            show_recovery_dialog: false,
+            recovery_files: Vec::new(),
+            recent_files: Vec::new(),
+            layer_thumbnails: ahash::AHashMap::default(),
+            thumbnail_textures: ahash::AHashMap::default(),
+            thumbnail_regenerate_counter: 0,
+            last_viewport_rect: None,
+            last_viewport_size: Vec2::ZERO,
+            clipboard: None,
+            selection_display_mode: SelectionDisplayMode::MarchingAnts,
+            transform_active: false,
+            transform_orig_bounds: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
+            transform_translation: Vec2::ZERO,
+            transform_scale: Vec2::splat(1.0),
+            transform_rotation: 0.0,
+            transform_pivot: Pos2::ZERO,
+            transform_dragging: None,
+            transform_drag_start_ptr: None,
+            transform_drag_start_translation: Vec2::ZERO,
+            transform_drag_start_scale: Vec2::splat(1.0),
+            transform_drag_start_rotation: 0.0,
+            show_preferences_dialog: false,
+            pref_theme: String::new(),
+            pref_ui_scale: 1.0,
+            pref_canvas_bg: String::new(),
+            pref_autosave_enabled: false,
+            pref_autosave_interval_mins: 10,
+            show_tablet_diagnostics: false,
+            show_performance_hud: false,
+            reference_images: Vec::new(),
+            selected_reference_idx: None,
+            ref_image_path_input: String::new(),
+            reference_id_counter: 0,
+            ref_image_dragging: None,
+            ref_image_drag_offset: Vec2::ZERO,
+
+            adjustment: AdjustmentState::default(),
+            show_about_dialog: false,
+            panel_drag: None,
+            floating_drag_panel: None,
+            workspace_layout: Default::default(),
+            tool_registry: crate::tools::ToolRegistry::new(),
+        };
+
+        assert!(!app.transform_active);
+        app.set_active_tool(ToolId::Transform);
+        assert!(app.transform_active);
     }
 }

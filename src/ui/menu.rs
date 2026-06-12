@@ -507,6 +507,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                             .toggle_panel_visibility(PanelKind::LayersManager);
                     }
                 }
+                /*
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::Reference);
                     if ui.checkbox(&mut v, "Reference Panel").changed() {
@@ -514,6 +515,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                             .toggle_panel_visibility(PanelKind::Reference);
                     }
                 }
+                */
                 {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::Stabilizer);
                     if ui.checkbox(&mut v, "Stabilizer").changed() {
