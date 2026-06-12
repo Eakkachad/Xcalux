@@ -176,13 +176,13 @@ impl Default for WorkspaceLayout {
                 PanelState::new(
                     PanelKind::ToolsAndPresets,
                     "TOOLS",
-                    PanelLocation::Left,
-                    true,
+                    PanelLocation::Hidden,
+                    false,
                     false,
                 ),
                 PanelState::new(
                     PanelKind::BrushPresets,
-                    "BRUSH PRESETS",
+                    "BRUSH WORKSPACE",
                     PanelLocation::Left,
                     true,
                     false,
@@ -190,8 +190,8 @@ impl Default for WorkspaceLayout {
                 PanelState::new(
                     PanelKind::BrushSettings,
                     "BRUSH SETTINGS",
-                    PanelLocation::Left,
-                    true,
+                    PanelLocation::Hidden,
+                    false,
                     false,
                 ),
                 PanelState::new(

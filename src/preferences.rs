@@ -43,17 +43,40 @@ pub fn save_preferences(app: &PaintApp) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    
+    let fav_sizes_str = if app.brush_ui.favorite_sizes_px.is_empty() {
+        "[]".to_string()
+    } else {
+        let mut s = "[".to_string();
+        for (i, val) in app.brush_ui.favorite_sizes_px.iter().enumerate() {
+            if i > 0 {
+                s.push_str(", ");
+            }
+            s.push_str(&format!("{:.1}", val));
+        }
+        s.push(']');
+        s
+    };
+
     let mut toml_content = format!(
         "theme = {:?}\n\
          ui_scale = {:.1}\n\
          canvas_bg = {:?}\n\
          autosave_enabled = {}\n\
-         autosave_interval_mins = {}\n",
+         autosave_interval_mins = {}\n\
+         brush_ui_selected_category = {:?}\n\
+         brush_ui_compact_rows = {}\n\
+         brush_ui_show_advanced_properties = {}\n\
+         brush_ui_favorite_sizes = {}\n",
         app.pref_theme,
         app.pref_ui_scale,
         app.pref_canvas_bg,
         app.pref_autosave_enabled,
-        app.pref_autosave_interval_mins
+        app.pref_autosave_interval_mins,
+        app.brush_ui.selected_category.as_str(),
+        app.brush_ui.compact_rows,
+        app.brush_ui.show_advanced_properties,
+        fav_sizes_str
     );
     let recent_files_toml = if app.recent_files.is_empty() {
         "recent_files = []\n".to_string()
@@ -114,6 +137,30 @@ pub fn load_preferences(app: &mut PaintApp, ctx: &Context) {
                         if let Some(s) = val.as_str() {
                             app.recent_files.push(s.to_string());
                         }
+                    }
+                }
+                if let Some(cat_str) = doc.get("brush_ui_selected_category").and_then(|i| i.as_str()) {
+                    if let Some(cat) = crate::app::BrushPresetCategory::from_str(cat_str) {
+                        app.brush_ui.selected_category = cat;
+                    }
+                }
+                if let Some(compact) = doc.get("brush_ui_compact_rows").and_then(|i| i.as_bool()) {
+                    app.brush_ui.compact_rows = compact;
+                }
+                if let Some(show_adv) = doc.get("brush_ui_show_advanced_properties").and_then(|i| i.as_bool()) {
+                    app.brush_ui.show_advanced_properties = show_adv;
+                }
+                if let Some(fav_array) = doc.get("brush_ui_favorite_sizes").and_then(|i| i.as_array()) {
+                    let mut sizes = Vec::new();
+                    for val in fav_array.iter() {
+                        if let Some(f) = val.as_float() {
+                            sizes.push(f as f32);
+                        } else if let Some(i) = val.as_integer() {
+                            sizes.push(i as f32);
+                        }
+                    }
+                    if !sizes.is_empty() {
+                        app.brush_ui.favorite_sizes_px = sizes;
                     }
                 }
                 log::info!("Loaded preferences from {:?}", path);

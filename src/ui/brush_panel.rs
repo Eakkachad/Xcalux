@@ -256,8 +256,6 @@ fn draw_preset_row(ui: &mut egui::Ui, app: &mut PaintApp, idx: usize) {
     });
 }
 
-/// Draws the sub-tool panel content without a panel_section wrapper.
-/// Called from left_panel.rs which already provides the section frame.
 pub fn draw_sub_tool_panel_inline(ui: &mut egui::Ui, app: &mut PaintApp) {
     ui.horizontal(|ui| {
         ui.add_sized(
@@ -285,4 +283,767 @@ pub fn draw_sub_tool_panel_inline(ui: &mut egui::Ui, app: &mut PaintApp) {
                 }
             }
         });
+}
+
+fn tool_button(ui: &mut egui::Ui, app: &mut PaintApp, id: ToolId, label: &str, shortcut: &str) {
+    let active = app.active_tool() == id;
+    let button_text = if shortcut.is_empty() {
+        label.to_string()
+    } else {
+        format!("{} [{}]", label, shortcut)
+    };
+
+    let btn = egui::Button::new(button_text).selected(active);
+    let resp = ui.add_sized([ui.available_width() / 2.0 - 4.0, 26.0], btn)
+        .on_hover_text(id.name());
+
+    if resp.clicked() {
+        if id == ToolId::Brush {
+            app.select_last_brush();
+        } else if id == ToolId::Eraser {
+            app.select_last_eraser();
+        } else {
+            app.set_active_tool(id);
+        }
+        resp.surrender_focus();
+    }
+}
+
+fn select_tool_button_with_menu(
+    ui: &mut egui::Ui,
+    app: &mut PaintApp,
+    active: bool,
+    label: &str,
+    shortcut: &str,
+    add_contents: impl FnOnce(&mut egui::Ui, &mut PaintApp),
+    hover_text: &str,
+) -> egui::Response {
+    let button_text = if shortcut.is_empty() {
+        label.to_string()
+    } else {
+        format!("{} [{}]", label, shortcut)
+    };
+
+    let btn = egui::Button::new(button_text).selected(active);
+    let resp = ui.add_sized([ui.available_width() / 2.0 - 4.0, 26.0], btn)
+        .on_hover_text(hover_text);
+
+    resp.context_menu(|ui| {
+        add_contents(ui, app);
+    });
+
+    resp
+}
+
+fn draw_tool_palette(ui: &mut egui::Ui, app: &mut PaintApp) {
+    ui.label(egui::RichText::new("Tool Palette").strong());
+    egui::Grid::new("csp_tool_grid")
+        .num_columns(2)
+        .spacing([6.0, 6.0])
+        .show(ui, |ui| {
+            // Row 1: Brush / Eraser
+            tool_button(ui, app, ToolId::Brush, "🎨 Brush", "B");
+            tool_button(ui, app, ToolId::Eraser, "🗑 Eraser", "E");
+            ui.end_row();
+
+            // Row 2: Fill / Gradient
+            tool_button(ui, app, ToolId::Fill, "Fill", "G");
+            tool_button(ui, app, ToolId::Gradient, "Grad", "Shift+G");
+            ui.end_row();
+
+            // Row 3: Selection / Lasso
+            let is_shape_active = app.active_tool() == ToolId::RectSelect || app.active_tool() == ToolId::EllipseSelect;
+            let shape_label = if app.active_tool() == ToolId::EllipseSelect { "○ Ellipse" } else { "⬜ Rect" };
+            let shape_resp = select_tool_button_with_menu(ui, app, is_shape_active, shape_label, "M", |ui, app| {
+                if ui.selectable_label(app.active_tool() == ToolId::RectSelect, "Rectangle Selection").clicked() {
+                    app.set_active_tool(ToolId::RectSelect);
+                    ui.close_menu();
+                }
+                if ui.selectable_label(app.active_tool() == ToolId::EllipseSelect, "Ellipse Selection").clicked() {
+                    app.set_active_tool(ToolId::EllipseSelect);
+                    ui.close_menu();
+                }
+            }, "Selection Tool (Right-click to change shape)");
+            if shape_resp.clicked() {
+                let current = if app.active_tool() == ToolId::EllipseSelect { ToolId::EllipseSelect } else { ToolId::RectSelect };
+                app.set_active_tool(current);
+            }
+
+            let is_lasso_active = app.active_tool() == ToolId::Lasso || app.active_tool() == ToolId::PolygonLasso;
+            let lasso_label = if app.active_tool() == ToolId::PolygonLasso { "⬡ Poly Lasso" } else { "🪃 Lasso" };
+            let lasso_resp = select_tool_button_with_menu(ui, app, is_lasso_active, lasso_label, "L", |ui, app| {
+                if ui.selectable_label(app.active_tool() == ToolId::Lasso, "Free Lasso Selection").clicked() {
+                    app.set_active_tool(ToolId::Lasso);
+                    ui.close_menu();
+                }
+                if ui.selectable_label(app.active_tool() == ToolId::PolygonLasso, "Polygon Lasso Selection").clicked() {
+                    app.set_active_tool(ToolId::PolygonLasso);
+                    ui.close_menu();
+                }
+            }, "Lasso Tool (Right-click to change mode)");
+            if lasso_resp.clicked() {
+                let current = if app.active_tool() == ToolId::PolygonLasso { ToolId::PolygonLasso } else { ToolId::Lasso };
+                app.set_active_tool(current);
+            }
+            ui.end_row();
+
+            // Row 4: Magic Wand / Move
+            tool_button(ui, app, ToolId::MagicWand, "Wand", "W");
+            tool_button(ui, app, ToolId::Move, "Move", "V");
+            ui.end_row();
+
+            // Row 5: Transform / Color Picker
+            tool_button(ui, app, ToolId::Transform, "Trans", "Ctrl+T");
+            tool_button(ui, app, ToolId::ColorPicker, "Pick", "I");
+            ui.end_row();
+
+            // Row 6: Hand / Zoom
+            tool_button(ui, app, ToolId::Hand, "Hand", "Space");
+            tool_button(ui, app, ToolId::Zoom, "Zoom", "");
+            ui.end_row();
+        });
+}
+
+fn draw_brush_size_panel(ui: &mut egui::Ui, app: &mut PaintApp) {
+    ui.label(egui::RichText::new("Brush Size").strong());
+    
+    let mut radius_px = app.brush_radius_log.exp();
+    
+    ui.horizontal(|ui| {
+        let changed = ui.add(
+            egui::Slider::new(&mut radius_px, 0.5..=300.0)
+                .logarithmic(true)
+                .show_value(false)
+        ).changed();
+        
+        let drag_changed = ui.add(
+            egui::DragValue::new(&mut radius_px)
+                .speed(0.2)
+                .clamp_range(0.5..=300.0)
+                .suffix(" px")
+        ).changed();
+        
+        if changed || drag_changed {
+            app.brush_radius_log = radius_px.max(0.1).ln();
+            app.brush_settings_dirty = true;
+        }
+    });
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        for size in app.brush_ui.favorite_sizes_px.clone() {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+            let active = (app.brush_radius_log.exp() - size).abs() < 0.15;
+            
+            let bg_color = if active {
+                ui.visuals().selection.bg_fill
+            } else if resp.hovered() {
+                ui.visuals().widgets.hovered.bg_fill
+            } else {
+                ui.visuals().widgets.inactive.bg_fill
+            };
+            ui.painter().rect_filled(rect, 3.0, bg_color);
+            
+            if active {
+                ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, ui.visuals().selection.stroke.color));
+            }
+            
+            let circle_center = rect.center();
+            let max_val = app.brush_ui.favorite_sizes_px.iter().cloned().fold(1.0f32, f32::max);
+            let visual_radius = (1.0 + (size.max(1.0).ln() / max_val.max(1.1).ln()) * 8.0).clamp(1.0, 10.0);
+            
+            let circle_color = if active {
+                ui.visuals().selection.stroke.color
+            } else if resp.hovered() {
+                ui.visuals().widgets.hovered.fg_stroke.color
+            } else {
+                ui.visuals().widgets.inactive.fg_stroke.color
+            };
+            
+            ui.painter().circle_filled(circle_center, visual_radius, circle_color);
+            
+            let resp = resp.on_hover_text(format!("{} px", size));
+            if resp.clicked() {
+                app.brush_radius_log = size.max(0.1).ln();
+                app.brush_settings_dirty = true;
+            }
+        }
+    });
+}
+
+fn draw_brush_properties_content(ui: &mut egui::Ui, app: &mut PaintApp) {
+    // Basic settings
+    ui.horizontal(|ui| {
+        ui.label("Opacity");
+        let mut opacity_pct = (app.brush_opacity * 100.0) as i32;
+        let slider_changed = ui.add(
+            egui::Slider::new(&mut app.brush_opacity, 0.0..=1.0)
+                .show_value(false)
+        ).changed();
+        let drag_changed = ui.add(
+            egui::DragValue::new(&mut opacity_pct)
+                .speed(1)
+                .clamp_range(0..=100)
+                .suffix("%")
+        ).changed();
+        if slider_changed || drag_changed {
+            if drag_changed {
+                app.brush_opacity = (opacity_pct as f32 / 100.0).clamp(0.0, 1.0);
+            }
+            app.brush_settings_dirty = true;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Hardness");
+        let slider_changed = ui.add(
+            egui::Slider::new(&mut app.brush_hardness, 0.0..=1.0)
+                .show_value(false)
+        ).changed();
+        let drag_changed = ui.add(
+            egui::DragValue::new(&mut app.brush_hardness)
+                .speed(0.01)
+                .clamp_range(0.0..=1.0)
+        ).changed();
+        if slider_changed || drag_changed {
+            app.brush_settings_dirty = true;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Min Size");
+        let slider_changed = ui.add(
+            egui::Slider::new(&mut app.brush_min_size_fraction, 0.0..=1.0)
+                .show_value(false)
+        ).changed();
+        let drag_changed = ui.add(
+            egui::DragValue::new(&mut app.brush_min_size_fraction)
+                .speed(0.01)
+                .clamp_range(0.0..=1.0)
+                .suffix("%")
+        ).changed();
+        if slider_changed || drag_changed {
+            app.brush_settings_dirty = true;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Density");
+        let slider_changed = ui.add(
+            egui::Slider::new(&mut app.brush_density, 0.0..=1.0)
+                .show_value(false)
+        ).changed();
+        let drag_changed = ui.add(
+            egui::DragValue::new(&mut app.brush_density)
+                .speed(0.01)
+                .clamp_range(0.0..=1.0)
+                .suffix("%")
+        ).changed();
+        if slider_changed || drag_changed {
+            app.brush_settings_dirty = true;
+        }
+    });
+
+    // Stabilizer
+    ui.horizontal(|ui| {
+        ui.label("Stabilizer");
+        let current_level = app.stabilizer.level;
+        let text = match current_level {
+            crate::input::StabilizerLevel::Off => "Off".to_string(),
+            crate::input::StabilizerLevel::Level(val) => format!("Level {}", val),
+            crate::input::StabilizerLevel::SLevel(val) => format!("S-{}", val),
+        };
+        let response = egui::ComboBox::from_id_source("sai_stabilizer_level_csp")
+            .selected_text(text)
+            .width(80.0)
+            .show_ui(ui, |ui| {
+                let mut selected = false;
+                if ui.selectable_label(matches!(current_level, crate::input::StabilizerLevel::Off), "Off").clicked() {
+                    app.stabilizer.set_level(crate::input::StabilizerLevel::Off);
+                    selected = true;
+                }
+                for val in 1..=15 {
+                    let is_sel = matches!(current_level, crate::input::StabilizerLevel::Level(v) if v == val);
+                    if ui.selectable_label(is_sel, format!("Level {}", val)).clicked() {
+                        app.stabilizer.set_level(crate::input::StabilizerLevel::Level(val));
+                        selected = true;
+                    }
+                }
+                for val in 1..=5 {
+                    let is_sel = matches!(current_level, crate::input::StabilizerLevel::SLevel(v) if v == val);
+                    if ui.selectable_label(is_sel, format!("S-{}", val)).clicked() {
+                        app.stabilizer.set_level(crate::input::StabilizerLevel::SLevel(val));
+                        selected = true;
+                    }
+                }
+                selected
+            });
+        if response.inner.unwrap_or(false) {
+            app.brush_settings_dirty = true;
+        }
+    });
+
+    ui.add_space(2.0);
+
+    // Collapsible Advanced Settings
+    egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        ui.next_auto_id(),
+        false,
+    )
+    .show_header(ui, |ui| {
+        ui.label("Advanced Properties");
+    })
+    .body(|ui| {
+        // Blending
+        ui.horizontal(|ui| {
+            ui.label("Blending");
+            let slider_changed = ui.add(
+                egui::Slider::new(&mut app.brush_color_blending, 0.0..=1.0)
+                    .show_value(false),
+            ).changed();
+            let drag_changed = ui.add(
+                egui::DragValue::new(&mut app.brush_color_blending)
+                    .speed(0.01)
+                    .clamp_range(0.0..=1.0)
+            ).changed();
+            if slider_changed || drag_changed {
+                app.brush_settings_dirty = true;
+            }
+        });
+
+        // Dilution
+        ui.horizontal(|ui| {
+            ui.label("Dilution");
+            let slider_changed = ui.add(
+                egui::Slider::new(&mut app.brush_dilution, 0.0..=1.0)
+                    .show_value(false)
+            ).changed();
+            let drag_changed = ui.add(
+                egui::DragValue::new(&mut app.brush_dilution)
+                    .speed(0.01)
+                    .clamp_range(0.0..=1.0)
+            ).changed();
+            if slider_changed || drag_changed {
+                app.brush_settings_dirty = true;
+            }
+        });
+
+        // Spacing
+        ui.horizontal(|ui| {
+            ui.label("Spacing");
+            let slider_changed = ui.add(
+                egui::Slider::new(&mut app.brush_spacing, 0.01..=2.0)
+                    .show_value(false)
+            ).changed();
+            let drag_changed = ui.add(
+                egui::DragValue::new(&mut app.brush_spacing)
+                    .speed(0.01)
+                    .clamp_range(0.01..=2.0)
+            ).changed();
+            if slider_changed || drag_changed {
+                app.brush_settings_dirty = true;
+            }
+        });
+
+        // Bristle ID
+        ui.horizontal(|ui| {
+            ui.label("Bristle ID");
+            if ui.add(
+                egui::DragValue::new(&mut app.brush_bristle_id)
+                    .speed(1)
+                    .clamp_range(0..=5),
+            ).changed() {
+                app.brush_settings_dirty = true;
+            }
+        });
+
+        // Texture
+        let texture_name = app.brush_textures
+            .get(app.brush_texture_id as usize)
+            .map(|t| t.name.as_str())
+            .unwrap_or("None");
+        let has_texture = app.brush_texture_id > 0;
+        
+        ui.horizontal(|ui| {
+            ui.label("Texture:");
+            let mut selected_tex = app.brush_texture_id;
+            let res = egui::ComboBox::from_id_source("brush_texture_combo_csp")
+                .selected_text(texture_name)
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    let mut changed = false;
+                    for (idx, tex) in app.brush_textures.iter().enumerate() {
+                        if ui.selectable_value(&mut selected_tex, idx as u32, &tex.name).clicked() {
+                            changed = true;
+                        }
+                    }
+                    changed
+                });
+            if res.inner.unwrap_or(false) {
+                app.brush_texture_id = selected_tex;
+                app.brush_settings_dirty = true;
+            }
+        });
+
+        if has_texture {
+            ui.horizontal(|ui| {
+                ui.label("Scale");
+                if ui.add(
+                    egui::Slider::new(&mut app.brush_texture_scale, 0.1..=10.0)
+                        .show_value(false),
+                ).changed() {
+                    app.brush_settings_dirty = true;
+                }
+                if ui.add(egui::DragValue::new(&mut app.brush_texture_scale).speed(0.1)).changed() {
+                    app.brush_settings_dirty = true;
+                }
+            });
+        }
+    });
+}
+
+fn draw_tool_property_panel(ui: &mut egui::Ui, app: &mut PaintApp) {
+    ui.label(egui::RichText::new("Tool Property").strong());
+
+    match app.active_tool() {
+        ToolId::Brush | ToolId::Eraser => {
+            draw_brush_properties_content(ui, app);
+        }
+        ToolId::Fill => {
+            ui.horizontal(|ui| {
+                ui.label("Detection:");
+                egui::ComboBox::from_id_source("fill_detection")
+                    .selected_text(match app.fill_options.detection_mode {
+                        crate::tools::fill::FillDetectionMode::TransparencyStrict => "Transp Strict",
+                        crate::tools::fill::FillDetectionMode::TransparencyFuzzy => "Transp Fuzzy",
+                        crate::tools::fill::FillDetectionMode::ColorDifference => "Color Diff",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.fill_options.detection_mode,
+                            crate::tools::fill::FillDetectionMode::TransparencyStrict,
+                            "Transp Strict",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.detection_mode,
+                            crate::tools::fill::FillDetectionMode::TransparencyFuzzy,
+                            "Transp Fuzzy",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.detection_mode,
+                            crate::tools::fill::FillDetectionMode::ColorDifference,
+                            "Color Diff",
+                        );
+                    });
+            });
+            match app.fill_options.detection_mode {
+                crate::tools::fill::FillDetectionMode::ColorDifference => {
+                    ui.horizontal(|ui| {
+                        ui.label("Color Diff:");
+                        ui.add(egui::Slider::new(&mut app.fill_options.tolerance, 0..=255));
+                    });
+                }
+                crate::tools::fill::FillDetectionMode::TransparencyFuzzy => {
+                    ui.horizontal(|ui| {
+                        ui.label("Transp Diff:");
+                        ui.add(egui::Slider::new(&mut app.fill_options.transp_diff, 0..=255));
+                    });
+                }
+                crate::tools::fill::FillDetectionMode::TransparencyStrict => {}
+            }
+            ui.horizontal(|ui| {
+                ui.label("Reference:");
+                egui::ComboBox::from_id_source("fill_reference")
+                    .selected_text(match app.fill_options.reference {
+                        crate::tools::fill::FillReference::CurrentLayer => "Current Layer",
+                        crate::tools::fill::FillReference::SelectionSourceLayers => "Reference Layers",
+                        crate::tools::fill::FillReference::AllVisibleLayers => "All Visible",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.fill_options.reference,
+                            crate::tools::fill::FillReference::CurrentLayer,
+                            "Current Layer",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.reference,
+                            crate::tools::fill::FillReference::SelectionSourceLayers,
+                            "Reference Layers",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.reference,
+                            crate::tools::fill::FillReference::AllVisibleLayers,
+                            "All Visible",
+                        );
+                    });
+            });
+            let has_ref = app.layers.values().any(|l| l.selection_source);
+            if app.fill_options.reference == crate::tools::fill::FillReference::SelectionSourceLayers && !has_ref {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    "⚠ No reference layer selected!\nEnable Ref (◎) on a lineart layer.",
+                );
+            }
+            ui.horizontal(|ui| {
+                ui.label("Expand:");
+                ui.add(egui::Slider::new(&mut app.fill_options.expand_px, 0..=10));
+            });
+            ui.checkbox(&mut app.fill_options.contiguous, "Contiguous");
+            ui.checkbox(&mut app.fill_options.antialias, "Anti-alias");
+            ui.checkbox(&mut app.fill_options.respect_selection, "Respect selection");
+            ui.checkbox(&mut app.fill_options.fill_transparent_only, "Fill transparent only");
+        }
+        ToolId::RectSelect | ToolId::EllipseSelect | ToolId::Lasso | ToolId::PolygonLasso => {
+            ui.horizontal(|ui| {
+                ui.label("Mode:");
+                egui::ComboBox::from_id_source("sel_mode")
+                    .selected_text(match app.selection_mode {
+                        crate::tools::selection::SelectionMode::Replace => "Replace",
+                        crate::tools::selection::SelectionMode::Add => "Add",
+                        crate::tools::selection::SelectionMode::Subtract => "Subtract",
+                        crate::tools::selection::SelectionMode::Intersect => "Intersect",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Replace,
+                            "Replace",
+                        );
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Add,
+                            "Add",
+                        );
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Subtract,
+                            "Subtract",
+                        );
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Intersect,
+                            "Intersect",
+                        );
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Feather:");
+                ui.add(egui::Slider::new(&mut app.selection_feather, 0.0..=100.0));
+            });
+        }
+        ToolId::MagicWand => {
+            ui.horizontal(|ui| {
+                ui.label("Mode:");
+                egui::ComboBox::from_id_source("wand_sel_mode")
+                    .selected_text(match app.selection_mode {
+                        crate::tools::selection::SelectionMode::Replace => "Replace",
+                        crate::tools::selection::SelectionMode::Add => "Add",
+                        crate::tools::selection::SelectionMode::Subtract => "Subtract",
+                        crate::tools::selection::SelectionMode::Intersect => "Intersect",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Replace,
+                            "Replace",
+                        );
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Add,
+                            "Add",
+                        );
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Subtract,
+                            "Subtract",
+                        );
+                        ui.selectable_value(
+                            &mut app.selection_mode,
+                            crate::tools::selection::SelectionMode::Intersect,
+                            "Intersect",
+                        );
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Detection:");
+                egui::ComboBox::from_id_source("wand_detection")
+                    .selected_text(match app.fill_options.detection_mode {
+                        crate::tools::fill::FillDetectionMode::TransparencyStrict => "Transp Strict",
+                        crate::tools::fill::FillDetectionMode::TransparencyFuzzy => "Transp Fuzzy",
+                        crate::tools::fill::FillDetectionMode::ColorDifference => "Color Diff",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.fill_options.detection_mode,
+                            crate::tools::fill::FillDetectionMode::TransparencyStrict,
+                            "Transp Strict",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.detection_mode,
+                            crate::tools::fill::FillDetectionMode::TransparencyFuzzy,
+                            "Transp Fuzzy",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.detection_mode,
+                            crate::tools::fill::FillDetectionMode::ColorDifference,
+                            "Color Diff",
+                        );
+                    });
+            });
+            match app.fill_options.detection_mode {
+                crate::tools::fill::FillDetectionMode::ColorDifference => {
+                    ui.horizontal(|ui| {
+                        ui.label("Color Diff:");
+                        ui.add(egui::Slider::new(&mut app.fill_options.tolerance, 0..=255));
+                    });
+                }
+                crate::tools::fill::FillDetectionMode::TransparencyFuzzy => {
+                    ui.horizontal(|ui| {
+                        ui.label("Transp Diff:");
+                        ui.add(egui::Slider::new(&mut app.fill_options.transp_diff, 0..=255));
+                    });
+                }
+                crate::tools::fill::FillDetectionMode::TransparencyStrict => {}
+            }
+            ui.horizontal(|ui| {
+                ui.label("Reference:");
+                egui::ComboBox::from_id_source("wand_reference")
+                    .selected_text(match app.fill_options.reference {
+                        crate::tools::fill::FillReference::CurrentLayer => "Current Layer",
+                        crate::tools::fill::FillReference::SelectionSourceLayers => "Reference Layers",
+                        crate::tools::fill::FillReference::AllVisibleLayers => "All Visible",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.fill_options.reference,
+                            crate::tools::fill::FillReference::CurrentLayer,
+                            "Current Layer",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.reference,
+                            crate::tools::fill::FillReference::SelectionSourceLayers,
+                            "Reference Layers",
+                        );
+                        ui.selectable_value(
+                            &mut app.fill_options.reference,
+                            crate::tools::fill::FillReference::AllVisibleLayers,
+                            "All Visible",
+                        );
+                    });
+            });
+            let has_ref = app.layers.values().any(|l| l.selection_source);
+            if app.fill_options.reference == crate::tools::fill::FillReference::SelectionSourceLayers && !has_ref {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    "⚠ No reference layer selected!\nEnable Ref (◎) on a lineart layer.",
+                );
+            }
+            ui.horizontal(|ui| {
+                ui.label("Expand:");
+                ui.add(egui::Slider::new(&mut app.fill_options.expand_px, 0..=10));
+            });
+            ui.checkbox(&mut app.fill_options.contiguous, "Contiguous");
+            ui.checkbox(&mut app.fill_options.antialias, "Anti-alias");
+        }
+        ToolId::Transform => {
+            ui.horizontal(|ui| {
+                ui.label("Interp:");
+                egui::ComboBox::from_id_source("interp")
+                    .selected_text(match app.transform_state.interpolation {
+                        crate::tools::transform::InterpolationMode::Nearest => "Nearest",
+                        crate::tools::transform::InterpolationMode::Bilinear => "Bilinear",
+                        crate::tools::transform::InterpolationMode::Bicubic => "Bicubic",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut app.transform_state.interpolation,
+                            crate::tools::transform::InterpolationMode::Nearest,
+                            "Nearest",
+                        );
+                        ui.selectable_value(
+                            &mut app.transform_state.interpolation,
+                            crate::tools::transform::InterpolationMode::Bilinear,
+                            "Bilinear",
+                        );
+                        ui.selectable_value(
+                            &mut app.transform_state.interpolation,
+                            crate::tools::transform::InterpolationMode::Bicubic,
+                            "Bicubic",
+                        );
+                    });
+            });
+            ui.add_space(4.0);
+            if app.transform_active {
+                ui.horizontal(|ui| {
+                    if ui.button("✓ Apply").on_hover_text("Apply transform (Enter)").clicked() {
+                        app.commit_transform();
+                    }
+                    if ui.button("❌ Cancel").on_hover_text("Cancel transform (Esc)").clicked() {
+                        app.cancel_transform();
+                    }
+                });
+            } else {
+                ui.colored_label(egui::Color32::from_gray(120), "Press Ctrl+T to start transform");
+            }
+        }
+        ToolId::Gradient => {
+            ui.horizontal(|ui| {
+                ui.label("Mode:");
+                let mut gm = app.gradient_mode;
+                egui::ComboBox::from_id_source("gradient_mode")
+                    .selected_text(if gm == 0 { "Linear" } else { "Radial" })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut gm, 0u32, "Linear");
+                        ui.selectable_value(&mut gm, 1u32, "Radial");
+                    });
+                if gm != app.gradient_mode {
+                    app.gradient_mode = gm;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Type:");
+                let mut gt = app.gradient_type;
+                egui::ComboBox::from_id_source("gradient_type")
+                    .selected_text(match gt {
+                        0 => "FG→BG",
+                        1 => "FG→Transparent",
+                        _ => "BG→Transparent",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut gt, 0u32, "FG→BG");
+                        ui.selectable_value(&mut gt, 1u32, "FG→Transparent");
+                        ui.selectable_value(&mut gt, 2u32, "BG→Transparent");
+                    });
+                if gt != app.gradient_type {
+                    app.gradient_type = gt;
+                }
+            });
+        }
+        ToolId::ColorPicker => {
+            ui.colored_label(egui::Color32::from_gray(120), "Picks color from canvas");
+        }
+        _ => {
+            ui.colored_label(egui::Color32::from_gray(120), "No properties for this tool");
+        }
+    }
+}
+
+pub fn draw_csp_brush_workspace(ui: &mut egui::Ui, app: &mut PaintApp) {
+    draw_tool_palette(ui, app);
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    draw_sub_tool_panel_inline(ui, app);
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    draw_brush_size_panel(ui, app);
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    draw_tool_property_panel(ui, app);
 }

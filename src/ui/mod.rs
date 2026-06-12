@@ -1,4 +1,5 @@
 pub mod brush_panel;
+pub mod command_palette;
 pub mod diagnostics;
 pub mod dialogs;
 pub mod layout;

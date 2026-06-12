@@ -38,6 +38,50 @@ pub enum BrushPresetCategory {
     Utility,
 }
 
+impl BrushPresetCategory {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BrushPresetCategory::All => "All",
+            BrushPresetCategory::Pencil => "Pencil",
+            BrushPresetCategory::Pen => "Pen",
+            BrushPresetCategory::Brush => "Brush",
+            BrushPresetCategory::Eraser => "Eraser",
+            BrushPresetCategory::Blend => "Blend",
+            BrushPresetCategory::Utility => "Utility",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "All" => Some(BrushPresetCategory::All),
+            "Pencil" => Some(BrushPresetCategory::Pencil),
+            "Pen" => Some(BrushPresetCategory::Pen),
+            "Brush" => Some(BrushPresetCategory::Brush),
+            "Eraser" => Some(BrushPresetCategory::Eraser),
+            "Blend" => Some(BrushPresetCategory::Blend),
+            "Utility" => Some(BrushPresetCategory::Utility),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandPaletteState {
+    pub open: bool,
+    pub query: String,
+    pub selected_index: usize,
+}
+
+impl Default for CommandPaletteState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            query: String::new(),
+            selected_index: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BrushUiState {
     pub search: String,
@@ -466,6 +510,7 @@ pub struct PaintApp {
 
     // About
     pub show_about_dialog: bool,
+    pub command_palette: CommandPaletteState,
 }
 
 // Tool ID enum used in app
@@ -1201,6 +1246,7 @@ impl PaintApp {
             adjustment: AdjustmentState::default(),
 
             show_about_dialog: false,
+            command_palette: CommandPaletteState::default(),
         };
 
         // Check for autosave recovery files on startup
@@ -1544,6 +1590,32 @@ impl PaintApp {
 
         // Mark dirty so pressure curves are rebuilt for the newly-selected preset
         self.brush_settings_dirty = true;
+    }
+
+    pub(crate) fn select_last_brush(&mut self) {
+        let idx = self.brush_ui
+            .last_brush_preset_index
+            .filter(|&i| i < self.presets.len() && !self.presets[i].is_eraser)
+            .or_else(|| self.presets.iter().position(|p| !p.is_eraser));
+
+        if let Some(idx) = idx {
+            self.select_preset(idx);
+        } else {
+            self.set_active_tool(ToolId::Brush);
+        }
+    }
+
+    pub(crate) fn select_last_eraser(&mut self) {
+        let idx = self.brush_ui
+            .last_eraser_preset_index
+            .filter(|&i| i < self.presets.len() && self.presets[i].is_eraser)
+            .or_else(|| self.presets.iter().position(|p| p.is_eraser));
+
+        if let Some(idx) = idx {
+            self.select_preset(idx);
+        } else {
+            self.set_active_tool(ToolId::Eraser);
+        }
     }
 
     /// Create a new brush preset slot dynamically
@@ -3761,8 +3833,8 @@ impl PaintApp {
             CommandId::FilterGaussianBlur => self.adjustment.show_gaussian_blur = true,
 
             // Tools
-            CommandId::ToolBrush => self.set_active_tool(ToolId::Brush),
-            CommandId::ToolEraser => self.set_active_tool(ToolId::Eraser),
+            CommandId::ToolBrush => self.select_last_brush(),
+            CommandId::ToolEraser => self.select_last_eraser(),
             CommandId::ToolFill => self.set_active_tool(ToolId::Fill),
             CommandId::ToolGradient => self.set_active_tool(ToolId::Gradient),
             CommandId::ToolRectSelect => self.set_active_tool(ToolId::RectSelect),
@@ -4905,7 +4977,7 @@ impl PaintApp {
         }
     }
 
-    fn commit_transform(&mut self) {
+    pub(crate) fn commit_transform(&mut self) {
         if !self.transform_active {
             return;
         }
@@ -4953,7 +5025,7 @@ impl PaintApp {
         }
     }
 
-    fn cancel_transform(&mut self) {
+    pub(crate) fn cancel_transform(&mut self) {
         if !self.transform_active {
             return;
         }
@@ -5102,8 +5174,9 @@ impl PaintApp {
 
 impl eframe::App for PaintApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Save workspace layout before exit
+        // Save workspace layout and preferences before exit
         crate::preferences::save_workspace_layout(self);
+        crate::preferences::save_preferences(self);
         // Drop the InputManager (and its inner octotablet Manager) before the window closes.
         // This ensures the window handle remains valid for the lifetime of the tablet connection.
         self.input_manager.take();
@@ -5240,6 +5313,11 @@ impl eframe::App for PaintApp {
                         key, pressed: true, ..
                     } = event
                     {
+                        if ctrl && !shift && !alt && *key == egui::Key::P {
+                            self.command_palette.open = !self.command_palette.open;
+                            self.command_palette.query.clear();
+                            self.command_palette.selected_index = 0;
+                        }
                         if !ctrl && !shift && !alt {
                             if *key == egui::Key::X {
                                 std::mem::swap(
@@ -5292,6 +5370,7 @@ impl eframe::App for PaintApp {
         crate::ui::right_panel::draw_right_panel(self, ctx);
         crate::ui::render_floating_panels(self, ctx);
         crate::ui::status_bar::draw_status_bar(self, ctx);
+        crate::ui::command_palette::draw_command_palette(self, ctx);
 
         // 3. CENTRAL PANEL (DRAWING AREA)
         egui::CentralPanel::default()
@@ -5334,10 +5413,15 @@ impl eframe::App for PaintApp {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
                 }
 
+                let ui_has_pointer = ui.ctx().wants_pointer_input()
+                    || ui.ctx().is_pointer_over_area()
+                    || self.panel_drag.is_some()
+                    || self.floating_drag_panel.is_some();
+
                 // Infinite canvas panning: drag with middle or right mouse button (transformed to view rotation/mirror)
-                if response.dragged_by(egui::PointerButton::Middle)
+                if !ui_has_pointer && (response.dragged_by(egui::PointerButton::Middle)
                     || response.dragged_by(egui::PointerButton::Secondary)
-                    || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary))
+                    || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary)))
                 {
                     let delta = response.drag_delta();
                     let half_w = rect.width() * 0.5;
@@ -5362,13 +5446,13 @@ impl eframe::App for PaintApp {
                 }
 
                 // Rotation dragging using R key / RotateView tool + primary drag
-                if (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
+                if !ui_has_pointer && (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     self.rotation_angle += drag_delta.x * 0.005;
                 }
 
                 // Zoom dragging using Zoom tool + primary drag
-                if active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
+                if !ui_has_pointer && active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     let prev_zoom = self.viewport_zoom;
                     self.viewport_zoom = (self.viewport_zoom + drag_delta.y * 0.01).clamp(0.1, 10.0);
@@ -5382,7 +5466,7 @@ impl eframe::App for PaintApp {
 
                 // Infinite canvas zooming: mouse wheel scroll
                 let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-                if !ui.ctx().wants_pointer_input() && scroll_delta != 0.0 {
+                if !ui_has_pointer && scroll_delta != 0.0 {
                     let prev_zoom = self.viewport_zoom;
                     self.viewport_zoom =
                         (self.viewport_zoom + scroll_delta * 0.005).clamp(0.1, 10.0);
@@ -5397,15 +5481,16 @@ impl eframe::App for PaintApp {
                 }
 
                 // STROKE DRAWING INTERACTION
-                let pointer_down = (response.dragged_by(egui::PointerButton::Primary)
+                let pointer_down = !ui_has_pointer
+                    && (response.dragged_by(egui::PointerButton::Primary)
                         || (response.is_pointer_button_down_on()
                             && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
                     && !space_down
                     && !r_down;
                 let pointer_clicked =
-                    response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+                    !ui_has_pointer && response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
                 let pointer_right_clicked =
-                    response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
+                    !ui_has_pointer && response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
 
                 // ── Trait-based tool event dispatch (runs first) ──
                 let trait_handled = {
@@ -6969,6 +7054,7 @@ mod tests {
 
             adjustment: AdjustmentState::default(),
             show_about_dialog: false,
+            command_palette: CommandPaletteState::default(),
             panel_drag: None,
             floating_drag_panel: None,
             workspace_layout: Default::default(),
@@ -7174,6 +7260,7 @@ mod tests {
 
             adjustment: AdjustmentState::default(),
             show_about_dialog: false,
+            command_palette: CommandPaletteState::default(),
             panel_drag: None,
             floating_drag_panel: None,
             workspace_layout: Default::default(),
@@ -7398,6 +7485,7 @@ mod tests {
 
             adjustment: AdjustmentState::default(),
             show_about_dialog: false,
+            command_palette: CommandPaletteState::default(),
             panel_drag: None,
             floating_drag_panel: None,
             workspace_layout: Default::default(),

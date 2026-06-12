@@ -1828,14 +1828,38 @@ pub(crate) fn draw_layers_manager_widget(
                                 duplicate_clicked = true;
                                 ui.close_menu();
                             }
-                            let order_len = app.layer_order.len();
-                            if ui.add_enabled(order_len > 1, egui::Button::new("Delete")).clicked() {
-                                delete_clicked = true;
+                            let has_mask = app.layers.get(&id).map(|l| l.mask.is_some()).unwrap_or(false);
+                            if ui.add_enabled(!has_mask, egui::Button::new("Add Mask")).clicked() {
+                                app.active_layer_id = id;
+                                app.command(CommandId::AddLayerMask);
                                 ui.close_menu();
                             }
+                            let order_len = app.layer_order.len();
                             let pos = app.layer_order.iter().position(|&x| x == id).unwrap_or(0);
                             if ui.add_enabled(pos + 1 < order_len, egui::Button::new("Merge Down")).clicked() {
                                 merge_clicked = true;
+                                ui.close_menu();
+                            }
+                            if ui.add_enabled(pos > 0, egui::Button::new("Move Up")).clicked() {
+                                let old_order = app.layer_order.clone();
+                                app.layer_order.swap(pos, pos - 1);
+                                app.history.push_command(HistoryCommand::LayerReorder {
+                                    old_order,
+                                    new_order: app.layer_order.clone(),
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.add_enabled(pos + 1 < order_len, egui::Button::new("Move Down")).clicked() {
+                                let old_order = app.layer_order.clone();
+                                app.layer_order.swap(pos, pos + 1);
+                                app.history.push_command(HistoryCommand::LayerReorder {
+                                    old_order,
+                                    new_order: app.layer_order.clone(),
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.add_enabled(order_len > 1, egui::Button::new("Delete")).clicked() {
+                                delete_clicked = true;
                                 ui.close_menu();
                             }
                             ui.separator();
@@ -1923,11 +1947,10 @@ pub(crate) fn draw_layers_manager_widget(
                                 drag_started = true;
                             }
 
-                            // Visibility eye
-                            let vis_x = row_rect.min.x + 18.0;
+                            // Visibility eye (Row 1, Col 1)
                             let vis_rect = egui::Rect::from_min_size(
-                                egui::pos2(vis_x, row_rect.min.y + 2.0),
-                                egui::vec2(18.0, row_height - 4.0),
+                                egui::pos2(row_rect.min.x + 18.0, row_rect.min.y + 2.0),
+                                egui::vec2(20.0, 20.0),
                             );
                             let vis_resp = ui.allocate_rect(vis_rect, egui::Sense::click());
                             {
@@ -1958,10 +1981,44 @@ pub(crate) fn draw_layers_manager_widget(
                                 });
                             }
 
-                            // Reference dot
+                            // Lock drawing toggle (Row 1, Col 2)
+                            let lock_rect = egui::Rect::from_min_size(
+                                egui::pos2(row_rect.min.x + 38.0, row_rect.min.y + 2.0),
+                                egui::vec2(20.0, 20.0),
+                            );
+                            let lock_resp = ui.allocate_rect(lock_rect, egui::Sense::click());
+                            {
+                                let p = ui.painter();
+                                let lock_text = if layer.locked { "🔒" } else { "⚬" };
+                                let lock_color = if layer.locked {
+                                    egui::Color32::from_rgb(220, 60, 60)
+                                } else {
+                                    egui::Color32::from_gray(160)
+                                };
+                                p.text(
+                                    lock_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    lock_text,
+                                    egui::FontId::proportional(11.0),
+                                    lock_color,
+                                );
+                            }
+                            if lock_resp.clicked() {
+                                let old_locked = layer.locked;
+                                layer.locked = !layer.locked;
+                                app.history.push_command(HistoryCommand::LayerProperty {
+                                    layer_id: id,
+                                    property: LayerPropertyChange::Locked {
+                                        old: old_locked,
+                                        new: layer.locked,
+                                    },
+                                });
+                            }
+
+                            // Reference dot (Row 2, Col 1)
                             let ref_rect = egui::Rect::from_min_size(
-                                egui::pos2(vis_x, row_rect.min.y + 24.0),
-                                egui::vec2(18.0, 18.0),
+                                egui::pos2(row_rect.min.x + 18.0, row_rect.min.y + 24.0),
+                                egui::vec2(20.0, 20.0),
                             );
                             let ref_resp = ui.allocate_rect(ref_rect, egui::Sense::click());
                             {
@@ -1984,6 +2041,40 @@ pub(crate) fn draw_layers_manager_widget(
                                 layer.selection_source = !layer.selection_source;
                             }
 
+                            // Lock Alpha toggle (Row 2, Col 2)
+                            let alpha_rect = egui::Rect::from_min_size(
+                                egui::pos2(row_rect.min.x + 38.0, row_rect.min.y + 24.0),
+                                egui::vec2(20.0, 20.0),
+                            );
+                            let alpha_resp = ui.allocate_rect(alpha_rect, egui::Sense::click());
+                            {
+                                let p = ui.painter();
+                                let alpha_text = if layer.lock_alpha { "A" } else { "⚬" };
+                                let alpha_color = if layer.lock_alpha {
+                                    egui::Color32::from_rgb(0, 120, 215)
+                                } else {
+                                    egui::Color32::from_gray(160)
+                                };
+                                p.text(
+                                    alpha_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    alpha_text,
+                                    egui::FontId::proportional(9.0),
+                                    alpha_color,
+                                );
+                            }
+                            if alpha_resp.clicked() {
+                                let old_lock_alpha = layer.lock_alpha;
+                                layer.lock_alpha = !layer.lock_alpha;
+                                app.history.push_command(HistoryCommand::LayerProperty {
+                                    layer_id: id,
+                                    property: LayerPropertyChange::LockAlpha {
+                                        old: old_lock_alpha,
+                                        new: layer.lock_alpha,
+                                    },
+                                });
+                            }
+
                             // Layer type label
                             let type_str = match &layer.kind {
                                 crate::canvas::LayerType::Folder { .. } => "F",
@@ -1992,7 +2083,7 @@ pub(crate) fn draw_layers_manager_widget(
                             };
 
                             // Thumbnail
-                            let thumb_left = row_rect.min.x + 42.0;
+                            let thumb_left = row_rect.min.x + 60.0;
                             let thumb_size = 38.0;
                             let thumb_rect = egui::Rect::from_min_size(
                                 egui::pos2(thumb_left, row_rect.min.y + (row_height - thumb_size) / 2.0),
