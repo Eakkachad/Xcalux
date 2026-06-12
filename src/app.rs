@@ -3022,6 +3022,23 @@ impl PaintApp {
         }
     }
 
+    /// Draw control points on vector layers.
+    fn draw_vector_overlay(&self, rect: egui::Rect, painter: &egui::Painter) {
+        if let Some(active_layer) = self.layers.get(&self.active_layer_id) {
+            if let Some(v_data) = &active_layer.vector_data {
+                let cp_color = egui::Color32::from_rgb(0, 180, 255);
+                let stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+                for stroke_data in &v_data.strokes {
+                    for cp in &stroke_data.control_points {
+                        let screen_pt = self.world_to_screen(egui::Pos2::new(cp.x, cp.y), rect);
+                        painter.circle_filled(screen_pt, 4.0, cp_color);
+                        painter.circle_stroke(screen_pt, 4.0, stroke);
+                    }
+                }
+            }
+        }
+    }
+
     /// Execute a flood fill at the given world-space pixel position.
     fn fill_tool_execute(&mut self, fx: i32, fy: i32) {
         if fx < 0
@@ -5153,6 +5170,8 @@ impl eframe::App for PaintApp {
             if self.document_modified {
                 let remaining = (self.autosave_interval_secs - time_elapsed).max(0.0);
                 self.autosave_status = format!("Autosave in {:.0}s", remaining);
+            } else if self.autosave_status == "Autosaved (Clean)" && time_elapsed > 5.0 {
+                self.autosave_status = "Autosave: Standby".to_string();
             } else if self.autosave_status.is_empty() {
                 self.autosave_status = "Autosave: Standby".to_string();
             }
@@ -5266,10 +5285,11 @@ impl eframe::App for PaintApp {
                 }
 
                 // Infinite canvas panning: drag with middle or right mouse button (transformed to view rotation/mirror)
-                if response.dragged_by(egui::PointerButton::Middle)
-                    || response.dragged_by(egui::PointerButton::Secondary)
-                    || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary))
-                {
+                if !ui.ctx().wants_pointer_input() && (
+                    response.dragged_by(egui::PointerButton::Middle)
+                        || response.dragged_by(egui::PointerButton::Secondary)
+                        || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary))
+                ) {
                     let delta = response.drag_delta();
                     let half_w = rect.width() * 0.5;
                     let half_h = rect.height() * 0.5;
@@ -5293,13 +5313,13 @@ impl eframe::App for PaintApp {
                 }
 
                 // Rotation dragging using R key / RotateView tool + primary drag
-                if (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
+                if !ui.ctx().wants_pointer_input() && (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     self.rotation_angle += drag_delta.x * 0.005;
                 }
 
                 // Zoom dragging using Zoom tool + primary drag
-                if active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
+                if !ui.ctx().wants_pointer_input() && active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     let prev_zoom = self.viewport_zoom;
                     self.viewport_zoom = (self.viewport_zoom + drag_delta.y * 0.01).clamp(0.1, 10.0);
@@ -5313,7 +5333,7 @@ impl eframe::App for PaintApp {
 
                 // Infinite canvas zooming: mouse wheel scroll
                 let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-                if scroll_delta != 0.0 {
+                if !ui.ctx().wants_pointer_input() && scroll_delta != 0.0 {
                     let prev_zoom = self.viewport_zoom;
                     self.viewport_zoom =
                         (self.viewport_zoom + scroll_delta * 0.005).clamp(0.1, 10.0);
@@ -5328,15 +5348,16 @@ impl eframe::App for PaintApp {
                 }
 
                 // STROKE DRAWING INTERACTION
-                let pointer_down = (response.dragged_by(egui::PointerButton::Primary)
-                    || (response.is_pointer_button_down_on()
-                        && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
+                let pointer_down = !ui.ctx().wants_pointer_input()
+                    && (response.dragged_by(egui::PointerButton::Primary)
+                        || (response.is_pointer_button_down_on()
+                            && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
                     && !space_down
                     && !r_down;
                 let pointer_clicked =
-                    response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+                    !ui.ctx().wants_pointer_input() && response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
                 let pointer_right_clicked =
-                    response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
+                    !ui.ctx().wants_pointer_input() && response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
 
                 // ── Trait-based tool event dispatch (runs first) ──
                 let trait_handled = {
@@ -5797,6 +5818,14 @@ impl eframe::App for PaintApp {
                 if self.transform_active {
                     self.draw_transform_overlay(rect, &clipped_painter);
                 }
+                let is_vector = self
+                    .layers
+                    .get(&self.active_layer_id)
+                    .map(|l| l.kind == crate::canvas::LayerType::Vector)
+                    .unwrap_or(false);
+                if is_vector {
+                    self.draw_vector_overlay(rect, &clipped_painter);
+                }
                 if matches!(self.active_tool(), ToolId::EditCP | ToolId::VectorPen | ToolId::Curve) {
                     self.draw_editcp_overlay(rect, &clipped_painter);
                 }
@@ -5971,16 +6000,15 @@ impl eframe::App for PaintApp {
                     if !custom_drawn {
                         if matches!(self.active_tool(), ToolId::Brush | ToolId::Eraser) {
                             ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
-                            let radius = (self.brush_radius_log.exp() * self.viewport_zoom)
-                                .clamp(1.0, 512.0);
+                            let brush_radius_pixels = self.brush_radius_log.exp() * self.viewport_zoom;
                             ui.painter().circle_stroke(
                                 pos,
-                                radius,
+                                brush_radius_pixels,
                                 egui::Stroke::new(1.0, Color32::from_black_alpha(220)),
                             );
                             ui.painter().circle_stroke(
                                 pos,
-                                radius + 1.0,
+                                brush_radius_pixels + 1.0,
                                 egui::Stroke::new(1.0, Color32::from_white_alpha(180)),
                             );
                         } else {
@@ -7328,5 +7356,54 @@ mod tests {
         assert!(!app.transform_active);
         app.set_active_tool(ToolId::Transform);
         assert!(app.transform_active);
+    }
+
+    #[test]
+    fn test_curve_tool_placement() {
+        use crate::tools::{CurveTool, Tool, ToolContext, ToolOutcome};
+        let mut tool = CurveTool::new();
+
+        let mut ctx = ToolContext {
+            viewport_offset: egui::Vec2::ZERO,
+            viewport_zoom: 1.0,
+            rotation_angle: 0.0,
+            mirror_horizontal: false,
+            screen_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 200.0)),
+            pointer_down: false,
+            pointer_clicked: false,
+            pointer_right_clicked: false,
+            pointer_drag_stopped: false,
+            pointer_double_clicked: false,
+            pointer_pos: None,
+            pointer_pressure: 1.0,
+        };
+
+        // Down click at (10, 10)
+        ctx.pointer_down = true;
+        ctx.pointer_pos = Some(egui::pos2(10.0, 10.0));
+        let res = tool.handle_event(&ctx);
+        assert!(matches!(res, ToolOutcome::None));
+
+        // Release click at (10, 10)
+        ctx.pointer_down = false;
+        let res = tool.handle_event(&ctx);
+        assert!(matches!(res, ToolOutcome::Handled)); // First point placed!
+
+        // Drag action - click down at (20, 20), move to (50, 50), release
+        // Down
+        ctx.pointer_down = true;
+        ctx.pointer_pos = Some(egui::pos2(20.0, 20.0));
+        let res = tool.handle_event(&ctx);
+        assert!(matches!(res, ToolOutcome::None));
+
+        // Move to (50, 50) while down (large drag distance > 5.0 pixels)
+        ctx.pointer_pos = Some(egui::pos2(50.0, 50.0));
+        let res = tool.handle_event(&ctx);
+        assert!(matches!(res, ToolOutcome::None));
+
+        // Release at (50, 50) - should NOT register a point because distance is > 5.0 pixels
+        ctx.pointer_down = false;
+        let res = tool.handle_event(&ctx);
+        assert!(matches!(res, ToolOutcome::None));
     }
 }

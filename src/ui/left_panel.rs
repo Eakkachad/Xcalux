@@ -860,6 +860,7 @@ pub(crate) fn draw_tools_and_presets_content(
 
                         if response.inner.clicked() {
                             app.select_preset(i);
+                            response.inner.surrender_focus();
                         }
 
                         response.inner.context_menu(|ui| {
@@ -1277,7 +1278,9 @@ pub(crate) fn draw_brush_settings_content(
         let pixel_radius = app.brush_radius_log.exp();
         ui.horizontal(|ui| {
             ui.label("Brush Size");
-            ui.add(egui::Slider::new(&mut app.brush_radius_log, -1.0..=5.0).show_value(false));
+            if ui.add(egui::Slider::new(&mut app.brush_radius_log, -1.0..=5.0).show_value(false)).changed() {
+                app.brush_settings_dirty = true;
+            }
             let mut size_display = pixel_radius;
             if ui
                 .add(
@@ -1296,9 +1299,11 @@ pub(crate) fn draw_brush_settings_content(
         // Min Size
         ui.horizontal(|ui| {
             ui.label("Min Size");
-            ui.add(
+            if ui.add(
                 egui::Slider::new(&mut app.brush_min_size_fraction, 0.0..=1.0).show_value(false),
-            );
+            ).changed() {
+                app.brush_settings_dirty = true;
+            }
             if ui
                 .add(
                     egui::DragValue::new(&mut app.brush_min_size_fraction)
@@ -1315,7 +1320,9 @@ pub(crate) fn draw_brush_settings_content(
         // Density
         ui.horizontal(|ui| {
             ui.label("Density");
-            ui.add(egui::Slider::new(&mut app.brush_density, 0.0..=1.0).show_value(false));
+            if ui.add(egui::Slider::new(&mut app.brush_density, 0.0..=1.0).show_value(false)).changed() {
+                app.brush_settings_dirty = true;
+            }
             if ui
                 .add(
                     egui::DragValue::new(&mut app.brush_density)

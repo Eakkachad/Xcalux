@@ -80,14 +80,32 @@ pub fn draw_status_bar(app: &mut PaintApp, ctx: &egui::Context) {
 
             let status = &app.autosave_status;
             if !status.is_empty() {
-                let color = if status.to_lowercase().contains("failed") || status.to_lowercase().contains("error") {
-                    egui::Color32::from_rgb(220, 60, 60)
-                } else if status.to_lowercase().contains("saving") || status.contains("...") {
-                    egui::Color32::from_rgb(0, 120, 215)
+                let is_active = status.contains("Saving") || status.contains("Autosaved") || status.to_lowercase().contains("failed") || status.to_lowercase().contains("error");
+                if is_active {
+                    egui::Area::new(egui::Id::new("autosave_toast"))
+                        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -45.0))
+                        .show(ctx, |ui| {
+                            egui::Frame::window(&ui.style())
+                                .fill(egui::Color32::from_rgb(33, 33, 33))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(80)))
+                                .rounding(4.0)
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let color = if status.to_lowercase().contains("failed") || status.to_lowercase().contains("error") {
+                                            egui::Color32::from_rgb(239, 83, 80)
+                                        } else if status.contains("Saving") {
+                                            egui::Color32::from_rgb(41, 182, 246)
+                                        } else {
+                                            egui::Color32::from_rgb(102, 187, 106)
+                                        };
+                                        ui.label(egui::RichText::new("💾").color(color));
+                                        ui.label(egui::RichText::new(status).color(egui::Color32::WHITE).size(11.0));
+                                    });
+                                });
+                        });
                 } else {
-                    egui::Color32::from_rgb(46, 125, 50)
-                };
-                ui.label(egui::RichText::new(format!("💾 {}", status)).color(color).strong().size(10.5));
+                    ui.label(egui::RichText::new(format!("💾 {}", status)).color(egui::Color32::GRAY).size(10.5));
+                }
             }
         });
     });

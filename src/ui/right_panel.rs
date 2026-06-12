@@ -1193,10 +1193,7 @@ pub(crate) fn draw_layers_manager_widget(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
 ) {
-    egui::CollapsingHeader::new("LAYERS MANAGER")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(3.0, 1.0);
+    ui.spacing_mut().item_spacing = egui::vec2(3.0, 1.0);
 
             // --- LAYER EFFECT SECTION ---
             egui::collapsing_header::CollapsingState::load_with_default_open(
@@ -1602,7 +1599,7 @@ pub(crate) fn draw_layers_manager_widget(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
                 if ui
-                    .add_sized([22.0, 22.0], egui::Button::new("R+"))
+                    .add_sized([22.0, 22.0], egui::Button::new("🎨⁺"))
                     .on_hover_text("New Raster Layer")
                     .clicked()
                 {
@@ -1620,7 +1617,7 @@ pub(crate) fn draw_layers_manager_widget(
                     });
                 }
                 if ui
-                    .add_sized([22.0, 22.0], egui::Button::new("F+"))
+                    .add_sized([22.0, 22.0], egui::Button::new("📁⁺"))
                     .on_hover_text("New Folder")
                     .clicked()
                 {
@@ -1640,7 +1637,7 @@ pub(crate) fn draw_layers_manager_widget(
                     });
                 }
                 if ui
-                    .add_sized([22.0, 22.0], egui::Button::new("V+"))
+                    .add_sized([22.0, 22.0], egui::Button::new("⬡⁺"))
                     .on_hover_text("New Vector Layer")
                     .clicked()
                 {
@@ -1665,7 +1662,7 @@ pub(crate) fn draw_layers_manager_widget(
                 if ui
                     .add_enabled(
                         app.layer_order.len() > 1,
-                        egui::Button::new("✕").min_size(egui::Vec2::new(22.0, 22.0)),
+                        egui::Button::new("🗑").min_size(egui::Vec2::new(22.0, 22.0)),
                     )
                     .on_hover_text("Delete Layer")
                     .clicked()
@@ -1684,21 +1681,21 @@ pub(crate) fn draw_layers_manager_widget(
                     }
                 }
                 if ui
-                    .add_sized([22.0, 22.0], egui::Button::new("Clr"))
+                    .add_sized([22.0, 22.0], egui::Button::new("🧹"))
                     .on_hover_text("Clear Layer")
                     .clicked()
                 {
                     app.command(CommandId::ClearLayer);
                 }
                 if ui
-                    .add_sized([22.0, 22.0], egui::Button::new("Fill"))
+                    .add_sized([22.0, 22.0], egui::Button::new("🪣"))
                     .on_hover_text("Fill Layer")
                     .clicked()
                 {
                     app.command(CommandId::FillLayer);
                 }
                 if ui
-                    .add_sized([22.0, 22.0], egui::Button::new("Img"))
+                    .add_sized([22.0, 22.0], egui::Button::new("🖼⁺"))
                     .on_hover_text("Import Image as Layer")
                     .clicked()
                 {
@@ -1720,7 +1717,7 @@ pub(crate) fn draw_layers_manager_widget(
                     if ui
                         .add_enabled(
                             !has_mask,
-                            egui::Button::new("M+").min_size(egui::Vec2::new(22.0, 22.0)),
+                            egui::Button::new("🎭⁺").min_size(egui::Vec2::new(22.0, 22.0)),
                         )
                         .on_hover_text("Add Mask")
                         .clicked()
@@ -1730,7 +1727,7 @@ pub(crate) fn draw_layers_manager_widget(
                     if ui
                         .add_enabled(
                             has_mask,
-                            egui::Button::new("M-").min_size(egui::Vec2::new(22.0, 22.0)),
+                            egui::Button::new("🗑🎭").min_size(egui::Vec2::new(22.0, 22.0)),
                         )
                         .on_hover_text("Delete Mask")
                         .clicked()
@@ -1740,7 +1737,7 @@ pub(crate) fn draw_layers_manager_widget(
                     if ui
                         .add_enabled(
                             has_mask,
-                            egui::Button::new(if mask_enabled { "On" } else { "Off" })
+                            egui::Button::new("🎭").selected(mask_enabled)
                                 .min_size(egui::Vec2::new(22.0, 22.0)),
                         )
                         .on_hover_text("Toggle Mask")
@@ -1751,7 +1748,7 @@ pub(crate) fn draw_layers_manager_widget(
                     if ui
                         .add_enabled(
                             has_mask,
-                            egui::Button::new("Ap").min_size(egui::Vec2::new(22.0, 22.0)),
+                            egui::Button::new("🎭✓").min_size(egui::Vec2::new(22.0, 22.0)),
                         )
                         .on_hover_text("Apply Mask")
                         .clicked()
@@ -2149,5 +2146,4 @@ pub(crate) fn draw_layers_manager_widget(
                         }
                     }
                 });
-        });
 }

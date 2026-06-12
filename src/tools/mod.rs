@@ -983,11 +983,15 @@ impl Tool for VectorPenTool {
 // =============================================================
 pub struct CurveTool {
     points: Vec<crate::canvas::VectorControlPoint>,
+    last_down_pos: Option<egui::Pos2>,
 }
 
 impl CurveTool {
     pub fn new() -> Self {
-        Self { points: Vec::new() }
+        Self {
+            points: Vec::new(),
+            last_down_pos: None,
+        }
     }
 }
 
@@ -996,27 +1000,36 @@ impl Tool for CurveTool {
     fn tool_id(&self) -> ToolId { ToolId::Curve }
 
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
-        if ctx.pointer_clicked {
-            if let Some(screen_pos) = ctx.pointer_pos {
-                let world = ctx.screen_to_world(screen_pos);
-                self.points.push(crate::canvas::VectorControlPoint {
-                    x: world.x,
-                    y: world.y,
-                    pressure: ctx.pointer_pressure,
-                    tilt_x: 0.0,
-                    tilt_y: 0.0,
-                });
-                if self.points.len() >= 4 {
-                    ToolOutcome::CurveComplete {
-                        points: std::mem::take(&mut self.points),
-                    }
-                } else {
-                    ToolOutcome::Handled
-                }
-            } else {
-                ToolOutcome::None
+        if ctx.pointer_down {
+            if self.last_down_pos.is_none() {
+                self.last_down_pos = ctx.pointer_pos;
             }
+            ToolOutcome::None
         } else {
+            if let Some(down_pos) = self.last_down_pos.take() {
+                if let Some(up_pos) = ctx.pointer_pos {
+                    let dx = up_pos.x - down_pos.x;
+                    let dy = up_pos.y - down_pos.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist < 5.0 {
+                        let world = ctx.screen_to_world(up_pos);
+                        self.points.push(crate::canvas::VectorControlPoint {
+                            x: world.x,
+                            y: world.y,
+                            pressure: ctx.pointer_pressure,
+                            tilt_x: 0.0,
+                            tilt_y: 0.0,
+                        });
+                        if self.points.len() >= 4 {
+                            return ToolOutcome::CurveComplete {
+                                points: std::mem::take(&mut self.points),
+                            };
+                        } else {
+                            return ToolOutcome::Handled;
+                        }
+                    }
+                }
+            }
             ToolOutcome::None
         }
     }
@@ -1060,6 +1073,7 @@ impl Tool for CurveTool {
 
     fn deactivate(&mut self) {
         self.points.clear();
+        self.last_down_pos = None;
     }
 }
 
@@ -1085,21 +1099,20 @@ impl Tool for EditCPTool {
     fn tool_id(&self) -> ToolId { ToolId::EditCP }
 
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
-        if ctx.pointer_clicked {
+        if ctx.pointer_down {
             if let Some(screen_pos) = ctx.pointer_pos {
                 let world = ctx.screen_to_world(screen_pos);
-                ToolOutcome::EditCPClick { world_pos: world }
+                if !self.dragging {
+                    self.dragging = true;
+                    ToolOutcome::EditCPClick { world_pos: world }
+                } else {
+                    ToolOutcome::EditCPDrag { world_pos: world }
+                }
             } else {
                 ToolOutcome::None
             }
-        } else if self.dragging && ctx.pointer_down {
-            if let Some(screen_pos) = ctx.pointer_pos {
-                let world = ctx.screen_to_world(screen_pos);
-                ToolOutcome::EditCPDrag { world_pos: world }
-            } else {
-                ToolOutcome::None
-            }
-        } else if !ctx.pointer_down && self.dragging {
+        } else if self.dragging {
+            self.dragging = false;
             ToolOutcome::EditCPRelease
         } else {
             ToolOutcome::None
