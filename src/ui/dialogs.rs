@@ -1184,6 +1184,7 @@ fn draw_panel_layout_settings(app: &mut PaintApp, ctx: &egui::Context) {
                     for panel in &mut app.workspace_layout.panels {
                         match panel.kind {
                             PanelKind::ToolsAndPresets
+                            | PanelKind::BrushPresets
                             | PanelKind::BrushSettings
                             | PanelKind::ToolOptions
                             | PanelKind::Stabilizer
@@ -1234,6 +1235,7 @@ fn draw_panel_layout_settings(app: &mut PaintApp, ctx: &egui::Context) {
                             } else {
                                 p.location = match kind {
                                     PanelKind::ToolsAndPresets
+                                    | PanelKind::BrushPresets
                                     | PanelKind::BrushSettings
                                     | PanelKind::ToolOptions
                                     | PanelKind::Stabilizer

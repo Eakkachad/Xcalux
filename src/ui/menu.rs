@@ -524,6 +524,13 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     }
                 }
                 {
+                    let mut v = app.workspace_layout.panel_visible(PanelKind::BrushPresets);
+                    if ui.checkbox(&mut v, "Brush Presets").changed() {
+                        app.workspace_layout
+                            .toggle_panel_visibility(PanelKind::BrushPresets);
+                    }
+                }
+                {
                     let mut v = app.workspace_layout.panel_visible(PanelKind::Symmetry);
                     if ui.checkbox(&mut v, "Symmetry / Drawing Guide").changed() {
                         app.workspace_layout
@@ -545,6 +552,7 @@ pub fn draw_menu_bar(app: &mut PaintApp, ctx: &egui::Context) {
                     for panel in &mut app.workspace_layout.panels {
                         match panel.kind {
                             PanelKind::ToolsAndPresets
+                            | PanelKind::BrushPresets
                             | PanelKind::BrushSettings
                             | PanelKind::ToolOptions
                             | PanelKind::Stabilizer

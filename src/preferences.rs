@@ -206,6 +206,7 @@ fn merge_workspace_layout(target: &mut WorkspaceLayout, loaded: WorkspaceLayout)
             .find(|p| p.kind == loaded_panel.kind)
         {
             *existing = loaded_panel;
+            existing.title = existing.kind.default_title().to_string();
         }
     }
 }
@@ -255,7 +256,7 @@ fn deserialize_layout_lenient(value: &serde_json::Value) -> Option<WorkspaceLayo
                     continue;
                 }
             };
-            let panel = PanelState {
+            let mut panel = PanelState {
                 kind,
                 title: panel_obj
                     .get("title")
@@ -280,6 +281,7 @@ fn deserialize_layout_lenient(value: &serde_json::Value) -> Option<WorkspaceLayo
                     .and_then(|v| deserialize_floating_state(v))
                     .unwrap_or_default(),
             };
+            panel.title = kind.default_title().to_string();
             // Override the default panel of this kind (or add if somehow missing)
             if let Some(existing) = layout.panels.iter_mut().find(|p| p.kind == kind) {
                 *existing = panel;
@@ -314,6 +316,7 @@ impl PanelKind {
     fn from_str(s: &str) -> Option<Self> {
         match s {
             "ToolsAndPresets" => Some(PanelKind::ToolsAndPresets),
+            "BrushPresets" => Some(PanelKind::BrushPresets),
             "BrushSettings" => Some(PanelKind::BrushSettings),
             "ToolOptions" => Some(PanelKind::ToolOptions),
             "Stabilizer" => Some(PanelKind::Stabilizer),

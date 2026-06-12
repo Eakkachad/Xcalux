@@ -18,6 +18,7 @@ pub(crate) struct FloatingDragState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PanelKind {
     ToolsAndPresets,
+    BrushPresets,
     BrushSettings,
     ToolOptions,
     Stabilizer,
@@ -30,6 +31,27 @@ pub enum PanelKind {
     ColorHistory,
     LayersManager,
     Reference,
+}
+
+impl PanelKind {
+    pub fn default_title(&self) -> &'static str {
+        match self {
+            PanelKind::ToolsAndPresets => "TOOLS",
+            PanelKind::BrushPresets => "BRUSH PRESETS",
+            PanelKind::BrushSettings => "BRUSH SETTINGS",
+            PanelKind::ToolOptions => "TOOL OPTIONS",
+            PanelKind::Stabilizer => "STABILIZER",
+            PanelKind::Symmetry => "SYMMETRY / DRAWING GUIDE",
+            PanelKind::AdvancedDebug => "ADVANCED / DEBUG",
+            PanelKind::Navigator => "NAVIGATOR",
+            PanelKind::ColorWheel => "COLOR WHEEL",
+            PanelKind::ColorSliders => "COLOR SLIDERS",
+            PanelKind::ColorPalette => "COLOR PALETTE",
+            PanelKind::ColorHistory => "COLOR HISTORY",
+            PanelKind::LayersManager => "LAYERS MANAGER",
+            PanelKind::Reference => "REFERENCE",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -153,7 +175,14 @@ impl Default for WorkspaceLayout {
             panels: vec![
                 PanelState::new(
                     PanelKind::ToolsAndPresets,
-                    "TOOLS / BRUSH PRESETS",
+                    "TOOLS",
+                    PanelLocation::Left,
+                    true,
+                    false,
+                ),
+                PanelState::new(
+                    PanelKind::BrushPresets,
+                    "BRUSH PRESETS",
                     PanelLocation::Left,
                     true,
                     false,

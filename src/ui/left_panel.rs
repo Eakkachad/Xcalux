@@ -1,8 +1,7 @@
-use crate::app::{PaintApp, PresetIcon, ToolId};
+use crate::app::{PaintApp, ToolId};
 use crate::input::{StabilizerLevel, StabilizerMode};
 use crate::ui::layout::{PanelKind, PanelLocation};
 use crate::ui::panel_section;
-use hokusai::{Brush, BrushSetting, BrushState};
 
 fn draw_dashed_line(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, stroke: egui::Stroke) {
     let dist = p1.distance(p2);
@@ -128,27 +127,73 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
                     .id_source("left_sidebar_scroll")
                     .show(ui, |ui| {
                         ui.vertical(|ui| {
-                            // ── TOOLS / BRUSH PRESETS ──
+                            // ── TOOLS ──
                             if app
                                 .workspace_layout
                                 .is_panel_at(PanelKind::ToolsAndPresets, PanelLocation::Left)
                             {
-                                let tp_resp = panel_section(ui, "TOOLS / BRUSH PRESETS", |ui| {
-                                    draw_tools_and_presets_content(app, ui, ctx);
+                                let t_resp = panel_section(ui, "TOOLS", |ui| {
+                                    draw_tools_content(app, ui, ctx);
                                 });
                                 crate::ui::handle_panel_drag(
-                                    &tp_resp,
+                                    &t_resp,
                                     PanelKind::ToolsAndPresets,
                                     app,
                                 );
-                                let _ = tp_resp.context_menu(|ui| {
+                                let _ = t_resp.context_menu(|ui| {
                                     crate::ui::panel_location_menu(
                                         ui,
                                         PanelKind::ToolsAndPresets,
                                         app,
                                     )
                                 });
-                            } // is_panel_at ToolsAndPresets
+                            }
+
+                            // ── BRUSH PRESETS ──
+                            if app
+                                .workspace_layout
+                                .is_panel_at(PanelKind::BrushPresets, PanelLocation::Left)
+                            {
+                                let bp_resp = panel_section(ui, "BRUSH PRESETS", |ui| {
+                                    crate::ui::brush_panel::draw_sub_tool_panel_inline(ui, app);
+                                    if let Some(idx) = app.renaming_preset_index {
+                                        ui.add_space(4.0);
+                                        ui.horizontal(|ui| {
+                                            ui.label("Rename:");
+                                            let res = ui.add(
+                                                egui::TextEdit::singleline(&mut app.rename_input)
+                                                    .desired_width(80.0),
+                                            );
+                                            if res.lost_focus() || ui.button("OK").clicked() {
+                                                if !app.rename_input.trim().is_empty() {
+                                                    app.presets[idx].name =
+                                                        app.rename_input.trim().to_string();
+                                                }
+                                                app.renaming_preset_index = None;
+                                            }
+                                            if ui
+                                                .button("\u{2715}")
+                                                .on_hover_text("Cancel rename")
+                                                .clicked()
+                                            {
+                                                app.renaming_preset_index = None;
+                                            }
+                                        });
+                                    }
+                                });
+                                crate::ui::handle_panel_drag(
+                                    &bp_resp,
+                                    PanelKind::BrushPresets,
+                                    app,
+                                );
+                                let _ = bp_resp.context_menu(|ui| {
+                                    crate::ui::panel_location_menu(
+                                        ui,
+                                        PanelKind::BrushPresets,
+                                        app,
+                                    )
+                                });
+                            } // is_panel_at BrushPresets
 
                             // ── BRUSH SETTINGS ──
                             if app
@@ -242,7 +287,7 @@ pub fn draw_left_panel(app: &mut PaintApp, ctx: &egui::Context) {
     } // if !show_minimal_ui
 } // fn draw_left_panel
 
-pub(crate) fn draw_tools_and_presets_content(
+pub(crate) fn draw_tools_content(
     app: &mut PaintApp,
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -251,7 +296,6 @@ pub(crate) fn draw_tools_and_presets_content(
         .num_columns(5)
         .spacing([4.0, 4.0])
         .show(ui, |ui| {
-            // ROW 1
             let active_shape_tool = if app.active_tool() == ToolId::EllipseSelect {
                 ToolId::EllipseSelect
             } else {
@@ -457,7 +501,6 @@ pub(crate) fn draw_tools_and_presets_content(
             btn_resp.on_hover_text("Text Tool (Not implemented)");
             ui.end_row();
 
-            // ROW 2
             let is_active = app.active_tool() == ToolId::Move;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
@@ -672,8 +715,6 @@ pub(crate) fn draw_tools_and_presets_content(
             btn_resp.on_hover_text("Color Picker (Eyedropper) [Alt/I]");
             ui.end_row();
 
-            // ROW 3
-            // 1. Fill Tool
             let is_active = app.active_tool() == ToolId::Fill;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
@@ -695,7 +736,6 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Fill Tool [G]");
 
-            // 2. Gradient Tool
             let is_active = app.active_tool() == ToolId::Gradient;
             let btn = egui::Button::new("").selected(is_active);
             let btn_resp = ui.add_sized([26.0, 26.0], btn);
@@ -715,7 +755,6 @@ pub(crate) fn draw_tools_and_presets_content(
             }
             btn_resp.on_hover_text("Gradient Tool [Shift+G]");
 
-            // 3, 4, 5. Empty space cells
             ui.allocate_space(egui::vec2(26.0, 26.0));
             ui.allocate_space(egui::vec2(26.0, 26.0));
             ui.allocate_space(egui::vec2(26.0, 26.0));
@@ -730,18 +769,18 @@ pub(crate) fn draw_tools_and_presets_content(
             let vec_tools: [(ToolId, &str, &str); 3] = [
                 (
                     ToolId::VectorPen,
-                    "✎",
-                    "Vector Pen — draw smooth vector strokes",
+                    "\u{270E}",
+                    "Vector Pen \u{2014} draw smooth vector strokes",
                 ),
                 (
                     ToolId::Curve,
-                    "〰",
-                    "Curve — place 4 control points for a bezier curve",
+                    "\u{3030}",
+                    "Curve \u{2014} place 4 control points for a bezier curve",
                 ),
                 (
                     ToolId::EditCP,
-                    "⬩",
-                    "Edit CP — select and drag control points",
+                    "\u{2B29}",
+                    "Edit CP \u{2014} select and drag control points",
                 ),
             ];
             for &(tool_id, label, tooltip) in &vec_tools {
@@ -765,372 +804,6 @@ pub(crate) fn draw_tools_and_presets_content(
                 }
             }
         });
-    ui.separator();
-    ui.label("BRUSH PRESETS");
-    ui.dnd_drop_zone::<usize, _>(egui::Frame::none(), |ui| {
-        egui::Grid::new("presets_grid")
-            .num_columns(4)
-            .spacing([4.0, 4.0])
-            .show(ui, |ui| {
-                let num_presets = app.presets.len();
-                for i in 0..16 {
-                    if i < num_presets {
-                        let preset_icon = app.presets[i].icon;
-                        let preset_name = app.presets[i].name.clone();
-                        let is_selected = app.active_preset_index == i
-                            && matches!(app.active_tool(), ToolId::Brush | ToolId::Eraser);
-
-                        let type_tag = match preset_icon {
-                            PresetIcon::Pencil => "P",
-                            PresetIcon::InkPen => "I",
-                            PresetIcon::PaintBrush => "B",
-                            PresetIcon::Smudge => "S",
-                            PresetIcon::Eraser => "E",
-                            PresetIcon::AirBrush => "A",
-                            PresetIcon::Water => "W",
-                            PresetIcon::Marker => "M",
-                            PresetIcon::BinaryPen => "1",
-                        };
-
-                        let id = egui::Id::new("preset_dnd").with(i);
-                        let response = ui.dnd_drag_source(id, i, |ui| {
-                            let (rect, btn_response) = ui
-                                .allocate_exact_size(egui::vec2(34.0, 30.0), egui::Sense::click());
-                            let (bg_color, stroke_color, text_color) = if is_selected {
-                                (
-                                    egui::Color32::from_rgb(215, 225, 255),
-                                    egui::Color32::from_rgb(120, 150, 255),
-                                    egui::Color32::from_rgb(0, 50, 150),
-                                )
-                            } else if btn_response.hovered() {
-                                (
-                                    egui::Color32::from_gray(245),
-                                    egui::Color32::from_gray(200),
-                                    egui::Color32::BLACK,
-                                )
-                            } else {
-                                (
-                                    egui::Color32::WHITE,
-                                    egui::Color32::from_gray(225),
-                                    egui::Color32::from_gray(60),
-                                )
-                            };
-
-                            ui.painter().rect_filled(rect, 2.0, bg_color);
-                            ui.painter().rect_stroke(
-                                rect,
-                                2.0,
-                                egui::Stroke::new(1.0, stroke_color),
-                            );
-
-                            let name_len = preset_name.len();
-                            let font_size = if name_len > 8 {
-                                5.5
-                            } else if name_len > 6 {
-                                6.5
-                            } else {
-                                8.0
-                            };
-                            let name_font = egui::FontId::proportional(font_size);
-                            let display_name = if name_len > 9 {
-                                format!("{}..", &preset_name[0..7])
-                            } else {
-                                preset_name.clone()
-                            };
-                            let name_pos = rect.min + egui::vec2(3.0, 9.0);
-                            ui.painter().text(
-                                name_pos,
-                                egui::Align2::LEFT_BOTTOM,
-                                display_name,
-                                name_font,
-                                text_color,
-                            );
-
-                            let icon_font = egui::FontId::proportional(8.0);
-                            let icon_pos = rect.max - egui::vec2(3.0, 3.0);
-                            ui.painter().text(
-                                icon_pos,
-                                egui::Align2::RIGHT_BOTTOM,
-                                type_tag,
-                                icon_font,
-                                text_color,
-                            );
-                            btn_response
-                        });
-
-                        if response.inner.clicked() {
-                            app.select_preset(i);
-                            response.inner.surrender_focus();
-                        }
-
-                        response.inner.context_menu(|ui| {
-                            if ui.button("Rename").clicked() {
-                                app.renaming_preset_index = Some(i);
-                                app.rename_input = preset_name.clone();
-                                ui.close_menu();
-                            }
-                            if ui.button("Duplicate").clicked() {
-                                app.duplicate_preset(i);
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            let can_delete = num_presets > 1;
-                            if ui
-                                .add_enabled(can_delete, egui::Button::new("Delete"))
-                                .clicked()
-                            {
-                                app.delete_preset(i);
-                                ui.close_menu();
-                            }
-                        });
-
-                        if let Some(source_idx) = response.response.dnd_hover_payload::<usize>() {
-                            let source_idx = *source_idx;
-                            if source_idx != i {
-                                let rect = response.response.rect;
-                                if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
-                                    let is_left = hover_pos.x < rect.center().x;
-                                    let line_segment_x =
-                                        if is_left { rect.left() } else { rect.right() };
-                                    ui.painter().line_segment(
-                                        [
-                                            egui::pos2(line_segment_x, rect.top()),
-                                            egui::pos2(line_segment_x, rect.bottom()),
-                                        ],
-                                        egui::Stroke::new(
-                                            2.5,
-                                            egui::Color32::from_rgb(0, 120, 215),
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-
-                        if let Some(source_idx) = response.response.dnd_release_payload::<usize>() {
-                            let source_idx = *source_idx;
-                            if source_idx != i {
-                                if let Some(hover_pos) = response.response.interact_pointer_pos() {
-                                    let is_left = hover_pos.x < response.response.rect.center().x;
-                                    let mut target_idx = i;
-                                    if !is_left {
-                                        target_idx += 1;
-                                    }
-                                    app.reorder_preset(source_idx, target_idx);
-                                }
-                            }
-                        }
-                    } else {
-                        let (rect, btn_response) =
-                            ui.allocate_exact_size(egui::vec2(34.0, 30.0), egui::Sense::click());
-                        let bg_color = if btn_response.hovered() {
-                            egui::Color32::from_gray(245)
-                        } else {
-                            egui::Color32::WHITE
-                        };
-                        ui.painter().rect_filled(rect, 2.0, bg_color);
-                        ui.painter().rect_stroke(
-                            rect,
-                            1.0,
-                            egui::Stroke::new(1.0, egui::Color32::from_gray(225)),
-                        );
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "+",
-                            egui::FontId::proportional(14.0),
-                            egui::Color32::GRAY,
-                        );
-
-                        let mut show_creation_menu = false;
-                        if btn_response.clicked() {
-                            show_creation_menu = true;
-                        }
-                        btn_response.context_menu(|ui| {
-                            ui.label("Create New Brush:");
-                            if ui.button("Pencil").clicked() {
-                                app.create_preset(PresetIcon::Pencil);
-                                ui.close_menu();
-                            }
-                            if ui.button("Ink Pen").clicked() {
-                                app.create_preset(PresetIcon::InkPen);
-                                ui.close_menu();
-                            }
-                            if ui.button("Paint Brush").clicked() {
-                                app.create_preset(PresetIcon::PaintBrush);
-                                ui.close_menu();
-                            }
-                            if ui.button("Smudge").clicked() {
-                                app.create_preset(PresetIcon::Smudge);
-                                ui.close_menu();
-                            }
-                            if ui.button("Eraser").clicked() {
-                                app.create_preset(PresetIcon::Eraser);
-                                ui.close_menu();
-                            }
-                            ui.separator();
-                            ui.label("Import Brush Preset:");
-                            ui.horizontal(|ui| {
-                                ui.label("Path:");
-                                ui.text_edit_singleline(&mut app.brush_import_path);
-                            });
-                            if ui.button("Load .artybrush").clicked() {
-                                let path = std::path::Path::new(&app.brush_import_path);
-                                match crate::brush_io::load_artybrush(path, &mut app.brush_textures)
-                                {
-                                    Ok(mut new_preset) => {
-                                        app.preset_id_counter += 1;
-                                        new_preset.id = app.preset_id_counter;
-                                        let mut brush = Brush::new();
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::Radius,
-                                            new_preset.radius_log,
-                                        );
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::Opaque,
-                                            new_preset.opacity,
-                                        );
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::Hardness,
-                                            new_preset.hardness,
-                                        );
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::Smudge,
-                                            new_preset.color_blending,
-                                        );
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::SmudgeLength,
-                                            new_preset.dilution,
-                                        );
-                                        if new_preset.is_eraser {
-                                            PaintApp::set_constant(
-                                                &mut brush,
-                                                BrushSetting::Eraser,
-                                                1.0,
-                                            );
-                                        }
-                                        app.presets.push(new_preset);
-                                        app.brushes.push(brush);
-                                        app.brush_states.push(BrushState::default());
-                                        let new_idx = app.presets.len() - 1;
-                                        app.select_preset(new_idx);
-                                        log::info!("Imported .artybrush successfully!");
-                                    }
-                                    Err(e) => log::error!("Failed to import .artybrush: {:?}", e),
-                                }
-                                ui.close_menu();
-                            }
-                            if ui.button("⚡ Extract & Import .sut").clicked() {
-                                let path = std::path::Path::new(&app.brush_import_path);
-                                match crate::brush_io::extract_sut_texture(path) {
-                                    Ok((gray_bytes, w, h)) => {
-                                        let mut final_bytes = vec![255u8; 256 * 256];
-                                        for y in 0..h.min(256) {
-                                            for x in 0..w.min(256) {
-                                                final_bytes[(y * 256 + x) as usize] =
-                                                    gray_bytes[(y * w + x) as usize];
-                                            }
-                                        }
-                                        let name = path
-                                            .file_stem()
-                                            .and_then(|s| s.to_str())
-                                            .unwrap_or("SUT Brush")
-                                            .to_string();
-                                        app.brush_textures.push(crate::app::BrushTexture {
-                                            name: format!("[sut] {}", name),
-                                            width: 256,
-                                            height: 256,
-                                            pixels: final_bytes,
-                                        });
-                                        let texture_id = (app.brush_textures.len() - 1) as u32;
-                                        app.preset_id_counter += 1;
-                                        let new_preset = crate::app::BrushPreset {
-                                            id: app.preset_id_counter,
-                                            name: path
-                                                .file_stem()
-                                                .and_then(|s| s.to_str())
-                                                .unwrap_or("SUT Brush")
-                                                .to_string(),
-                                            icon: PresetIcon::PaintBrush,
-                                            radius_log: 2.0,
-                                            opacity: 1.0,
-                                            hardness: 0.8,
-                                            min_size_fraction: 0.2,
-                                            color_blending: 0.0,
-                                            dilution: 0.0,
-                                            is_eraser: false,
-                                            texture_id,
-                                            texture_scale: 1.0,
-                                            bristle_id: 0,
-                                            stabilizer_level: StabilizerLevel::default(),
-                                            stabilizer_mode: StabilizerMode::SpringMassDamper,
-                                            spacing: 2.0,
-                                            density: 1.0,
-                                        };
-                                        let mut brush = Brush::new();
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::Radius,
-                                            new_preset.radius_log,
-                                        );
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::Opaque,
-                                            new_preset.opacity,
-                                        );
-                                        PaintApp::set_constant(
-                                            &mut brush,
-                                            BrushSetting::Hardness,
-                                            new_preset.hardness,
-                                        );
-                                        app.presets.push(new_preset);
-                                        app.brushes.push(brush);
-                                        app.brush_states.push(BrushState::default());
-                                        let new_idx = app.presets.len() - 1;
-                                        app.select_preset(new_idx);
-                                        log::info!(
-                                            "Extracted and imported SUT brush successfully!"
-                                        );
-                                    }
-                                    Err(e) => log::error!("Failed to extract SUT: {:?}", e),
-                                }
-                                ui.close_menu();
-                            }
-                        });
-                        if show_creation_menu {
-                            ui.ctx().memory_mut(|mem| {
-                                mem.open_popup(btn_response.id.with("context_menu"))
-                            });
-                        }
-                    }
-                    if i % 4 == 3 {
-                        ui.end_row();
-                    }
-                }
-            });
-    });
-
-    if let Some(idx) = app.renaming_preset_index {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Rename:");
-            let res =
-                ui.add(egui::TextEdit::singleline(&mut app.rename_input).desired_width(100.0));
-            if res.lost_focus() || ui.button("OK").clicked() {
-                if !app.rename_input.trim().is_empty() {
-                    app.presets[idx].name = app.rename_input.trim().to_string();
-                }
-                app.renaming_preset_index = None;
-            }
-            if ui.button("✕").on_hover_text("Cancel rename").clicked() {
-                app.renaming_preset_index = None;
-            }
-        });
-    }
 
     ui.add_space(3.0);
 }
@@ -2262,6 +1935,7 @@ pub fn render_floating_left_panels(app: &mut PaintApp, ctx: &egui::Context) {
         let title = panel.title.clone();
         match kind {
             PanelKind::ToolsAndPresets
+            | PanelKind::BrushPresets
             | PanelKind::BrushSettings
             | PanelKind::ToolOptions
             | PanelKind::Stabilizer
@@ -2271,6 +1945,7 @@ pub fn render_floating_left_panels(app: &mut PaintApp, ctx: &egui::Context) {
         }
         let default_side = match kind {
             PanelKind::ToolsAndPresets
+            | PanelKind::BrushPresets
             | PanelKind::BrushSettings
             | PanelKind::ToolOptions
             | PanelKind::Stabilizer
@@ -2298,7 +1973,10 @@ pub fn render_floating_left_panels(app: &mut PaintApp, ctx: &egui::Context) {
                 ui.separator();
                 match kind {
                     PanelKind::ToolsAndPresets => {
-                        draw_tools_and_presets_content(app, ui, ctx);
+                        draw_tools_content(app, ui, ctx);
+                    }
+                    PanelKind::BrushPresets => {
+                        crate::ui::brush_panel::draw_sub_tool_panel_inline(ui, app);
                     }
                     PanelKind::BrushSettings => {
                         draw_brush_settings_content(app, ui, ctx);

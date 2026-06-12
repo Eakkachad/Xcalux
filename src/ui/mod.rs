@@ -1,3 +1,4 @@
+pub mod brush_panel;
 pub mod diagnostics;
 pub mod dialogs;
 pub mod layout;
@@ -54,19 +55,10 @@ pub fn panel_section(
             egui::FontId::proportional(11.0),
             egui::Color32::from_rgb(34, 34, 34),
         );
-        ui.allocate_ui_at_rect(
-            egui::Rect::from_min_size(
-                egui::pos2(header_rect.min.x, header_rect.max.y + 1.0),
-                egui::vec2(
-                    ui.available_width(),
-                    ui.available_height() - header_rect.height() - 1.0,
-                ),
-            ),
-            |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
-                add_contents(ui);
-            },
-        );
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
+            add_contents(ui);
+        });
         header_response
     });
     ui.add_space(2.0);
@@ -217,6 +209,7 @@ pub fn handle_panel_drag(
                 // Switch to Floating and position near cursor
                 let side = match kind {
                     PanelKind::ToolsAndPresets
+                    | PanelKind::BrushPresets
                     | PanelKind::BrushSettings
                     | PanelKind::ToolOptions
                     | PanelKind::Stabilizer

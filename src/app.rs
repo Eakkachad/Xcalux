@@ -27,6 +27,46 @@ pub enum PresetIcon {
     BinaryPen,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrushPresetCategory {
+    All,
+    Pencil,
+    Pen,
+    Brush,
+    Eraser,
+    Blend,
+    Utility,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrushUiState {
+    pub search: String,
+    pub selected_category: BrushPresetCategory,
+    pub compact_rows: bool,
+    pub show_advanced_properties: bool,
+    pub hovered_preset_index: Option<usize>,
+    pub drag_source_index: Option<usize>,
+    pub last_brush_preset_index: Option<usize>,
+    pub last_eraser_preset_index: Option<usize>,
+    pub favorite_sizes_px: Vec<f32>,
+}
+
+impl Default for BrushUiState {
+    fn default() -> Self {
+        Self {
+            search: String::new(),
+            selected_category: BrushPresetCategory::All,
+            compact_rows: false,
+            show_advanced_properties: false,
+            hovered_preset_index: None,
+            drag_source_index: None,
+            last_brush_preset_index: Some(0),
+            last_eraser_preset_index: None,
+            favorite_sizes_px: vec![1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0, 35.0, 50.0, 80.0],
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct ClipboardData {
@@ -313,6 +353,9 @@ pub struct PaintApp {
     pub last_autosave_time: f64,
     pub document_modified: bool,
     pub autosave_status: String,
+
+    // Brush UI state
+    pub brush_ui: BrushUiState,
 
     // UI state
     pub show_minimal_ui: bool,
@@ -1085,6 +1128,7 @@ impl PaintApp {
             last_autosave_time: 0.0,
             document_modified: false,
             autosave_status: "".to_string(),
+            brush_ui: BrushUiState::default(),
             show_minimal_ui: false,
             show_grid: false,
             show_symmetry: false,
@@ -1467,6 +1511,12 @@ impl PaintApp {
         current_preset.stabilizer_mode = self.stabilizer.mode;
 
         self.active_preset_index = idx;
+
+        if self.presets[idx].is_eraser {
+            self.brush_ui.last_eraser_preset_index = Some(idx);
+        } else {
+            self.brush_ui.last_brush_preset_index = Some(idx);
+        }
 
         let tool_id = if self.presets[idx].is_eraser {
             ToolId::Eraser
@@ -5285,11 +5335,10 @@ impl eframe::App for PaintApp {
                 }
 
                 // Infinite canvas panning: drag with middle or right mouse button (transformed to view rotation/mirror)
-                if !ui.ctx().wants_pointer_input() && (
-                    response.dragged_by(egui::PointerButton::Middle)
-                        || response.dragged_by(egui::PointerButton::Secondary)
-                        || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary))
-                ) {
+                if response.dragged_by(egui::PointerButton::Middle)
+                    || response.dragged_by(egui::PointerButton::Secondary)
+                    || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary))
+                {
                     let delta = response.drag_delta();
                     let half_w = rect.width() * 0.5;
                     let half_h = rect.height() * 0.5;
@@ -5313,13 +5362,13 @@ impl eframe::App for PaintApp {
                 }
 
                 // Rotation dragging using R key / RotateView tool + primary drag
-                if !ui.ctx().wants_pointer_input() && (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
+                if (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     self.rotation_angle += drag_delta.x * 0.005;
                 }
 
                 // Zoom dragging using Zoom tool + primary drag
-                if !ui.ctx().wants_pointer_input() && active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
+                if active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     let prev_zoom = self.viewport_zoom;
                     self.viewport_zoom = (self.viewport_zoom + drag_delta.y * 0.01).clamp(0.1, 10.0);
@@ -5348,16 +5397,15 @@ impl eframe::App for PaintApp {
                 }
 
                 // STROKE DRAWING INTERACTION
-                let pointer_down = !ui.ctx().wants_pointer_input()
-                    && (response.dragged_by(egui::PointerButton::Primary)
+                let pointer_down = (response.dragged_by(egui::PointerButton::Primary)
                         || (response.is_pointer_button_down_on()
                             && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
                     && !space_down
                     && !r_down;
                 let pointer_clicked =
-                    !ui.ctx().wants_pointer_input() && response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+                    response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
                 let pointer_right_clicked =
-                    !ui.ctx().wants_pointer_input() && response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
+                    response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
 
                 // ── Trait-based tool event dispatch (runs first) ──
                 let trait_handled = {
@@ -6857,6 +6905,7 @@ mod tests {
             last_autosave_time: 0.0,
             document_modified: false,
             autosave_status: String::new(),
+            brush_ui: BrushUiState::default(),
             show_minimal_ui: false,
             show_grid: false,
             show_symmetry: false,
@@ -7061,6 +7110,7 @@ mod tests {
             last_autosave_time: 0.0,
             document_modified: false,
             autosave_status: String::new(),
+            brush_ui: BrushUiState::default(),
             show_minimal_ui: false,
             show_grid: false,
             show_symmetry: false,
@@ -7284,6 +7334,7 @@ mod tests {
             last_autosave_time: 0.0,
             document_modified: false,
             autosave_status: String::new(),
+            brush_ui: BrushUiState::default(),
             show_minimal_ui: false,
             show_grid: false,
             show_symmetry: false,
