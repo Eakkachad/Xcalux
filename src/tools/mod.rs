@@ -634,14 +634,80 @@ impl Tool for MoveTool {
 }
 
 // =============================================================
+// SELECTION DRAG OVERLAY HELPERS
+// =============================================================
+fn draw_dashed_line(painter: &egui::Painter, p1: egui::Pos2, p2: egui::Pos2, stroke: egui::Stroke) {
+    let dist = p1.distance(p2);
+    if dist < 0.1 {
+        return;
+    }
+    let dash_len = 4.0;
+    let gap_len = 4.0;
+    let step = dash_len + gap_len;
+    let dir = (p2 - p1) / dist;
+    let mut t = 0.0;
+    while t < dist {
+        let start = p1 + dir * t;
+        let end = p1 + dir * (t + dash_len).min(dist);
+        painter.line_segment([start, end], stroke);
+        t += step;
+    }
+}
+
+fn draw_dashed_rect(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let min = rect.min;
+    let max = rect.max;
+    let top_right = egui::pos2(max.x, min.y);
+    let bottom_left = egui::pos2(min.x, max.y);
+
+    draw_dashed_line(painter, min, top_right, stroke);
+    draw_dashed_line(painter, top_right, max, stroke);
+    draw_dashed_line(painter, max, bottom_left, stroke);
+    draw_dashed_line(painter, bottom_left, min, stroke);
+}
+
+fn draw_dashed_ellipse(painter: &egui::Painter, rect: egui::Rect, stroke: egui::Stroke) {
+    let rx = rect.width() * 0.5;
+    let ry = rect.height() * 0.5;
+    if rx < 0.1 || ry < 0.1 {
+        return;
+    }
+    let center = rect.center();
+
+    let h = ((rx - ry) / (rx + ry)).powi(2);
+    let circumference = std::f32::consts::PI * (rx + ry) * (1.0 + 3.0 * h / (10.0 + (4.0 - 3.0 * h).sqrt()));
+
+    let dash_len = 4.0;
+    let gap_len = 4.0;
+    let step = dash_len + gap_len;
+    let num_steps = (circumference / step).round() as i32;
+    if num_steps <= 0 {
+        return;
+    }
+
+    for i in 0..num_steps {
+        let t1 = (i as f32 / num_steps as f32) * 2.0 * std::f32::consts::PI;
+        let t2 = ((i as f32 + 0.5) / num_steps as f32) * 2.0 * std::f32::consts::PI;
+
+        let start = center + egui::vec2(t1.cos() * rx, t1.sin() * ry);
+        let end = center + egui::vec2(t2.cos() * rx, t2.sin() * ry);
+        painter.line_segment([start, end], stroke);
+    }
+}
+
+// =============================================================
 // RECT SELECT TOOL
 // =============================================================
 pub struct RectSelectTool {
     active: bool,
+    start_pos: Option<egui::Pos2>,
 }
 impl RectSelectTool {
     pub fn new() -> Self {
-        Self { active: false }
+        Self {
+            active: false,
+            start_pos: None,
+        }
     }
 }
 impl Tool for RectSelectTool {
@@ -651,7 +717,10 @@ impl Tool for RectSelectTool {
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
         if ctx.pointer_down {
             if let Some(screen_pos) = ctx.pointer_pos {
-                self.active = true;
+                if !self.active {
+                    self.active = true;
+                    self.start_pos = Some(screen_pos);
+                }
                 let world = ctx.screen_to_world(screen_pos);
                 ToolOutcome::RectSelectUpdated { world_pos: world }
             } else {
@@ -659,18 +728,28 @@ impl Tool for RectSelectTool {
             }
         } else if self.active {
             self.active = false;
+            self.start_pos = None;
             ToolOutcome::RectSelectComplete
         } else {
             ToolOutcome::None
         }
     }
 
-    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
+        if self.active {
+            if let (Some(start), Some(curr)) = (self.start_pos, ctx.pointer_pos) {
+                let rect = egui::Rect::from_two_pos(start, curr);
+                let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 180, 255));
+                draw_dashed_rect(painter, rect, stroke);
+            }
+        }
+    }
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 
     fn deactivate(&mut self) {
         self.active = false;
+        self.start_pos = None;
     }
 }
 
@@ -679,10 +758,14 @@ impl Tool for RectSelectTool {
 // =============================================================
 pub struct EllipseSelectTool {
     active: bool,
+    start_pos: Option<egui::Pos2>,
 }
 impl EllipseSelectTool {
     pub fn new() -> Self {
-        Self { active: false }
+        Self {
+            active: false,
+            start_pos: None,
+        }
     }
 }
 impl Tool for EllipseSelectTool {
@@ -692,7 +775,10 @@ impl Tool for EllipseSelectTool {
     fn handle_event(&mut self, ctx: &ToolContext) -> ToolOutcome {
         if ctx.pointer_down {
             if let Some(screen_pos) = ctx.pointer_pos {
-                self.active = true;
+                if !self.active {
+                    self.active = true;
+                    self.start_pos = Some(screen_pos);
+                }
                 let world = ctx.screen_to_world(screen_pos);
                 ToolOutcome::RectSelectUpdated { world_pos: world }
             } else {
@@ -700,18 +786,28 @@ impl Tool for EllipseSelectTool {
             }
         } else if self.active {
             self.active = false;
+            self.start_pos = None;
             ToolOutcome::RectSelectComplete
         } else {
             ToolOutcome::None
         }
     }
 
-    fn draw_overlay(&self, _painter: &egui::Painter, _ctx: &ToolContext) {}
+    fn draw_overlay(&self, painter: &egui::Painter, ctx: &ToolContext) {
+        if self.active {
+            if let (Some(start), Some(curr)) = (self.start_pos, ctx.pointer_pos) {
+                let rect = egui::Rect::from_two_pos(start, curr);
+                let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 180, 255));
+                draw_dashed_ellipse(painter, rect, stroke);
+            }
+        }
+    }
 
     fn draw_cursor(&self, _screen_pos: Pos2, _painter: &egui::Painter) -> bool { false }
 
     fn deactivate(&mut self) {
         self.active = false;
+        self.start_pos = None;
     }
 }
 

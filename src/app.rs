@@ -3601,6 +3601,7 @@ impl PaintApp {
                     self.canvas_width as i32,
                     self.canvas_height as i32,
                 );
+                self.show_selection_overlay = self.selection_mask.is_active;
                 let new_mask = Box::new(self.selection_mask.clone());
                 self.history
                     .push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
@@ -3613,6 +3614,7 @@ impl PaintApp {
                     self.canvas_width as i32,
                     self.canvas_height as i32,
                 );
+                self.show_selection_overlay = self.selection_mask.is_active;
                 let new_mask = Box::new(self.selection_mask.clone());
                 self.history
                     .push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
@@ -3625,6 +3627,7 @@ impl PaintApp {
                     self.canvas_width as i32,
                     self.canvas_height as i32,
                 );
+                self.show_selection_overlay = self.selection_mask.is_active;
                 let new_mask = Box::new(self.selection_mask.clone());
                 self.history
                     .push_command(HistoryCommand::SelectionChange { old_mask, new_mask });
@@ -5789,38 +5792,7 @@ impl eframe::App for PaintApp {
                     }
                 }
 
-                // Drag selection preview outline for Rect/Ellipse Selection
-                if self.is_selecting {
-                    if let Some(sr) = &self.selection_rect {
-                        let active_tool = self.active_tool();
-                        if active_tool == ToolId::RectSelect {
-                            let p0 = self.world_to_screen(egui::pos2(sr.x0, sr.y0), rect);
-                            let p1 = self.world_to_screen(egui::pos2(sr.x1, sr.y1), rect);
-                            let screen_rect = egui::Rect::from_two_pos(p0, p1);
-                            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
-                            clipped_painter.rect_stroke(screen_rect, 0.0, stroke);
-                        } else if active_tool == ToolId::EllipseSelect {
-                            let p0 = self.world_to_screen(egui::pos2(sr.x0, sr.y0), rect);
-                            let p1 = self.world_to_screen(egui::pos2(sr.x1, sr.y1), rect);
-                            let screen_rect = egui::Rect::from_two_pos(p0, p1);
-                            let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(0, 120, 215));
-                            let center = screen_rect.center();
-                            let rx = screen_rect.width() * 0.5;
-                            let ry = screen_rect.height() * 0.5;
-                            if rx > 0.0 && ry > 0.0 {
-                                let num_points = 64;
-                                let mut points = Vec::with_capacity(num_points);
-                                for i in 0..num_points {
-                                    let theta = (i as f32) * 2.0 * std::f32::consts::PI / (num_points as f32);
-                                    points.push(center + egui::vec2(rx * theta.cos(), ry * theta.sin()));
-                                }
-                                for i in 0..num_points {
-                                    clipped_painter.line_segment([points[i], points[(i + 1) % num_points]], stroke);
-                                }
-                            }
-                        }
-                    }
-                }
+
 
                 if self.transform_active {
                     self.draw_transform_overlay(rect, &clipped_painter);

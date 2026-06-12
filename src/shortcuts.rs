@@ -453,7 +453,12 @@ pub fn default_shortcuts() -> Vec<ShortcutEntry> {
                 shift: true,
                 alt: false,
             }),
-            secondary: None,
+            secondary: Some(KeyBinding {
+                key: Key::G,
+                ctrl: true,
+                shift: false,
+                alt: false,
+            }),
             name: "Gradient Tool",
             category: "Tools",
         },

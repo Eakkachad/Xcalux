@@ -773,6 +773,9 @@ pub fn grow_selection(mask: &mut SelectionMask, grow_px: i32, canvas_w: i32, can
             tile[ly * 64 + lx] = val;
         }
     }
+    if mask.tiles.is_empty() {
+        mask.is_active = false;
+    }
 }
 
 pub fn shrink_selection(mask: &mut SelectionMask, shrink_px: i32, canvas_w: i32, canvas_h: i32) {
@@ -830,6 +833,9 @@ pub fn shrink_selection(mask: &mut SelectionMask, shrink_px: i32, canvas_w: i32,
             .entry((tx, ty))
             .or_insert_with(|| Box::new([0u8; 4096]));
         tile[ly * 64 + lx] = val;
+    }
+    if mask.tiles.is_empty() {
+        mask.is_active = false;
     }
 }
 
@@ -899,6 +905,9 @@ pub fn feather_selection(mask: &mut SelectionMask, feather_px: i32, canvas_w: i3
             .or_insert_with(|| Box::new([0u8; 4096]));
         tile[ly * 64 + lx] = val;
     }
+    if mask.tiles.is_empty() {
+        mask.is_active = false;
+    }
 }
 
 pub fn smooth_selection(mask: &mut SelectionMask, smooth_px: i32, canvas_w: i32, canvas_h: i32) {
@@ -967,6 +976,9 @@ pub fn smooth_selection(mask: &mut SelectionMask, smooth_px: i32, canvas_w: i32,
             .or_insert_with(|| Box::new([0u8; 4096]));
         tile[ly * 64 + lx] = val;
     }
+    if mask.tiles.is_empty() {
+        mask.is_active = false;
+    }
 }
 
 pub fn border_selection(mask: &mut SelectionMask, border_px: i32, canvas_w: i32, canvas_h: i32) {
@@ -1024,6 +1036,9 @@ pub fn border_selection(mask: &mut SelectionMask, border_px: i32, canvas_w: i32,
                 .or_insert_with(|| Box::new([0u8; 4096]));
             tile[ly * 64 + lx] = val;
         }
+    }
+    if mask.tiles.is_empty() {
+        mask.is_active = false;
     }
 }
 
@@ -1179,6 +1194,16 @@ mod tests {
         border_selection(&mut mask, 4, 200, 200);
         let count = count_selected(&mask);
         assert!(count >= 100 && count <= 400, "Border pixels count should be in range: {}", count);
+    }
+
+    #[test]
+    fn test_shrink_to_empty_deactivates_mask() {
+        let mut mask = make_pixel_mask(100, 100, 2, 200, 200);
+        assert!(mask.is_active);
+        // Shrink by 5 pixels, which is larger than the mask size (2x2 square)
+        shrink_selection(&mut mask, 5, 200, 200);
+        assert!(!mask.is_active);
+        assert_eq!(count_selected(&mask), 0);
     }
 }
 
