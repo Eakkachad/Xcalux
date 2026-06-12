@@ -176,8 +176,8 @@ impl Default for WorkspaceLayout {
                 PanelState::new(
                     PanelKind::ToolsAndPresets,
                     "TOOLS",
-                    PanelLocation::Hidden,
-                    false,
+                    PanelLocation::Left,
+                    true,
                     false,
                 ),
                 PanelState::new(

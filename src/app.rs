@@ -5413,15 +5413,10 @@ impl eframe::App for PaintApp {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ZoomIn);
                 }
 
-                let ui_has_pointer = ui.ctx().wants_pointer_input()
-                    || ui.ctx().is_pointer_over_area()
-                    || self.panel_drag.is_some()
-                    || self.floating_drag_panel.is_some();
-
                 // Infinite canvas panning: drag with middle or right mouse button (transformed to view rotation/mirror)
-                if !ui_has_pointer && (response.dragged_by(egui::PointerButton::Middle)
+                if response.dragged_by(egui::PointerButton::Middle)
                     || response.dragged_by(egui::PointerButton::Secondary)
-                    || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary)))
+                    || ((space_down || active_tool == ToolId::Hand) && response.dragged_by(egui::PointerButton::Primary))
                 {
                     let delta = response.drag_delta();
                     let half_w = rect.width() * 0.5;
@@ -5446,13 +5441,13 @@ impl eframe::App for PaintApp {
                 }
 
                 // Rotation dragging using R key / RotateView tool + primary drag
-                if !ui_has_pointer && (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
+                if (r_down || active_tool == ToolId::RotateView) && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     self.rotation_angle += drag_delta.x * 0.005;
                 }
 
                 // Zoom dragging using Zoom tool + primary drag
-                if !ui_has_pointer && active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
+                if active_tool == ToolId::Zoom && response.dragged_by(egui::PointerButton::Primary) {
                     let drag_delta = response.drag_delta();
                     let prev_zoom = self.viewport_zoom;
                     self.viewport_zoom = (self.viewport_zoom + drag_delta.y * 0.01).clamp(0.1, 10.0);
@@ -5466,7 +5461,7 @@ impl eframe::App for PaintApp {
 
                 // Infinite canvas zooming: mouse wheel scroll
                 let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-                if !ui_has_pointer && scroll_delta != 0.0 {
+                if !ui.ctx().wants_pointer_input() && scroll_delta != 0.0 {
                     let prev_zoom = self.viewport_zoom;
                     self.viewport_zoom =
                         (self.viewport_zoom + scroll_delta * 0.005).clamp(0.1, 10.0);
@@ -5481,16 +5476,15 @@ impl eframe::App for PaintApp {
                 }
 
                 // STROKE DRAWING INTERACTION
-                let pointer_down = !ui_has_pointer
-                    && (response.dragged_by(egui::PointerButton::Primary)
+                let pointer_down = (response.dragged_by(egui::PointerButton::Primary)
                         || (response.is_pointer_button_down_on()
                             && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))))
                     && !space_down
                     && !r_down;
                 let pointer_clicked =
-                    !ui_has_pointer && response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
+                    response.clicked_by(egui::PointerButton::Primary) && !space_down && !r_down;
                 let pointer_right_clicked =
-                    !ui_has_pointer && response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
+                    response.clicked_by(egui::PointerButton::Secondary) && !space_down && !r_down;
 
                 // ── Trait-based tool event dispatch (runs first) ──
                 let trait_handled = {
