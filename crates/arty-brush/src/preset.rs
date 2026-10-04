@@ -93,6 +93,14 @@ impl Default for BrushPreset {
 pub const MIN_BRUSH_SIZE: f32 = 0.5;
 pub const MAX_BRUSH_SIZE: f32 = 2000.0;
 
+/// Smallest optical dab radius (px) we let reach hokusai. libmypaint drops
+/// dabs at or below half the 1 px `AntiAliasing`; just above it the dab is
+/// a faint spike, so keep a margin (softened hardness 0.2 here).
+const MIN_OPTICAL_RADIUS: f32 = 0.75;
+/// Persistence 100% maps here; `SmudgeLength` must stay < 1 for the smudge
+/// bucket to pick up canvas color at all.
+const MAX_SMUDGE_LENGTH: f32 = 0.99;
+
 /// libmypaint's documented defaults (`brushsettings.json`). hokusai zeroes
 /// every setting, which would e.g. give dabs a 0 aspect ratio.
 const LIBMYPAINT_DEFAULTS: &[(BrushSetting, f32)] = &[
@@ -143,21 +151,38 @@ impl BrushPreset {
 
         let radius = (self.size.clamp(MIN_BRUSH_SIZE, MAX_BRUSH_SIZE) * 0.5).max(0.2);
         let min_size = self.min_size.clamp(0.01, 1.0);
-        if min_size < 0.999 {
-            // ln(r · lerp(min, 1, p)) = ln r + ln(lerp(min, 1, p))
-            pressure_curve(&mut b, BrushSetting::Radius, radius.ln(), |p| {
-                (min_size + (1.0 - min_size) * p).ln()
-            });
+        let size_pressure = min_size < 0.999;
+        // libmypaint drops dabs with hardness <= 0, so 0% means "softest".
+        let hardness = self.hardness.clamp(0.02, 1.0);
+        // Anti-aliasing (1 px) turns a dab whose optical radius r·(½ + ½h) is
+        // ≤ 0.5 px into negative hardness, and libmypaint drops it: small
+        // sizes and the light end of a pen taper would paint nothing. Keep the
+        // radius at the floor instead and pay the lost width back in opacity,
+        // the way CSP draws sub-pixel lines.
+        let r_floor = MIN_OPTICAL_RADIUS / (0.5 + 0.5 * hardness);
+        let wanted = |p: f32| if size_pressure { radius * (min_size + (1.0 - min_size) * p) } else { radius };
+        let thin = |p: f32| (wanted(p) / r_floor).min(1.0);
+        let base = radius.max(r_floor);
+        if size_pressure {
+            // ln(max(r · lerp(min, 1, p), floor)) relative to the base.
+            pressure_curve(&mut b, BrushSetting::Radius, base.ln(), |p| wanted(p).max(r_floor).ln() - base.ln());
         } else {
-            constant(&mut b, BrushSetting::Radius, radius.ln());
+            constant(&mut b, BrushSetting::Radius, base.ln());
         }
 
         constant(&mut b, BrushSetting::Opaque, self.opacity.clamp(0.0, 1.0));
         let min_op = self.min_opacity.clamp(0.0, 1.0);
-        if min_op < 0.999 {
+        if min_op < 0.999 || wanted(0.0) < r_floor {
             // Zero pressure (hover / lift-off) must not paint.
             pressure_curve(&mut b, BrushSetting::OpaqueMultiply, 0.0, |p| {
-                if p <= 0.0 { 0.0 } else { min_op + (1.0 - min_op) * p }
+                let op = if p <= 0.0 {
+                    0.0
+                } else if min_op < 0.999 {
+                    min_op + (1.0 - min_op) * p
+                } else {
+                    (p / 0.015).min(1.0) // as the touch-only curve below
+                };
+                op * thin(p)
             });
         } else {
             // Opaque only while the pen touches (pressure > 0).
@@ -170,15 +195,16 @@ impl BrushPreset {
         // Thin, dense dabs need less linearization to avoid faint lines.
         constant(&mut b, BrushSetting::OpaqueLinearize, if self.density > 3.0 { 0.35 } else { 0.9 });
 
-        // libmypaint drops dabs with hardness <= 0, so 0% means "softest".
-        constant(&mut b, BrushSetting::Hardness, self.hardness.clamp(0.02, 1.0));
+        constant(&mut b, BrushSetting::Hardness, hardness);
         constant(&mut b, BrushSetting::DabsPerActualRadius, self.density.clamp(0.5, 12.0));
         constant(&mut b, BrushSetting::RadiusByRandom, self.jitter.clamp(0.0, 1.0) * 0.4);
 
         if self.blending > 0.0 {
             constant(&mut b, BrushSetting::Smudge, self.blending.clamp(0.0, 1.0));
-            // persistence 1 → color lingers (smudge_length → 1).
-            constant(&mut b, BrushSetting::SmudgeLength, self.persistence.clamp(0.0, 1.0));
+            // persistence 1 → color lingers (smudge_length → 1). At exactly
+            // 1.0 libmypaint never samples the canvas, so the bucket stays
+            // transparent and every dab erases: top out just below it.
+            constant(&mut b, BrushSetting::SmudgeLength, self.persistence.clamp(0.0, 1.0) * MAX_SMUDGE_LENGTH);
         }
         if self.eraser {
             constant(&mut b, BrushSetting::Eraser, 1.0);
