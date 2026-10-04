@@ -20,3 +20,6 @@ Thumbs.db
 # Autosaves and temporary drawing files
 *.arty
 *.autosave
+
+# Agent worktrees
+/.claude/
