@@ -4,6 +4,8 @@
 
 use arty_brush::{BrushGroup, BrushPreset, StrokeEngine, StrokeRefused, default_presets};
 use arty_core::{CompositeScratch, Document, Edit, History, LayerId, LayerProps, TileCoord, fix15, tile::new_tile_box};
+use std::collections::HashMap;
+
 use arty_render::View;
 use serde::{Deserialize, Serialize};
 
@@ -138,6 +140,57 @@ impl Default for InputSettings {
     }
 }
 
+/// Change counters for caches derived from the document (layer
+/// thumbnails). Every value comes from one clock, so a counter that moved
+/// is newer than anything recorded before it. A bump means "may have
+/// changed": readers confirm against the content before redoing work.
+#[derive(Default)]
+pub struct ContentEpochs {
+    clock: u64,
+    pixels: HashMap<LayerId, u64>,
+    structure: u64,
+    tree: u64,
+}
+
+impl ContentEpochs {
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
+    }
+
+    /// Pixels of `id` changed (stroke, clear, pixel undo/redo).
+    pub fn pixels_changed(&mut self, id: LayerId) {
+        let t = self.tick();
+        self.pixels.insert(id, t);
+    }
+
+    /// Some layer's settings changed.
+    pub fn props_changed(&mut self) {
+        self.tree = self.tick();
+    }
+
+    /// The layer tree was edited or swapped (structure edits and their
+    /// undo): layers may have moved, appeared, vanished or changed pixels.
+    pub fn structure_changed(&mut self) {
+        let t = self.tick();
+        self.structure = t;
+        self.tree = t;
+    }
+
+    pub fn pixels(&self, id: LayerId) -> u64 {
+        self.pixels.get(&id).copied().unwrap_or(0)
+    }
+
+    pub fn structure(&self) -> u64 {
+        self.structure
+    }
+
+    /// Last change of any layer's settings or of the tree.
+    pub fn tree(&self) -> u64 {
+        self.tree
+    }
+}
+
 pub struct Studio {
     pub doc: Document,
     pub history: History,
@@ -159,6 +212,7 @@ pub struct Studio {
     /// Bumped whenever `doc` is replaced by another document.
     pub doc_epoch: u64,
     scratch: CompositeScratch,
+    epochs: ContentEpochs,
 }
 
 impl Studio {
@@ -181,6 +235,7 @@ impl Studio {
             notice: None,
             doc_epoch: 0,
             scratch: CompositeScratch::new(),
+            epochs: ContentEpochs::default(),
         };
         s.select_tool(Tool::Brush(BrushGroup::Pen));
         s
@@ -375,6 +430,9 @@ impl Studio {
 
     pub fn end_stroke(&mut self) {
         if let Some(edit) = self.engine.end(&mut self.doc) {
+            if let Edit::Pixels { layer, .. } = &edit {
+                self.epochs.pixels_changed(*layer);
+            }
             self.history.push(edit);
             if !self.preset().eraser {
                 self.remember_color();
@@ -385,15 +443,33 @@ impl Studio {
     // ----- history ---------------------------------------------------------
 
     pub fn undo(&mut self) {
-        if !self.engine.is_stroking() {
-            self.history.undo(&mut self.doc);
+        if !self.engine.is_stroking() && self.history.can_undo() {
+            let touched = self.history.undo(&mut self.doc);
+            self.history_applied(touched);
         }
     }
 
     pub fn redo(&mut self) {
-        if !self.engine.is_stroking() {
-            self.history.redo(&mut self.doc);
+        if !self.engine.is_stroking() && self.history.can_redo() {
+            let touched = self.history.redo(&mut self.doc);
+            self.history_applied(touched);
         }
+    }
+
+    /// `touched` is the layer of a pixel or props entry; structure entries
+    /// report none.
+    fn history_applied(&mut self, touched: Option<LayerId>) {
+        match touched {
+            Some(id) => {
+                self.epochs.pixels_changed(id);
+                self.epochs.props_changed();
+            }
+            None => self.epochs.structure_changed(),
+        }
+    }
+
+    pub fn epochs(&self) -> &ContentEpochs {
+        &self.epochs
     }
 
     // ----- layers ----------------------------------------------------------
@@ -406,6 +482,7 @@ impl Studio {
         let snap = self.doc.snapshot_structure();
         if f(&mut self.doc) {
             self.history.push(Edit::Structure(Box::new(snap)));
+            self.epochs.structure_changed();
         }
     }
 
@@ -416,6 +493,7 @@ impl Studio {
     pub fn set_layer_props(&mut self, id: LayerId, props: LayerProps, coalesce: bool) {
         if let Some(before) = self.doc.set_props(id, props) {
             self.history.push_props(id, before, coalesce);
+            self.epochs.props_changed();
         }
     }
 
@@ -433,6 +511,7 @@ impl Studio {
         }
         self.doc.clear_layer(id);
         self.history.push(Edit::Pixels { layer: id, tiles });
+        self.epochs.pixels_changed(id);
     }
 
     pub fn new_document(&mut self, width: u32, height: u32, dpi: u32) {
@@ -441,6 +520,7 @@ impl Studio {
         }
         self.doc = Document::new(width, height, dpi);
         self.history.clear();
+        self.epochs.structure_changed();
         self.fit_pending = true;
         self.doc_epoch += 1;
     }
@@ -524,6 +604,43 @@ mod tests {
         s.set_main_hsv([0.6, 0.8, 0.9]);
         s.set_main_color([0.0; 3]);
         assert!((s.color.hsv[0] - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn content_epochs_follow_edits() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let id = s.doc.active();
+        let e = |s: &Studio| (s.epochs().pixels(id), s.epochs().structure(), s.epochs().tree());
+
+        s.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1, 1, 1, 1];
+        let before = e(&s);
+        s.clear_active_layer();
+        let cleared = e(&s);
+        assert!(cleared.0 > before.0 && cleared.1 == before.1 && cleared.2 == before.2, "clear bumps only pixels");
+
+        let mut p = s.doc.layer(id).unwrap().props.clone();
+        p.opacity = 0.5;
+        s.set_layer_props(id, p, false);
+        let props = e(&s);
+        assert!(props.0 == cleared.0 && props.1 == cleared.1 && props.2 > cleared.2, "props bump only the tree");
+
+        s.edit_structure(|d| {
+            d.add_raster_layer();
+            true
+        });
+        let added = e(&s);
+        assert!(added.0 == props.0 && added.1 > props.1 && added.2 > props.2, "structure bumps structure and tree");
+
+        s.undo(); // structure
+        let undone = e(&s);
+        assert!(undone.1 > added.1);
+        s.undo(); // props on `id`
+        s.undo(); // pixels on `id`
+        assert!(e(&s).0 > undone.0);
+        assert!(!s.history.can_undo());
+        let settled = e(&s);
+        s.undo(); // nothing left: no bump
+        assert_eq!(e(&s), settled);
     }
 
     #[test]

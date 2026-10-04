@@ -2,6 +2,7 @@
 //! all go through [`execute`], so behaviour and labels stay in one place.
 
 use arty_brush::BrushGroup;
+use arty_core::LayerId;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::shell::{FileRequest, Shell};
@@ -26,6 +27,9 @@ pub enum Command {
     DeleteLayer,
     LayerUp,
     LayerDown,
+    /// Move a layer to `index` among the children of `parent` (`None` = top
+    /// level), counted before the move as `Document::move_layer` does.
+    MoveLayer { layer: LayerId, parent: Option<LayerId>, index: usize },
     ToggleClip,
     ToggleLockAlpha,
     ZoomIn,
@@ -64,6 +68,7 @@ impl Command {
             Command::DeleteLayer => "Delete Layer",
             Command::LayerUp => "Move Layer Up",
             Command::LayerDown => "Move Layer Down",
+            Command::MoveLayer { .. } => "Move Layer",
             Command::ToggleClip => "Clip to Layer Below",
             Command::ToggleLockAlpha => "Lock Transparent Pixels",
             Command::ZoomIn => "Zoom In",
@@ -188,6 +193,13 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::DeleteLayer => studio.edit_structure(|d| d.delete_layer(d.active())),
         Command::LayerUp => studio.edit_structure(|d| d.shift_layer(d.active(), 1)),
         Command::LayerDown => studio.edit_structure(|d| d.shift_layer(d.active(), -1)),
+        Command::MoveLayer { layer, parent, index } => studio.edit_structure(|d| {
+            let moved = d.move_layer(layer, parent, index);
+            if moved {
+                d.set_active(layer);
+            }
+            moved
+        }),
         Command::ToggleClip | Command::ToggleLockAlpha => {
             let id = studio.doc.active();
             if let Some(layer) = studio.doc.layer(id) {
