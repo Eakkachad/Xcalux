@@ -96,6 +96,9 @@ pub struct History {
     undo: VecDeque<Edit>,
     redo: Vec<Edit>,
     limit: usize,
+    /// Layer whose props entry on top of `undo` belongs to the gesture that
+    /// is still running, and may absorb further coalescing pushes.
+    props_open: Option<LayerId>,
 }
 
 impl Default for History {
@@ -106,11 +109,12 @@ impl Default for History {
 
 impl History {
     pub fn new(limit: usize) -> Self {
-        Self { undo: VecDeque::new(), redo: Vec::new(), limit: limit.max(1) }
+        Self { undo: VecDeque::new(), redo: Vec::new(), limit: limit.max(1), props_open: None }
     }
 
     /// Record an edit that has already been applied to the document.
     pub fn push(&mut self, edit: Edit) {
+        self.props_open = None;
         self.redo.clear();
         if self.undo.len() == self.limit {
             self.undo.pop_front();
@@ -118,15 +122,25 @@ impl History {
         self.undo.push_back(edit);
     }
 
-    /// Record a property change, merging with the previous entry when it
-    /// edits the same layer's props (e.g. dragging an opacity slider).
+    /// Record a property change. `coalesce` marks it as part of a continuous
+    /// gesture (e.g. dragging an opacity slider): the first such push opens
+    /// an entry, and later coalescing pushes for the same layer merge into
+    /// it until [`History::end_props_gesture`] or any other history operation
+    /// closes it. Entries recorded before the gesture are never merged into.
     pub fn push_props(&mut self, layer: LayerId, before: LayerProps, coalesce: bool) {
-        if coalesce
-            && let Some(Edit::Props { layer: l, .. }) = self.undo.back()
-                && *l == layer && self.redo.is_empty() {
-                    return; // keep the oldest "before" state
-                }
+        if coalesce && self.props_open == Some(layer) {
+            return; // keep the gesture's oldest "before" state
+        }
         self.push(Edit::Props { layer, props: before });
+        self.props_open = coalesce.then_some(layer);
+    }
+
+    /// Close the open props gesture so the next coalescing
+    /// [`History::push_props`] starts a new undo step. Call at both edges of
+    /// a gesture: when it starts (so it cannot merge into an earlier one)
+    /// and when it ends.
+    pub fn end_props_gesture(&mut self) {
+        self.props_open = None;
     }
 
     pub fn can_undo(&self) -> bool {
@@ -139,6 +153,7 @@ impl History {
 
     /// Undo one step. Returns the layer it affected, if any.
     pub fn undo(&mut self, doc: &mut Document) -> Option<LayerId> {
+        self.props_open = None;
         let edit = self.undo.pop_back()?;
         let layer = edit.touched_layer();
         self.redo.push(edit.apply(doc));
@@ -146,6 +161,7 @@ impl History {
     }
 
     pub fn redo(&mut self, doc: &mut Document) -> Option<LayerId> {
+        self.props_open = None;
         let edit = self.redo.pop()?;
         let layer = edit.touched_layer();
         self.undo.push_back(edit.apply(doc));
@@ -153,6 +169,7 @@ impl History {
     }
 
     pub fn clear(&mut self) {
+        self.props_open = None;
         self.undo.clear();
         self.redo.clear();
     }
@@ -165,6 +182,7 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blend::BlendMode;
 
     fn stroke(doc: &mut Document, rec: &mut PixelRecorder, x: usize, v: u16) -> Option<Edit> {
         let id = doc.active();
@@ -241,6 +259,57 @@ mod tests {
         assert_eq!(h.undo_len(), 1);
         h.undo(&mut doc);
         assert_eq!(doc.layer(id).unwrap().props.opacity, 1.0);
+    }
+
+    fn set_opacity(doc: &mut Document, h: &mut History, op: f32, coalesce: bool) {
+        let id = doc.active();
+        let mut p = doc.layer(id).unwrap().props.clone();
+        p.opacity = op;
+        let before = doc.set_props(id, p).unwrap();
+        h.push_props(id, before, coalesce);
+    }
+
+    #[test]
+    fn props_gesture_never_merges_into_earlier_entries() {
+        let mut doc = Document::new(64, 64, 72);
+        let id = doc.active();
+        let mut h = History::default();
+        // A discrete blend change, then two separate drags on the same layer.
+        let mut p = doc.layer(id).unwrap().props.clone();
+        p.blend = BlendMode::Multiply;
+        let before = doc.set_props(id, p).unwrap();
+        h.push_props(id, before, false);
+        for drag in [&[0.5, 0.4][..], &[0.2]] {
+            h.end_props_gesture(); // drag starts
+            for &op in drag {
+                set_opacity(&mut doc, &mut h, op, true);
+            }
+            h.end_props_gesture(); // drag ends
+        }
+        assert_eq!(h.undo_len(), 3);
+
+        h.undo(&mut doc);
+        assert_eq!(doc.layer(id).unwrap().props.opacity, 0.4, "second drag undoes alone");
+        h.undo(&mut doc);
+        let props = &doc.layer(id).unwrap().props;
+        assert_eq!((props.opacity, props.blend), (1.0, BlendMode::Multiply), "blend change is its own step");
+        h.undo(&mut doc);
+        assert_eq!(doc.layer(id).unwrap().props.blend, BlendMode::Normal);
+    }
+
+    #[test]
+    fn props_gesture_closes_on_other_history_operations() {
+        let mut doc = Document::new(64, 64, 72);
+        let mut h = History::default();
+        set_opacity(&mut doc, &mut h, 0.5, true);
+        h.undo(&mut doc);
+        h.redo(&mut doc);
+        // The redone entry is not this gesture's own, so it is not reused.
+        set_opacity(&mut doc, &mut h, 0.3, true);
+        assert_eq!(h.undo_len(), 2);
+        h.push(Edit::Structure(Box::new(doc.snapshot_structure())));
+        set_opacity(&mut doc, &mut h, 0.1, true);
+        assert_eq!(h.undo_len(), 4);
     }
 
     #[test]
