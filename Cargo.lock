@@ -337,6 +337,10 @@ dependencies = [
 [[package]]
 name = "arty-testkit"
 version = "0.2.0"
+dependencies = [
+ "arty-core",
+ "rayon",
+]
 
 [[package]]
 name = "as-raw-xcb-connection"

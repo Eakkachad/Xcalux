@@ -17,6 +17,8 @@ pub mod codec;
 pub mod error;
 pub mod format;
 mod index;
+#[cfg(feature = "legacy")]
+pub mod legacy;
 pub mod limits;
 pub mod manifest;
 pub mod names;
@@ -29,6 +31,8 @@ pub mod writer;
 pub use codec::{BlobCodec, CodecScratch, TileClass};
 pub use error::{IoError, LoadWarning};
 pub use format::FileIdentity;
+#[cfg(feature = "legacy")]
+pub use legacy::import_v1;
 pub use limits::LoadLimits;
 pub use manifest::{AppSection, LayerExt};
 pub use readat::ReadAt;

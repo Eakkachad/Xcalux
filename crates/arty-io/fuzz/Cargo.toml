@@ -1,0 +1,54 @@
+# Fuzz targets for the arty-io parsers (spec §15 item 8). Outside the ARTY
+# workspace and CI; needs nightly and cargo-fuzz:
+#
+#   cargo install cargo-fuzz
+#   cd crates/arty-io/fuzz && cargo +nightly fuzz run load_v2
+#
+# Targets: load_v2, load_v1, parse_manifest, decode_tile.
+
+[package]
+name = "arty-io-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arty-core = { path = "../../arty-core" }
+arty-io = { path = ".." }
+rayon = "1"
+
+# Its own workspace, so the ARTY workspace never builds it.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "load_v2"
+path = "fuzz_targets/load_v2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "load_v1"
+path = "fuzz_targets/load_v1.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_manifest"
+path = "fuzz_targets/parse_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_tile"
+path = "fuzz_targets/decode_tile.rs"
+test = false
+doc = false
+bench = false
