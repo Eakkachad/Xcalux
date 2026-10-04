@@ -156,6 +156,8 @@ pub struct Studio {
     /// Bumped whenever any preset changes (preview cache key).
     pub preset_rev: u64,
     pub notice: Option<String>,
+    /// Bumped whenever `doc` is replaced by another document.
+    pub doc_epoch: u64,
     scratch: CompositeScratch,
 }
 
@@ -177,6 +179,7 @@ impl Studio {
             brush_dirty: true,
             preset_rev: 0,
             notice: None,
+            doc_epoch: 0,
             scratch: CompositeScratch::new(),
         };
         s.select_tool(Tool::Brush(BrushGroup::Pen));
@@ -439,6 +442,20 @@ impl Studio {
         self.doc = Document::new(width, height, dpi);
         self.history.clear();
         self.fit_pending = true;
+        self.doc_epoch += 1;
+    }
+
+    /// Swap in a loaded document: a stroke in progress is dropped, history
+    /// is cleared, and the page is refit and redrawn.
+    pub fn replace_document(&mut self, doc: Document) {
+        if self.engine.is_stroking() {
+            self.engine.cancel(&mut self.doc);
+        }
+        self.doc = doc;
+        self.doc.dirty_mut().mark_all();
+        self.history.clear();
+        self.fit_pending = true;
+        self.doc_epoch += 1;
     }
 }
 

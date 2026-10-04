@@ -4,6 +4,7 @@ use std::sync::mpsc::Receiver;
 
 use arty_brush::BrushPreset;
 use arty_core::Document;
+use arty_io::{IoConfig, IoService, RecoveryDir};
 use egui::{Color32, RichText};
 use egui_dock::{DockArea, DockState};
 use egui_phosphor::regular as icon;
@@ -12,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::canvas::CanvasPane;
 use crate::commands::{self, Command};
 use crate::export;
+use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::panels::{self, PreviewCache, Tab, Viewer};
 use crate::shell::{PAGE_PRESETS, Shell};
 use crate::studio::{InputSettings, Rgb, Studio};
@@ -29,6 +31,8 @@ struct Persisted {
     presets: Vec<BrushPreset>,
     input: InputSettings,
     swatches: Vec<Rgb>,
+    #[serde(default)]
+    autosave: AutosaveSettings,
 }
 
 pub struct ArtyApp {
@@ -38,6 +42,7 @@ pub struct ArtyApp {
     previews: PreviewCache,
     dock: DockState<Tab>,
     export_job: Option<Receiver<String>>,
+    files: FileController,
 }
 
 impl ArtyApp {
@@ -53,8 +58,10 @@ impl ArtyApp {
         let mut studio = Studio::new(Document::new(w, h, dpi));
         let mut dock = panels::default_layout();
         let mut theme_kind = ThemeKind::Dark;
+        let mut autosave = AutosaveSettings::default();
         if let Some(p) = saved {
             theme_kind = p.theme;
+            autosave = p.autosave;
             if p.layout_version == LAYOUT_VERSION {
                 dock = p.dock;
             }
@@ -71,13 +78,20 @@ impl ArtyApp {
             crate::demo::paint_sample_strokes(&mut studio);
         }
 
+        let ctx = cc.egui_ctx.clone();
+        let io = IoService::spawn(IoConfig::new(RecoveryDir::default_path()), move || ctx.request_repaint());
+        let files = FileController::new(io, Box::new(NativeDialogs), &studio);
+        let mut shell = Shell::new(theme_kind);
+        shell.autosave = autosave;
+
         Self {
             studio,
-            shell: Shell::new(theme_kind),
+            shell,
             canvas: CanvasPane::new(cc.wgpu_render_state.clone()),
             previews: PreviewCache::default(),
             dock,
             export_job: None,
+            files,
         }
     }
 
@@ -96,9 +110,22 @@ impl ArtyApp {
                 }
             };
             ui.menu_button("File", |ui| {
-                for cmd in [Command::NewDocument, Command::ExportPng, Command::Quit] {
+                for cmd in [Command::NewDocument, Command::Open, Command::Save, Command::SaveAs, Command::ExportPng] {
                     item(ui, cmd, studio, shell);
                 }
+                ui.separator();
+                ui.menu_button("Autosave", |ui| {
+                    if ui.selectable_label(shell.autosave.enabled, "Autosave enabled").clicked() {
+                        commands::execute(Command::ToggleAutosave, studio, shell);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Every");
+                        let range = files::MIN_INTERVAL_SECS..=3600;
+                        ui.add(egui::DragValue::new(&mut shell.autosave.interval_secs).range(range).suffix(" s"));
+                    });
+                });
+                ui.separator();
+                item(ui, Command::Quit, studio, shell);
             });
             ui.menu_button("Edit", |ui| {
                 for cmd in [Command::Undo, Command::Redo, Command::ClearLayer] {
@@ -193,7 +220,12 @@ impl ArtyApp {
                 ui.separator();
                 ui.label(weak(format!("x {x:.0}  y {y:.0}")));
             }
+            let file_status = self.files.status();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(st) = file_status {
+                    ui.label(RichText::new(st).small().strong());
+                    ui.separator();
+                }
                 let mb = s.doc.pixel_bytes() as f64 / (1024.0 * 1024.0);
                 ui.label(weak(format!("{} layers · {mb:.1} MB", s.doc.layer_count())));
                 ui.separator();
@@ -302,14 +334,17 @@ impl eframe::App for ArtyApp {
             self.shell.reset_layout_requested = false;
         }
         // A modal dialog owns the keyboard: no document shortcuts behind it.
-        if !self.canvas.is_busy() && !self.shell.new_doc_open {
+        if !self.canvas.is_busy() && !self.shell.new_doc_open && !self.files.has_modal() {
             commands::handle_shortcuts(&ctx, &mut self.studio, &mut self.shell);
         }
+        self.files.tick(&ctx, &mut self.studio, &mut self.shell);
         if self.shell.export_requested {
             self.shell.export_requested = false;
             self.export_job = export::export_png(&self.studio.doc);
         }
         if self.shell.quit_requested {
+            // The file controller may cancel the close to ask about changes.
+            self.shell.quit_requested = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
@@ -335,6 +370,7 @@ impl eframe::App for ArtyApp {
         });
 
         self.new_document_dialog(&ctx);
+        self.files.ui(&ctx, &mut self.studio, &mut self.shell);
         self.toasts(&ctx);
     }
 
@@ -346,6 +382,7 @@ impl eframe::App for ArtyApp {
             presets: self.studio.presets.clone(),
             input: self.studio.input,
             swatches: self.studio.color.swatches.clone(),
+            autosave: self.shell.autosave,
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
     }

@@ -5,8 +5,13 @@
 //! This crate has no UI dependencies. Parsing never trusts the file: every
 //! length is checked against [`limits`] before allocating, and the parsing
 //! modules deny indexing, unwraps and unchecked arithmetic.
+//!
+//! [`service::IoService`] runs all of this on a background thread for the
+//! app.
 
-#![forbid(unsafe_code)]
+// The only unsafe code is two Win32 calls in `service` (thread priority,
+// physical memory size).
+#![deny(unsafe_code)]
 
 #[cfg(target_endian = "big")]
 compile_error!("arty-io reads and writes tiles as little-endian bytes in place");
@@ -22,6 +27,8 @@ pub mod manifest;
 pub mod names;
 pub mod readat;
 pub mod reader;
+pub mod recovery;
+pub mod service;
 pub mod sink;
 pub mod table;
 pub mod writer;
@@ -33,6 +40,8 @@ pub use limits::LoadLimits;
 pub use manifest::{AppSection, LayerExt};
 pub use readat::ReadAt;
 pub use reader::{FileInfo, LoadOptions, Loaded, load, load_from, read_info};
+pub use recovery::{RecoveryDir, RecoveryEntry};
+pub use service::{IoConfig, IoEvent, IoService, Request, Ticket};
 pub use sink::Sink;
 pub use writer::{CommitMeta, Compaction, FileWriter, SaveExtras, SaveOptions, SaveStats, Session, SessionId, Verify};
 

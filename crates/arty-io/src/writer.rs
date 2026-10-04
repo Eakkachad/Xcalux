@@ -45,6 +45,7 @@ use crate::manifest::{
 };
 use crate::names::blend_id;
 use crate::reader::{self, Loaded};
+use crate::recovery::{self, SessionLock, is_sharing_violation};
 use crate::sink::{FileSink, Sink};
 use crate::{FileKind, Progress, phase, sniff, table};
 
@@ -769,7 +770,12 @@ pub struct Session {
     cache: TileCache,
     main: Option<FileIndex>,
     recovery: Option<FileIndex>,
-    lock: Option<File>,
+    /// A restored recovery file of an earlier session: a copy source until
+    /// this session first saves or autosaves.
+    restored: Option<FileIndex>,
+    /// The main file of a restored document, which has no index here.
+    origin: Option<PathBuf>,
+    lock: Option<SessionLock>,
     compaction: Compaction,
 }
 
@@ -781,6 +787,8 @@ impl Session {
             cache: TileCache::new(),
             main: None,
             recovery: None,
+            restored: None,
+            origin: None,
             lock: None,
             compaction: Compaction::default(),
         }
@@ -796,7 +804,7 @@ impl Session {
 
     /// The main file, if the document came from or was saved to one.
     pub fn main_path(&self) -> Option<&Path> {
-        self.main.as_ref().map(|m| m.path.as_path())
+        self.main.as_ref().map(|m| m.path.as_path()).or(self.origin.as_deref())
     }
 
     /// `{session}.arty` in the recovery folder (it may not exist yet).
@@ -818,6 +826,8 @@ impl Session {
     /// load's tile classes and blob locations seed this session, so the
     /// next save or autosave copies instead of encoding.
     pub fn adopt(&mut self, loaded: &mut Loaded, path: Option<PathBuf>) {
+        self.restored = None;
+        self.origin = None;
         let Some((cache, mut index)) = loaded.seed.take() else {
             self.main = None;
             return;
@@ -833,11 +843,21 @@ impl Session {
         });
     }
 
+    /// Take over a document restored from the recovery file `from` of an
+    /// earlier session, whose main file was `src`. The first save or
+    /// autosave copies unchanged blobs from `from`; until the document is
+    /// saved, autosaves name `src` as its main file.
+    pub fn adopt_restored(&mut self, loaded: &mut Loaded, from: &Path, src: Option<PathBuf>) {
+        self.adopt(loaded, Some(from.to_path_buf()));
+        self.restored = self.main.take();
+        self.origin = src;
+    }
+
     /// Unpin cached tiles nothing else references any more (call
     /// periodically; memory held is then bounded by the live document).
     pub fn trim(&mut self) {
         let gone = self.cache.trim();
-        for f in self.main.iter_mut().chain(self.recovery.iter_mut()) {
+        for f in self.main.iter_mut().chain(self.recovery.iter_mut()).chain(self.restored.iter_mut()) {
             f.forget(&gone);
         }
     }
@@ -857,9 +877,8 @@ impl Session {
                 }
             }
         }
-        if let (Some(lock), Some(path)) = (self.lock.take(), self.lock_path()) {
-            drop(lock);
-            let _ = fs::remove_file(path);
+        if let Some(lock) = self.lock.take() {
+            lock.release();
         }
         r
     }
@@ -868,7 +887,7 @@ impl Session {
     fn update_cache(&mut self, doc: &Document, pool: &ThreadPool) -> Result<(u32, f32), IoError> {
         let t = Instant::now();
         let (classified, evicted) = update_cache(&mut self.cache, doc, pool)?;
-        for f in self.main.iter_mut().chain(self.recovery.iter_mut()) {
+        for f in self.main.iter_mut().chain(self.recovery.iter_mut()).chain(self.restored.iter_mut()) {
             f.forget(&evicted);
         }
         Ok((classified, ms_since(t)))
@@ -972,6 +991,8 @@ impl Session {
         index.layers.clear();
         index.last_manifest_raw = None;
         self.main = Some(index);
+        self.restored = None;
+        self.origin = None;
         self.mark_recovery_clean(doc, ex, path, pool);
         Ok(stats)
     }
@@ -991,7 +1012,12 @@ impl Session {
     ) -> Result<(SaveStats, FileIndex), IoError> {
         let main = self.main.as_ref().and_then(open_unchanged);
         let recovery = self.recovery.as_ref().and_then(open_matching);
-        let sources = sources([(self.main.as_ref(), main.as_ref()), (self.recovery.as_ref(), recovery.as_ref())]);
+        let restored = self.restored.as_ref().and_then(open_matching);
+        let sources = sources([
+            (self.main.as_ref(), main.as_ref()),
+            (self.recovery.as_ref(), recovery.as_ref()),
+            (self.restored.as_ref(), restored.as_ref()),
+        ]);
         let sink = FileSink::new(file).map_err(IoError::io("open temp file"))?;
         let mut w = FileWriter::create(wrap(sink), 0, uuid)?;
         let meta = CommitMeta { session: self.id, rev: doc.revision(), src: None, clean: false };
@@ -1090,9 +1116,11 @@ impl Session {
             let source = io::Error::new(io::ErrorKind::NotFound, "this session has no recovery folder");
             return Err(IoError::Io { op: "autosave", source });
         };
-        self.lock(&dir)?;
+        if self.lock.is_none() {
+            self.lock = Some(recovery::acquire_lock(&dir, &self.id.hex())?);
+        }
         let (classified, ms) = self.update_cache(doc, pool)?;
-        let src = self.main.as_ref().map(|m| m.path.to_string_lossy().into_owned());
+        let src = self.main_path().map(|p| p.to_string_lossy().into_owned());
         let meta = CommitMeta { session: self.id, rev, src: src.as_deref(), clean: false };
         let compact = force_compact || self.recovery.as_ref().is_some_and(|r| self.compaction.due(r));
         let r = match self.recovery.take() {
@@ -1108,33 +1136,6 @@ impl Session {
             stats.ms_plan += ms;
             stats
         })
-    }
-
-    /// Hold `{session}.lock` (unshared on Windows) for the rest of the
-    /// session, so a recovery scan never touches a live session's files.
-    fn lock(&mut self, dir: &Path) -> Result<(), IoError> {
-        if self.lock.is_some() {
-            return Ok(());
-        }
-        fs::create_dir_all(dir).map_err(IoError::io("create the recovery folder"))?;
-        let path = dir.join(format!("{}.lock", self.id.hex()));
-        let mut o = OpenOptions::new();
-        o.read(true).write(true).create(true).truncate(true);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            o.share_mode(0);
-        }
-        let file = o.open(&path).map_err(|e| {
-            if is_sharing_violation(&e) { IoError::Busy } else { IoError::Io { op: "lock the session", source: e } }
-        })?;
-        #[cfg(not(windows))]
-        {
-            use std::io::Write;
-            let _ = (&file).write_all(std::process::id().to_string().as_bytes());
-        }
-        self.lock = Some(file);
-        Ok(())
     }
 
     /// Append a commit to the recovery file `file` described by `rec`.
@@ -1196,7 +1197,12 @@ impl Session {
             let sink = FileSink::new(file).map_err(IoError::io("open temp file"))?;
             let old_file = old.as_ref().and_then(open_matching);
             let main = self.main.as_ref().and_then(open_unchanged);
-            let sources = sources([(old.as_ref(), old_file.as_ref()), (self.main.as_ref(), main.as_ref())]);
+            let restored = self.restored.as_ref().and_then(open_matching);
+            let sources = sources([
+                (old.as_ref(), old_file.as_ref()),
+                (self.main.as_ref(), main.as_ref()),
+                (self.restored.as_ref(), restored.as_ref()),
+            ]);
             let mut w = FileWriter::create(wrap(sink), OPT_RECOVERY_FILE, new_file_uuid()?)?;
             let o = SaveOptions { verify: Verify::Off, now_ms: None, uuid: None };
             let stats = w.commit_from(doc, ex, meta, &self.cache, &sources, &o, pool, p)?;
@@ -1218,6 +1224,8 @@ impl Session {
                 index.path = path.to_path_buf();
                 index.commits_since_compact = 0;
                 self.recovery = Some(index);
+                // Everything restored is in the new file now.
+                self.restored = None;
                 Ok(stats)
             }
             Err(e) => {
@@ -1268,17 +1276,6 @@ fn temp_path(path: &Path) -> Result<PathBuf, IoError> {
     let mut tmp = OsString::from(name);
     tmp.push(".saving~");
     Ok(path.with_file_name(tmp))
-}
-
-#[cfg(windows)]
-fn is_sharing_violation(e: &io::Error) -> bool {
-    // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
-    matches!(e.raw_os_error(), Some(32 | 33))
-}
-
-#[cfg(not(windows))]
-fn is_sharing_violation(_: &io::Error) -> bool {
-    false
 }
 
 /// Create the temp file, unshared on Windows so no one else can open it

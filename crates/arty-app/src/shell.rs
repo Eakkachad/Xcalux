@@ -4,6 +4,7 @@
 use arty_core::LayerId;
 use arty_render::SyncStats;
 
+use crate::files::AutosaveSettings;
 use crate::theme::ThemeKind;
 
 pub struct NewDocForm {
@@ -25,6 +26,16 @@ pub const PAGE_PRESETS: &[(&str, u32, u32, u32)] = &[
     ("Square 2048", 2048, 2048, 144),
 ];
 
+/// A File menu action waiting for the file controller (it may first ask
+/// to save changes, or wait for a stroke or a save to finish).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileRequest {
+    New,
+    Open,
+    Save,
+    SaveAs,
+}
+
 impl Default for NewDocForm {
     fn default() -> Self {
         let (_, width, height, dpi) = PAGE_PRESETS[3];
@@ -41,6 +52,8 @@ pub struct Shell {
     pub new_doc_open: bool,
     pub new_doc: NewDocForm,
     pub export_requested: bool,
+    pub file_request: Option<FileRequest>,
+    pub autosave: AutosaveSettings,
     pub quit_requested: bool,
     pub reset_layout_requested: bool,
     /// Layer being renamed, the edit text, and whether the edit box has
@@ -60,6 +73,8 @@ impl Shell {
             new_doc_open: false,
             new_doc: NewDocForm::default(),
             export_requested: false,
+            file_request: None,
+            autosave: AutosaveSettings::default(),
             quit_requested: false,
             reset_layout_requested: false,
             renaming: None,

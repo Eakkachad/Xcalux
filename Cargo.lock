@@ -268,7 +268,9 @@ version = "0.2.0"
 dependencies = [
  "arty-brush",
  "arty-core",
+ "arty-io",
  "arty-render",
+ "arty-testkit",
  "eframe",
  "egui",
  "egui-phosphor",
