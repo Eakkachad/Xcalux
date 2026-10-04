@@ -12,7 +12,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
         ui.label(match studio.tool {
             Tool::Eyedropper => "Click or drag on the canvas to pick the displayed color.",
             Tool::Hand => "Drag to scroll. Middle mouse drags with any tool.",
-            Tool::Rotate => "Drag to rotate the view. Hold Shift to snap to 15°.",
+            Tool::Rotate => "Drag to rotate the view. Hold Shift to snap to 15° (Ctrl with Shift+Space).",
             Tool::Zoom => "Click to zoom in, Alt+click to zoom out, drag to zoom smoothly.",
             Tool::Brush(_) => "",
         });

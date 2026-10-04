@@ -43,7 +43,9 @@ pub struct Shell {
     pub export_requested: bool,
     pub quit_requested: bool,
     pub reset_layout_requested: bool,
-    pub renaming: Option<(LayerId, String)>,
+    /// Layer being renamed, the edit text, and whether the edit box has
+    /// already been given focus (requested once, on its first frame).
+    pub renaming: Option<(LayerId, String, bool)>,
     pub toast: Option<(String, f64)>,
 }
 

@@ -166,20 +166,28 @@ fn layer_row(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: Laye
 
     // Name (double-click to rename).
     let name_rect = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(rect.right() - 44.0, rect.bottom()));
-    let renaming = matches!(&shell.renaming, Some((rid, _)) if *rid == id);
+    let renaming = matches!(&shell.renaming, Some((rid, ..)) if *rid == id);
     if renaming {
         let mut commit = false;
         let mut cancel = false;
-        if let Some((_, text)) = shell.renaming.as_mut() {
-            let edit = ui.put(name_rect.shrink2(Vec2::new(0.0, 4.0)), egui::TextEdit::singleline(text));
-            edit.request_focus();
-            if edit.lost_focus() {
+        if let Some((_, text, focus_requested)) = shell.renaming.as_mut() {
+            let te = egui::TextEdit::singleline(text).id(ui.id().with(("rename", id)));
+            let edit = ui.put(name_rect.shrink2(Vec2::new(0.0, 4.0)), te);
+            // Request focus only once: Enter, Escape and clicking elsewhere all
+            // drop it, and re-requesting every frame would swallow that.
+            if !*focus_requested {
+                edit.request_focus();
+                *focus_requested = true;
+            } else if edit.lost_focus() {
                 commit = !ui.input(|i| i.key_pressed(egui::Key::Escape));
                 cancel = !commit;
+            } else if !ui.memory(|m| m.has_focus(edit.id)) {
+                // Focus went away while the row wasn't shown (e.g. collapsed folder).
+                cancel = true;
             }
         }
         if commit {
-            if let Some((_, text)) = shell.renaming.take() {
+            if let Some((_, text, _)) = shell.renaming.take() {
                 let mut p = props.clone();
                 if !text.trim().is_empty() {
                     p.name = text.trim().to_string();
@@ -222,7 +230,7 @@ fn layer_row(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: Laye
         let _ = r;
         studio.doc.set_folder_expanded(id, !open);
     } else if resp.double_clicked() {
-        shell.renaming = Some((id, props.name.clone()));
+        shell.renaming = Some((id, props.name.clone(), false));
     } else if resp.clicked() {
         studio.doc.set_active(id);
     }
@@ -244,7 +252,7 @@ fn layer_row(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: Laye
             }
         }
         if ui.button("Rename").clicked() {
-            shell.renaming = Some((id, props.name.clone()));
+            shell.renaming = Some((id, props.name.clone(), false));
             ui.close();
         }
     });
