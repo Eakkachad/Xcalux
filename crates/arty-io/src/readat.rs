@@ -32,6 +32,16 @@ impl ReadAt for [u8] {
     }
 }
 
+impl ReadAt for Vec<u8> {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()> {
+        self.as_slice().read_exact_at(buf, offset)
+    }
+
+    fn len(&self) -> io::Result<u64> {
+        Ok(Vec::len(self) as u64)
+    }
+}
+
 impl ReadAt for File {
     #[cfg(windows)]
     fn read_exact_at(&self, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {

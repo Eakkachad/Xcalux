@@ -2,7 +2,9 @@
 //! for crash tests.
 
 use std::fs::File;
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Seek, SeekFrom};
+
+use crate::readat::ReadAt;
 
 /// Where records are written. Writes only ever append; `set_len` drops a
 /// torn tail before appending again.
@@ -16,10 +18,17 @@ pub trait Sink {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Reads of what was written so far, when the sink allows them (an
+    /// append compares tiles against blobs already in the file).
+    fn read_back(&self) -> Option<&(dyn ReadAt + Sync)> {
+        None
+    }
 }
 
 /// A file opened for appending. Tracks its length so `len` needs no
-/// system call, and keeps the cursor at the end.
+/// system call. Appends are positional, so reads through `read_back`
+/// may move the cursor freely.
 pub struct FileSink {
     file: File,
     len: u64,
@@ -41,21 +50,39 @@ impl FileSink {
     }
 }
 
+#[cfg(windows)]
+fn write_at(file: &File, b: &[u8], at: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_write(file, b, at)
+}
+
+#[cfg(unix)]
+fn write_at(file: &File, b: &[u8], at: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::write_at(file, b, at)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn write_at(mut file: &File, b: &[u8], at: u64) -> io::Result<usize> {
+    use std::io::Write;
+    file.seek(SeekFrom::Start(at))?;
+    file.write(b)
+}
+
 impl Sink for FileSink {
-    fn append(&mut self, b: &[u8]) -> io::Result<()> {
-        match self.file.write_all(b) {
-            Ok(()) => {
-                self.len += b.len() as u64;
-                Ok(())
-            }
-            Err(e) => {
-                // A partial write moved the cursor; keep `len` honest.
-                if let Ok(pos) = self.file.stream_position() {
-                    self.len = pos;
+    fn append(&mut self, mut b: &[u8]) -> io::Result<()> {
+        // `len` advances with every partial write, so it stays honest when
+        // a later one fails.
+        while !b.is_empty() {
+            match write_at(&self.file, b, self.len) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+                Ok(n) => {
+                    b = &b[n..];
+                    self.len += n as u64;
                 }
-                Err(e)
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
             }
         }
+        Ok(())
     }
 
     fn sync(&mut self) -> io::Result<()> {
@@ -64,13 +91,16 @@ impl Sink for FileSink {
 
     fn set_len(&mut self, n: u64) -> io::Result<()> {
         self.file.set_len(n)?;
-        self.file.seek(SeekFrom::Start(n))?;
         self.len = n;
         Ok(())
     }
 
     fn len(&self) -> u64 {
         self.len
+    }
+
+    fn read_back(&self) -> Option<&(dyn ReadAt + Sync)> {
+        Some(&self.file)
     }
 }
 
@@ -95,6 +125,10 @@ impl Sink for Vec<u8> {
 
     fn len(&self) -> u64 {
         Vec::len(self) as u64
+    }
+
+    fn read_back(&self) -> Option<&(dyn ReadAt + Sync)> {
+        Some(self)
     }
 }
 
@@ -180,6 +214,10 @@ impl<S: Sink> Sink for FailAfter<S> {
     fn len(&self) -> u64 {
         self.inner.len()
     }
+
+    fn read_back(&self) -> Option<&(dyn ReadAt + Sync)> {
+        self.inner.read_back()
+    }
 }
 
 #[cfg(test)]
@@ -248,8 +286,13 @@ mod tests {
         s.set_len(6).unwrap();
         s.append(b"!").unwrap();
         assert_eq!(s.len(), 7);
+        // Reads in between do not disturb appends.
+        let mut two = [0u8; 2];
+        s.read_back().unwrap().read_exact_at(&mut two, 1).unwrap();
+        assert_eq!(&two, b"ea");
+        s.append(b"?").unwrap();
         drop(s);
-        assert_eq!(std::fs::read(&path).unwrap(), b"head-t!");
+        assert_eq!(std::fs::read(&path).unwrap(), b"head-t!?");
         std::fs::remove_file(&path).unwrap();
     }
 }

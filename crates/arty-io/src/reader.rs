@@ -12,6 +12,10 @@
 //! When the chosen commit is damaged, `fallback_to_previous` follows
 //! `prev_commit_offset`, and `salvage` loads it with damaged tiles blank.
 //! Every count and length from the file is checked before allocating.
+//!
+//! A load also seeds the session's tile cache and the file's index from
+//! the verified entries, so the first save after opening classifies
+//! nothing and copies every unchanged blob.
 
 #![cfg_attr(
     not(test),
@@ -38,13 +42,14 @@ use arty_core::{
 use rayon::ThreadPool;
 use rayon::prelude::*;
 
-use crate::codec::{CodecScratch, decode_tile, sanitize_pixel};
+use crate::codec::{CodecScratch, TileClass, decode_tile, sanitize_pixel};
 use crate::error::{IoError, LoadWarning};
 use crate::format::{
     COMMIT_RECORD_LEN, Commit, FileIdentity, HEADER_LEN, Header, LAYER_KIND_FOLDER, LAYER_KIND_RASTER, LF_CLIP,
     LF_EXPANDED, LF_LOCK_ALPHA, LF_LOCKED, LF_VISIBLE, LayerRecord, REC_MAGIC, RECORD_HEADER_LEN, RecordHeader,
     RecordKind, TILE_BYTES, TileCodec, TileEntry, unpack_solid,
 };
+use crate::index::{BlobLoc, FileIndex, TileCache};
 use crate::limits::{LoadLimits, MAX_FALLBACK_COMMITS, MAX_LAYER_COUNT, MAX_MANIFEST_STORED, SCAN_WINDOW};
 use crate::manifest::{self, AppSection, LayerExt, ManifestView};
 use crate::names::blend_from_id;
@@ -104,8 +109,9 @@ pub struct Loaded {
     /// Save As.
     pub read_only_reason: Option<String>,
     pub info: FileInfo,
-    /// The file as it was when read, for the external-change check.
-    pub(crate) source: Option<FileIdentity>,
+    /// The classes of the loaded tiles and where the file stores them,
+    /// taken over by `Session::adopt`.
+    pub(crate) seed: Option<(TileCache, FileIndex)>,
 }
 
 /// Open and load the file at `path`.
@@ -113,8 +119,9 @@ pub fn load(path: &Path, o: &LoadOptions, pool: &ThreadPool, p: &Progress) -> Re
     let file = File::open(path).map_err(IoError::io("open"))?;
     let mtime = file.metadata().ok().and_then(|m| m.modified().ok());
     let mut loaded = load_from(&file, Some(path), o, pool, p)?;
-    if let Some(id) = loaded.source.as_mut() {
-        id.mtime = mtime;
+    if let Some((_, index)) = loaded.seed.as_mut() {
+        index.path = path.to_path_buf();
+        index.id.mtime = mtime;
     }
     Ok(loaded)
 }
@@ -136,7 +143,7 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
     if newest.recovered {
         warnings.push(LoadWarning::RecoveredTornTail);
     }
-    let (asm, used) = match load_commit(src, path, &newest, o, false, pool, p) {
+    let (mut asm, used) = match load_commit(src, path, &newest, o, false, pool, p) {
         Ok(asm) => (asm, newest),
         Err(e) if recoverable(&e) => {
             let fallback = if o.fallback_to_previous { fall_back(src, path, len, &newest, o, pool, p)? } else { None };
@@ -166,13 +173,18 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
         meta: asm.meta,
         thumb: asm.thumb,
     };
-    let source = FileIdentity {
+    // The identity is the newest valid commit, even after a fallback: that
+    // is what the file still looks like when it is saved over.
+    let index = &mut asm.seed.1;
+    index.id = FileIdentity {
         file_uuid: header.file_uuid,
         len,
         commit_offset: newest.at,
         commit_seq: newest.commit.commit_seq,
         mtime: None,
     };
+    index.valid_end = newest.at.saturating_add(COMMIT_RECORD_LEN as u64);
+    index.last_commit = Some((newest.at, newest.commit));
     Ok(Loaded {
         doc: asm.doc,
         extra_sections: asm.extras,
@@ -181,7 +193,7 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
         warnings,
         read_only_reason,
         info,
-        source: Some(source),
+        seed: Some(asm.seed),
     })
 }
 
@@ -212,11 +224,15 @@ pub fn read_info(path: &Path) -> Result<FileInfo, IoError> {
 /// The identity of the v2 file at `path` as it is now, or `None` when it
 /// is missing or not a readable v2 file.
 pub(crate) fn current_identity(path: &Path) -> Option<FileIdentity> {
-    let file = File::open(path).ok()?;
+    identity_of(&File::open(path).ok()?)
+}
+
+/// The identity of the open v2 file `file`, or `None` when it is not one.
+pub(crate) fn identity_of(file: &File) -> Option<FileIdentity> {
     let meta = file.metadata().ok()?;
     let len = meta.len();
-    let header = read_header(&file, len).ok()?;
-    let located = locate_commit(&file, len).ok()?;
+    let header = read_header(file, len).ok()?;
+    let located = locate_commit(file, len).ok()?;
     Some(FileIdentity {
         file_uuid: header.file_uuid,
         len,
@@ -240,7 +256,7 @@ fn read_at<R: ReadAt + ?Sized>(src: &R, buf: &mut [u8], at: u64) -> Result<(), I
     })
 }
 
-fn read_header<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Header, IoError> {
+pub(crate) fn read_header<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Header, IoError> {
     let mut head = [0u8; HEADER_LEN];
     let n = usize::try_from(len).unwrap_or(HEADER_LEN).min(HEADER_LEN);
     let head = head.get_mut(..n).unwrap_or_default();
@@ -298,7 +314,7 @@ pub(crate) struct Located {
 
 /// The commit record at `at`, if valid: CRCs, offsets, and a manifest
 /// record header of the right kind that ends before the commit.
-fn commit_at<R: ReadAt + ?Sized>(src: &R, at: u64, len: u64) -> Result<Commit, IoError> {
+pub(crate) fn commit_at<R: ReadAt + ?Sized>(src: &R, at: u64, len: u64) -> Result<Commit, IoError> {
     let end = at.checked_add(COMMIT_RECORD_LEN as u64).ok_or(IoError::corrupt("commit offset", at))?;
     if at < HEADER_LEN as u64 || end > len {
         return Err(IoError::corrupt("commit offset", at));
@@ -587,6 +603,8 @@ struct Assembled {
     meta: Vec<(String, String)>,
     thumb: Option<(u16, u16, Vec<u8>)>,
     layer_count: u32,
+    /// The index has blob locations only; the caller adds the identity.
+    seed: (TileCache, FileIndex),
 }
 
 /// A layer before its pixels are attached.
@@ -635,10 +653,20 @@ fn load_commit<R: ReadAt + Sync + ?Sized>(
     }
     let mut clamped = 0u64;
     let mut slots: Vec<Option<TileRef>> = Vec::with_capacity(decoded.len());
-    for r in decoded {
+    let mut cache = TileCache::new();
+    let mut index = FileIndex::new([0; 16]);
+    for (r, e) in decoded.into_iter().zip(&blobs) {
         match r {
             Ok((tile, n)) => {
                 clamped = clamped.saturating_add(n);
+                // A clamped tile no longer matches its blob's raw_crc; the
+                // first save classifies and encodes it instead.
+                if n == 0 {
+                    let loc = BlobLoc::of(e);
+                    index.by_ptr.insert(crate::index::ptr_of(&tile), loc);
+                    index.add_blob(loc);
+                    cache.insert(tile.clone(), TileClass::General { raw_crc: e.raw_crc });
+                }
                 slots.push(Some(tile));
             }
             Err(e) if salvage && recoverable(&e) => slots.push(None),
@@ -664,7 +692,9 @@ fn load_commit<R: ReadAt + Sync + ?Sized>(
                     Entry::Vacant(v) => {
                         let (px, n) = sanitize_pixel(unpack_solid(e.offset));
                         clamped = clamped.saturating_add(n.saturating_mul(TILE_PIXELS as u64));
-                        Some(v.insert(filled(px)).clone())
+                        let t = filled(px);
+                        cache.insert(t.clone(), TileClass::Solid(px));
+                        Some(v.insert(t).clone())
                     }
                 }
             } else {
@@ -727,6 +757,7 @@ fn load_commit<R: ReadAt + Sync + ?Sized>(
         meta: m.meta,
         thumb: m.thumb.map(|(w, h, px)| (w, h, px.to_vec())),
         layer_count: m.doc.layer_count,
+        seed: (cache, index),
     })
 }
 

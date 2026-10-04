@@ -123,51 +123,6 @@ fn crc_collision_keeps_both_tiles() {
     assert!(!Arc::ptr_eq(g.get_ref(TileCoord::new(0, 0)).unwrap(), g.get_ref(TileCoord::new(1, 0)).unwrap()));
 }
 
-/// Rewrite the last two pixels of a tile so that `crc32(buf) == want`,
-/// keeping their channels valid: high bytes 0, low bytes solved for
-/// (CRC-32 is affine over GF(2) in its input bits).
-fn force_crc(buf: &mut [u8], want: u32) {
-    let n = buf.len();
-    buf[n - 16..].fill(0);
-    let byte = |bit: usize| n - 16 + 2 * (bit / 8);
-    let base = crc32fast::hash(buf);
-    // Effect of each of the 64 free bits on the crc.
-    let mut cols = [0u32; 64];
-    for (bit, col) in cols.iter_mut().enumerate() {
-        buf[byte(bit)] ^= 1 << (bit % 8);
-        *col = crc32fast::hash(buf) ^ base;
-        buf[byte(bit)] ^= 1 << (bit % 8);
-    }
-    // Solve cols · x = base ^ want over GF(2) by elimination.
-    let target = base ^ want;
-    let mut rows: Vec<(u64, u32)> = (0..32)
-        .map(|r| (cols.iter().enumerate().fold(0u64, |m, (c, v)| m | (u64::from((v >> r) & 1) << c)), (target >> r) & 1))
-        .collect();
-    let mut pivots = Vec::new();
-    let mut r0 = 0;
-    for c in 0..64 {
-        if r0 == 32 {
-            break;
-        }
-        let Some(p) = (r0..32).find(|&r| rows[r].0 >> c & 1 == 1) else { continue };
-        rows.swap(r0, p);
-        for r in 0..32 {
-            if r != r0 && rows[r].0 >> c & 1 == 1 {
-                rows[r].0 ^= rows[r0].0;
-                rows[r].1 ^= rows[r0].1;
-            }
-        }
-        pivots.push((r0, c));
-        r0 += 1;
-    }
-    assert_eq!(pivots.len(), 32, "free bits span every crc");
-    for (r, c) in pivots {
-        if rows[r].1 == 1 {
-            buf[byte(c)] ^= 1 << (c % 8);
-        }
-    }
-}
-
 #[test]
 fn extras_round_trip_and_stale_layer_ext_is_dropped() {
     let pool = pool();

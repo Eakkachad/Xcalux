@@ -11,6 +11,7 @@ ahash.workspace = true
 bytemuck.workspace = true
 rayon.workspace = true
 log.workspace = true
+smallvec = "1"
 crc32fast = "1.4"
 getrandom = "0.3"
 # `checked-decode` is mandatory: release builds use `panic = "abort"`, and

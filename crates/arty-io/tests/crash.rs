@@ -1,5 +1,5 @@
-//! Crash and damage simulation for the rewrite save path and the reader's
-//! commit search (plan item 6, main-file part).
+//! Crash and damage simulation (plan item 6): main-file rewrites,
+//! recovery-file appends and compactions, and the reader's commit search.
 
 mod common;
 
@@ -225,5 +225,126 @@ fn held_files_give_busy_or_saved_to_temp() {
 
     s.save_main(&b, &ex, &path, false, &opts(), &pool, &Progress::default()).unwrap();
     assert!(!tmp.exists());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Crash points for a write of `bytes` from offset `from` on: every record
+/// boundary ±1 and 200 random points, relative to `from`.
+fn crash_points(bytes: &[u8], from: u64, seed: u64) -> Vec<u64> {
+    let len = bytes.len() as u64 - from;
+    let mut points = vec![0, 1];
+    for (at, _, end) in records(bytes).into_iter().filter(|r| r.0 >= from) {
+        for p in [at - 1, at, at + 1, end - 1, end, end + 1] {
+            points.extend(p.checked_sub(from));
+        }
+    }
+    let mut rng = Rng(seed);
+    points.extend((0..200).map(|_| rng.below(len)));
+    points.retain(|&k| k < len);
+    points.sort_unstable();
+    points.dedup();
+    points
+}
+
+#[test]
+fn append_crash_loads_the_previous_commit() {
+    let pool = pool();
+    let dir = temp_dir("crash-append");
+    let (a, ex) = (doc_a(), SaveExtras::default());
+    let b = doc_b(&a);
+
+    // A clean run gives the append's records.
+    let mut s = Session::new(session(), Some(&dir));
+    s.autosave(&a, &ex, 1, &pool, &Progress::default()).unwrap();
+    let rec = s.recovery_path().unwrap();
+    let a_bytes = fs::read(&rec).unwrap();
+    s.autosave(&b, &ex, 2, &pool, &Progress::default()).unwrap();
+    let full = fs::read(&rec).unwrap();
+    s.close(true).unwrap();
+    let end_a = a_bytes.len() as u64;
+    assert!(full[..a_bytes.len()] == a_bytes[..]);
+
+    // Cut anywhere in the append: the first commit, recovered.
+    for cut in end_a + 1..full.len() as u64 {
+        let loaded = read(&full[..cut as usize], &pool);
+        assert!(loaded.info.recovered && loaded.info.commit_seq == 1, "cut {cut}");
+        assert_same_doc(&a, &loaded.doc);
+    }
+
+    // Crash during the append. The session carries on: each attempt
+    // first drops the torn tail of the one before.
+    let fallback = LoadOptions { fallback_to_previous: true, ..Default::default() };
+    for lose_unsynced in [false, true] {
+        let mut s = Session::new(session(), Some(&dir));
+        s.autosave(&a, &ex, 1, &pool, &Progress::default()).unwrap();
+        let a_bytes = fs::read(&rec).unwrap();
+        for k in crash_points(&full, end_a, 0xA99E) {
+            let r = s.autosave_crashing(&b, &ex, 2, false, &pool, &Progress::default(), k, lose_unsynced);
+            assert!(matches!(r, Err(IoError::Io { .. })), "k={k}: {r:?}");
+            let now = fs::read(&rec).unwrap();
+            assert!(now.len() as u64 <= end_a + k && now[..a_bytes.len()] == a_bytes[..], "k={k}");
+            let loaded = read_with(&now, &fallback, &pool).unwrap();
+            assert_eq!(loaded.info.commit_seq, 1, "k={k}");
+            assert_same_doc(&a, &loaded.doc);
+        }
+        let st = s.autosave(&b, &ex, 2, &pool, &Progress::default()).unwrap();
+        assert_eq!(st.file_len, full.len() as u64);
+        let loaded = read(&fs::read(&rec).unwrap(), &pool);
+        assert_eq!((loaded.info.commit_seq, loaded.info.recovered), (2, false));
+        assert!(loaded.warnings.is_empty());
+        assert_same_doc(&b, &loaded.doc);
+        s.close(true).unwrap();
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn compaction_crash_leaves_the_recovery_file_untouched() {
+    let pool = pool();
+    let dir = temp_dir("crash-compact");
+    let (a, ex) = (doc_a(), SaveExtras::default());
+    let b = doc_b(&a);
+    let c = {
+        let mut rng = Rng(0xC0C);
+        let mut doc = b.snapshot();
+        let (g, _) = doc.paint_target(doc.active()).unwrap();
+        for x in [1, 3, 10] {
+            g.insert(TileCoord::new(x, 1), tile(&mut rng, 2));
+        }
+        doc
+    };
+
+    // A clean run gives the rewritten file's records.
+    let mut s = Session::new(session(), Some(&dir));
+    s.autosave(&a, &ex, 1, &pool, &Progress::default()).unwrap();
+    s.autosave(&b, &ex, 2, &pool, &Progress::default()).unwrap();
+    let st = s.compact(&c, &ex, 3, &pool, &Progress::default()).unwrap();
+    assert!(st.encoded == 3 && st.copied > 0, "unchanged tiles are copied from the old file: {st:?}");
+    let rec = s.recovery_path().unwrap();
+    let compacted = fs::read(&rec).unwrap();
+    s.close(true).unwrap();
+    assert_eq!(records(&compacted).iter().filter(|r| r.1 == 3).count(), 1, "one commit after compaction");
+
+    let tmp = dir.join(format!("{}.arty.saving~", session().hex()));
+    for lose_unsynced in [false, true] {
+        let mut s = Session::new(session(), Some(&dir));
+        s.autosave(&a, &ex, 1, &pool, &Progress::default()).unwrap();
+        s.autosave(&b, &ex, 2, &pool, &Progress::default()).unwrap();
+        let before = fs::read(&rec).unwrap();
+        for k in crash_points(&compacted, 0, 0xC0C0) {
+            let r = s.autosave_crashing(&c, &ex, 3, true, &pool, &Progress::default(), k, lose_unsynced);
+            assert!(matches!(r, Err(IoError::Io { .. })), "k={k}: {r:?}");
+            assert!(fs::read(&rec).unwrap() == before, "k={k}: recovery file changed");
+            assert!(fs::metadata(&tmp).unwrap().len() <= k, "k={k}: temp file left behind");
+        }
+        // The old file is still the session's: compacting again works.
+        let st = s.compact(&c, &ex, 3, &pool, &Progress::default()).unwrap();
+        assert_eq!(st.file_len, compacted.len() as u64);
+        assert!(!tmp.exists());
+        let loaded = read(&fs::read(&rec).unwrap(), &pool);
+        assert_eq!(loaded.info.commit_seq, 1);
+        assert_same_doc(&c, &loaded.doc);
+        s.close(true).unwrap();
+    }
     fs::remove_dir_all(&dir).unwrap();
 }

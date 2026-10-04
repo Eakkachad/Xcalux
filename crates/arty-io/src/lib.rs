@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 pub mod codec;
 pub mod error;
 pub mod format;
+mod index;
 pub mod limits;
 pub mod manifest;
 pub mod names;
@@ -33,7 +34,7 @@ pub use manifest::{AppSection, LayerExt};
 pub use readat::ReadAt;
 pub use reader::{FileInfo, LoadOptions, Loaded, load, load_from, read_info};
 pub use sink::Sink;
-pub use writer::{CommitMeta, FileWriter, SaveExtras, SaveOptions, SaveStats, Session, SessionId, Verify};
+pub use writer::{CommitMeta, Compaction, FileWriter, SaveExtras, SaveOptions, SaveStats, Session, SessionId, Verify};
 
 /// Values of [`Progress::phase`].
 pub mod phase {
