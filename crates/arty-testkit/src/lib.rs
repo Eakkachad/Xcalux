@@ -14,10 +14,18 @@
 //!
 //! It also tracks live heap bytes process-wide, so [`peak_bytes_during`]
 //! can bound the memory a (possibly multi-threaded) operation needs.
+//!
+//! With feature `synthetic`, [`synthetic_manga_page`] builds the reference
+//! document of the I/O benchmarks.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(feature = "synthetic")]
+pub mod synthetic;
+#[cfg(feature = "synthetic")]
+pub use synthetic::{LayerType, Page, synthetic_manga_page};
 
 thread_local! {
     static TRACKING: Cell<bool> = const { Cell::new(false) };

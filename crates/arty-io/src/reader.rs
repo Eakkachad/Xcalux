@@ -16,6 +16,8 @@
 //! A load also seeds the session's tile cache and the file's index from
 //! the verified entries, so the first save after opening classifies
 //! nothing and copies every unchanged blob.
+//!
+//! v1 files are handed to `legacy::import_v1` (feature `legacy`).
 
 #![cfg_attr(
     not(test),
@@ -136,6 +138,10 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
     p: &Progress,
 ) -> Result<Loaded, IoError> {
     let len = src.len().map_err(IoError::io("read"))?;
+    #[cfg(feature = "legacy")]
+    if sniff_src(src, len) == FileKind::LegacyV1 {
+        return crate::legacy::import_v1(src, path, o, pool, p);
+    }
     let header = read_header(src, len)?;
     p.begin(phase::READ, 0);
     let newest = locate_commit(src, len)?;
@@ -202,6 +208,10 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
 pub fn read_info(path: &Path) -> Result<FileInfo, IoError> {
     let file = File::open(path).map_err(IoError::io("open"))?;
     let len = file.len().map_err(IoError::io("read"))?;
+    #[cfg(feature = "legacy")]
+    if sniff_src(&file, len) == FileKind::LegacyV1 {
+        return crate::legacy::read_info_v1(&file, LoadOptions::default().legacy_dpi);
+    }
     let header = read_header(&file, len)?;
     let located = locate_commit(&file, len)?;
     let payload = read_manifest(&file, &located.commit)?;
@@ -249,11 +259,23 @@ fn recoverable(e: &IoError) -> bool {
 
 // ----- reading records -------------------------------------------------------
 
-fn read_at<R: ReadAt + ?Sized>(src: &R, buf: &mut [u8], at: u64) -> Result<(), IoError> {
+pub(crate) fn read_at<R: ReadAt + ?Sized>(src: &R, buf: &mut [u8], at: u64) -> Result<(), IoError> {
     src.read_exact_at(buf, at).map_err(|e| match e.kind() {
         std::io::ErrorKind::UnexpectedEof => IoError::corrupt("truncated file", at),
         _ => IoError::Io { op: "read", source: e },
     })
+}
+
+/// What the first bytes of `src` say it is.
+#[cfg(feature = "legacy")]
+fn sniff_src<R: ReadAt + ?Sized>(src: &R, len: u64) -> FileKind {
+    let mut head = [0u8; 12];
+    let n = usize::try_from(len).unwrap_or(head.len()).min(head.len());
+    let head = head.get_mut(..n).unwrap_or_default();
+    if src.read_exact_at(head, 0).is_err() {
+        return FileKind::Unknown;
+    }
+    sniff(head)
 }
 
 pub(crate) fn read_header<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Header, IoError> {
@@ -263,7 +285,7 @@ pub(crate) fn read_header<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Heade
     read_at(src, head, 0)?;
     match sniff(head) {
         FileKind::V2 { .. } => Header::decode(head),
-        // Import of v1 files lands with `legacy.rs`.
+        // v1 files are imported (`legacy.rs`), never parsed as v2.
         FileKind::LegacyV1 => Err(IoError::UnsupportedFeature { tag: *b"ARv1" }),
         FileKind::Newer { major } => Err(IoError::NewerFormat { major }),
         FileKind::Unknown => Err(IoError::NotArty),
@@ -531,6 +553,9 @@ fn coalesce(blobs: &[TileEntry]) -> Vec<Run> {
 pub(crate) struct BlobScratch {
     pub codec: CodecScratch,
     pub tile: Box<TilePixels>,
+    /// v1 import: raw-deflate state, created on first use.
+    #[cfg(feature = "legacy")]
+    pub inflate: Option<flate2::Decompress>,
 }
 
 /// Run `op` on the stored bytes of every blob, in parallel over coalesced
@@ -554,7 +579,13 @@ where
     let runs = coalesce(blobs);
     let init = || {
         let own = path.and_then(|path| File::open(path).ok());
-        (own, Vec::new(), BlobScratch { codec: CodecScratch::new(), tile: new_tile_box() })
+        let scratch = BlobScratch {
+            codec: CodecScratch::new(),
+            tile: new_tile_box(),
+            #[cfg(feature = "legacy")]
+            inflate: None,
+        };
+        (own, Vec::new(), scratch)
     };
     let per_run: Vec<Vec<Result<T, IoError>>> = pool.install(|| {
         runs.par_iter()

@@ -32,9 +32,17 @@ legacy = ["dep:serde", "dep:serde_json", "dep:flate2"]
 fault-injection = []
 
 [dev-dependencies]
-arty-testkit.workspace = true
+arty-testkit = { workspace = true, features = ["synthetic"] }
 # Integration tests simulate crashes through `FailAfter`.
 arty-io = { path = ".", features = ["fault-injection"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "legacy"
+required-features = ["legacy"]
+
+[[example]]
+name = "io_bench"
+required-features = ["legacy"]

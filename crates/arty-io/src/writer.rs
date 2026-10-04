@@ -16,6 +16,7 @@
 //! [`Session::autosave`] appends to the session's recovery file, and
 //! rewrites it (compaction) when it grows past twice its live data.
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
@@ -54,6 +55,14 @@ const STAGING: usize = 4 << 20;
 /// Waits between attempts to rename the temp file over the target, which
 /// antivirus and sync tools may briefly hold open.
 const RENAME_RETRY_MS: [u64; 5] = [100, 200, 400, 800, 1600];
+
+thread_local! {
+    /// Encode buffers, one set per thread for its lifetime. `map_init`
+    /// would build them per rayon split, often per tile with 1024-blob
+    /// batches, and 64 KiB allocations get slow once the heap holds a big
+    /// document (bench B002: 19 µs instead of 2.5 µs per tile).
+    static ENCODE_SCRATCH: RefCell<CodecScratch> = RefCell::new(CodecScratch::new());
+}
 
 /// Identifies one app instance's editing session (recovery files, `META`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -282,10 +291,12 @@ fn gather_blobs(
     let todo: Vec<usize> = (0..batch.len()).filter(|&k| out[k].is_none()).collect();
     let encoded: Vec<Blob> = pool.install(|| {
         todo.par_iter()
-            .map_init(CodecScratch::new, |s, &k| {
+            .map(|&k| {
                 let j = &batch[k];
-                let e = encode_tile(uniques[j.u], j.raw_crc, BlobCodec::default(), s);
-                Blob { codec: e.codec, bytes: e.bytes.to_vec(), stored_crc: e.stored_crc, encoded: true }
+                ENCODE_SCRATCH.with_borrow_mut(|s| {
+                    let e = encode_tile(uniques[j.u], j.raw_crc, BlobCodec::default(), s);
+                    Blob { codec: e.codec, bytes: e.bytes.to_vec(), stored_crc: e.stored_crc, encoded: true }
+                })
             })
             .collect()
     });

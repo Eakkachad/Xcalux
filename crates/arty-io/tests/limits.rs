@@ -8,65 +8,12 @@ use arty_core::tile::new_tile_box;
 use arty_core::{LayerId, TileCoord, TreeError};
 use arty_io::codec::{self, BlobCodec, CodecScratch, TileClass};
 use arty_io::format::{
-    Commit, Header, LAYER_KIND_FOLDER, LAYER_KIND_RASTER, LF_EXPANDED, LF_VISIBLE, LayerRecord, RecordHeader, RecordKind,
-    TileCodec, TileEntry,
+    Commit, LAYER_KIND_FOLDER, LAYER_KIND_RASTER, LF_EXPANDED, LF_VISIBLE, LayerRecord, RecordKind, TileCodec, TileEntry,
 };
-use arty_io::manifest::{DocFields, SEC_CRITICAL, SectionWriter, TAG_DOC, TAG_LAYR, encode_payload};
+use arty_io::manifest::{DocFields, SEC_CRITICAL};
 use arty_io::{IoError, LoadLimits, LoadOptions, LoadWarning};
+use common::raw::Raw;
 use common::*;
-
-/// Builds a file record by record.
-struct Raw(Vec<u8>);
-
-impl Raw {
-    fn new() -> Self {
-        Raw(Header::new(0, UUID).encode().to_vec())
-    }
-
-    fn record(&mut self, kind: RecordKind, payload: &[u8]) -> u64 {
-        let at = self.0.len() as u64;
-        self.0.extend_from_slice(&RecordHeader::for_payload(kind, payload).encode());
-        self.0.extend_from_slice(payload);
-        at
-    }
-
-    /// A Segment with one blob; returns the blob's offset.
-    fn blob(&mut self, bytes: &[u8]) -> u64 {
-        self.record(RecordKind::Segment, bytes) + 24
-    }
-
-    /// A stored table, entries as given (no sorting).
-    fn table(&mut self, layer: u32, entries: &[TileEntry]) -> u64 {
-        let mut p = Vec::new();
-        p.extend_from_slice(&layer.to_le_bytes());
-        p.extend_from_slice(&(entries.len() as u32).to_le_bytes());
-        p.extend_from_slice(&32u16.to_le_bytes());
-        p.extend_from_slice(&[0, 0]);
-        p.extend_from_slice(&(entries.len() as u32 * 32).to_le_bytes());
-        for e in entries {
-            p.extend_from_slice(&e.encode());
-        }
-        self.record(RecordKind::TileTable, &p)
-    }
-
-    fn manifest_raw(mut self, raw: &[u8]) -> Vec<u8> {
-        let m = self.record(RecordKind::Manifest, &encode_payload(raw));
-        self.0.extend_from_slice(&Commit { manifest_offset: m, prev_commit_offset: 0, commit_seq: 1, unix_ms: 0 }.encode_record());
-        self.0
-    }
-
-    fn finish(self, doc: DocFields, layers: &[LayerRecord<'_>], extra: impl FnOnce(&mut SectionWriter)) -> Vec<u8> {
-        let mut w = SectionWriter::default();
-        w.push(TAG_DOC, SEC_CRITICAL, &doc.encode());
-        let mut l = (layers.len() as u32).to_le_bytes().to_vec();
-        for r in layers {
-            r.encode_into(&mut l);
-        }
-        w.push(TAG_LAYR, SEC_CRITICAL, &l);
-        extra(&mut w);
-        self.manifest_raw(&w.into_raw())
-    }
-}
 
 fn doc(layer_count: usize) -> DocFields {
     DocFields { width: 256, height: 256, dpi: 72, paper: None, active: 1, next_id: 100_000, layer_count: layer_count as u32 }

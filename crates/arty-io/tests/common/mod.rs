@@ -3,6 +3,10 @@
 
 #![allow(dead_code)]
 
+pub mod raw;
+#[cfg(feature = "legacy")]
+pub mod v1;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
