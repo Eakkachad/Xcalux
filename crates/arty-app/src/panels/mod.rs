@@ -6,6 +6,7 @@ mod layers;
 mod navigator;
 mod property;
 mod subtool;
+mod thumbs;
 pub mod toolbar;
 
 use egui::{Id, WidgetText};
@@ -17,6 +18,7 @@ use crate::canvas::CanvasPane;
 use crate::shell::Shell;
 use crate::studio::Studio;
 pub use subtool::PreviewCache;
+pub use thumbs::ThumbCache;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Tab {
@@ -67,6 +69,7 @@ pub struct Viewer<'a> {
     pub shell: &'a mut Shell,
     pub canvas: &'a mut CanvasPane,
     pub previews: &'a mut PreviewCache,
+    pub thumbs: &'a mut ThumbCache,
 }
 
 impl TabViewer for Viewer<'_> {
@@ -88,7 +91,7 @@ impl TabViewer for Viewer<'_> {
             Tab::BrushSize => brush_size::ui(ui, self.studio),
             Tab::Color => color::wheel_ui(ui, self.studio),
             Tab::ColorSet => color::swatches_ui(ui, self.studio),
-            Tab::Layers => layers::ui(ui, self.studio, self.shell),
+            Tab::Layers => layers::ui(ui, self.studio, self.shell, self.thumbs),
             Tab::Navigator => navigator::ui(ui, self.studio, self.shell),
         }
     }

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::canvas::CanvasPane;
 use crate::commands::{self, Command};
 use crate::export;
-use crate::panels::{self, PreviewCache, Tab, Viewer};
+use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
 use crate::shell::{PAGE_PRESETS, Shell};
 use crate::studio::{InputSettings, Rgb, Studio};
 use crate::theme::{self, ThemeKind};
@@ -36,6 +36,7 @@ pub struct ArtyApp {
     shell: Shell,
     canvas: CanvasPane,
     previews: PreviewCache,
+    thumbs: ThumbCache,
     dock: DockState<Tab>,
     export_job: Option<Receiver<String>>,
 }
@@ -76,6 +77,7 @@ impl ArtyApp {
             shell: Shell::new(theme_kind),
             canvas: CanvasPane::new(cc.wgpu_render_state.clone()),
             previews: PreviewCache::default(),
+            thumbs: ThumbCache::default(),
             dock,
             export_job: None,
         }
@@ -325,6 +327,7 @@ impl eframe::App for ArtyApp {
             shell: &mut self.shell,
             canvas: &mut self.canvas,
             previews: &mut self.previews,
+            thumbs: &mut self.thumbs,
         };
         egui::CentralPanel::no_frame().show(ui, |ui| {
             DockArea::new(&mut self.dock)
