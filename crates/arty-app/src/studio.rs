@@ -534,6 +534,8 @@ impl Studio {
         self.doc = doc;
         self.doc.dirty_mut().mark_all();
         self.history.clear();
+        // Layer ids restart per document: thumbnails must not match old ones.
+        self.epochs.structure_changed();
         self.fit_pending = true;
         self.doc_epoch += 1;
     }

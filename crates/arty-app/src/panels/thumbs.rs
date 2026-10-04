@@ -455,6 +455,22 @@ mod tests {
     }
 
     #[test]
+    fn replacing_the_document_redoes_every_thumbnail() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let mut cache = ThumbCache::default();
+        assert_eq!(refresh(&mut cache, &s), 1);
+
+        // An opened file reuses the old document's layer ids.
+        let mut opened = Document::new(64, 64, 72);
+        let id = opened.active();
+        assert!(s.doc.layer(id).is_some());
+        fill_tile(opened.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0)), RED);
+        s.replace_document(opened);
+        assert_eq!(refresh(&mut cache, &s), 1);
+        assert_eq!(cache.pixels(id).unwrap()[0][0], RED);
+    }
+
+    #[test]
     fn budget_spreads_work_over_frames() {
         let mut s = Studio::new(Document::new(64, 64, 72));
         for _ in 0..3 {

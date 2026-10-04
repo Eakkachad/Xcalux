@@ -1142,6 +1142,19 @@ mod tests {
         r.studio.set_layer_props(id, p, false);
         r.at(0.4);
         assert_eq!(r.fc.title(), "page.arty* — ARTY");
+        // Dragging a layer in the panel is an edit too.
+        r.studio.edit_structure(|d| {
+            d.add_raster_layer();
+            true
+        });
+        r.shell.file_request = Some(FileRequest::Save);
+        r.settle(0.42);
+        assert_eq!(r.fc.title(), "page.arty — ARTY");
+        let bottom = r.studio.doc.root()[0];
+        crate::commands::execute(crate::commands::Command::MoveLayer { layer: bottom, parent: None, index: 2 }, &mut r.studio, &mut r.shell);
+        assert_eq!(r.studio.doc.root()[1], bottom);
+        r.at(0.44);
+        assert_eq!(r.fc.title(), "page.arty* — ARTY");
         // File > New starts an untitled, clean document.
         r.studio.new_document(64, 64, 72);
         r.at(0.5);
