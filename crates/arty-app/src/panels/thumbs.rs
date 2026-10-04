@@ -85,6 +85,21 @@ pub fn downscale(grid: &TileGrid, page: [u32; 2], size: [usize; 2], out: &mut Ti
     });
 }
 
+/// Display-only coverage boost: `α' = √α`, colour scaled to match. A box
+/// mean turns a thin ink line into a few percent of a thumbnail pixel, so
+/// line art would vanish without it.
+#[inline]
+fn boost_coverage(p: [u16; 4]) -> [u32; 4] {
+    if p[3] == 0 {
+        return [0; 4];
+    }
+    let a = p[3] as f32 / fix15::ONE as f32;
+    let k = a.sqrt() / a;
+    let a2 = (a.sqrt() * fix15::ONE as f32) as u32;
+    let c = |v: u16| ((v as f32 * k) as u32).min(a2);
+    [c(p[0]), c(p[1]), c(p[2]), a2]
+}
+
 /// `px` (top-left `size`) over a light checkerboard of `cell`-pixel squares.
 fn over_checker(px: &TilePixels, size: [usize; 2], cell: usize) -> ColorImage {
     let (light, dark) = (fix15::from_u8(255) as u32, fix15::from_u8(204) as u32);
@@ -93,8 +108,9 @@ fn over_checker(px: &TilePixels, size: [usize; 2], cell: usize) -> ColorImage {
     for (y, line) in px[..size[1]].iter().enumerate() {
         for (x, p) in line[..size[0]].iter().enumerate() {
             let bg = if (x / cell + y / cell).is_multiple_of(2) { light } else { dark };
-            let under = fix15::mul(bg, fix15::ONE - p[3] as u32);
-            let ch = |c: usize| fix15::to_u8((p[c] as u32 + under).min(fix15::ONE) as u16);
+            let p = boost_coverage(*p);
+            let under = fix15::mul(bg, fix15::ONE - p[3]);
+            let ch = |c: usize| fix15::to_u8((p[c] + under).min(fix15::ONE) as u16);
             pixels.push(Color32::from_rgb(ch(0), ch(1), ch(2)));
         }
     }
@@ -397,6 +413,20 @@ mod tests {
                 assert_eq!(out[v][u], sum.map(|s| ((s + n / 2) / n) as u16), "({u}, {v})");
             }
         }
+    }
+
+    #[test]
+    fn boost_makes_faint_coverage_visible_and_keeps_extremes() {
+        assert_eq!(boost_coverage([0; 4]), [0; 4]);
+        let one = fix15::ONE as u16;
+        assert_eq!(boost_coverage([one; 4]), [fix15::ONE; 4]);
+        // 4% black ink coverage → 20% after the boost.
+        let a = (0.04 * fix15::ONE as f32) as u16;
+        let b = boost_coverage([0, 0, 0, a]);
+        assert!((b[3] as f32 / fix15::ONE as f32 - 0.2).abs() < 0.01, "{b:?}");
+        // Premultiplied colour never exceeds alpha.
+        let c = boost_coverage([a, a / 2, 0, a]);
+        assert!(c[0] <= c[3] && c[1] <= c[3]);
     }
 
     #[test]

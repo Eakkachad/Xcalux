@@ -39,10 +39,15 @@ pub struct IoConfig {
 }
 
 impl IoConfig {
-    /// `cores - 1` io threads, and a pixel budget for loads of 75% of
-    /// physical memory (at most 16 GiB).
+    /// Half the logical cores (at most 7) as io threads, and a pixel budget
+    /// for loads of 75% of physical memory (at most 16 GiB).
+    ///
+    /// More io threads steal frame time from painting during background
+    /// saves: plans/bench/B002_io.md T9 measured +6.0 ms frame p99 with 19
+    /// threads vs +0.6 ms with 7, while a full B4 600 dpi save still takes
+    /// only 1.1 s.
     pub fn new(recovery_dir: PathBuf) -> Self {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1).max(1));
+        let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 7));
         let mut load = LoadOptions::default();
         if let Some(ram) = sys::physical_memory() {
             load.limits.max_decoded_bytes = load.limits.max_decoded_bytes.min(ram / 4 * 3);

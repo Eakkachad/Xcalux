@@ -447,7 +447,8 @@ pub(crate) fn locate_commit<R: ReadAt + ?Sized>(src: &R, len: u64, p: &Progress)
 
 /// Look for `"ArRc"` at every byte, from the end back to the header, and
 /// keep the valid commit with the highest sequence number whose manifest
-/// checks out. Memory: one window buffer. Work is bounded for hostile
+/// checks out. Memory: one window buffer plus one cache entry per distinct
+/// manifest offset named by a candidate commit. Work is bounded for hostile
 /// files: candidates are decoded from the window, each manifest is checked
 /// once, and the manifests checked add up to at most the file length.
 fn backward_scan<R: ReadAt + ?Sized>(
