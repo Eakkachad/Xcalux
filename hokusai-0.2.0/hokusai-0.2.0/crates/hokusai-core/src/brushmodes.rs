@@ -416,12 +416,23 @@ fn paint_into_tile<S: TiledSurface + ?Sized>(
             // Lock alpha: when set, the dab is masked by the existing alpha
             // (so only previously-painted areas get coloured) and dst.a is
             // unchanged. Blend smoothly via `lock_alpha`.
-            let (color_opa_alpha, write_alpha) = if lock_alpha > 0.0 {
+            //
+            // ARTY deviation from libmypaint's BlendMode_LockAlpha, which
+            // weights the colour by the bare mask and ignores `color_a`:
+            // here the straight colour moves toward src by
+            // `mask * alpha_eraser`. With alpha_eraser = 1 (plain paint)
+            // that is libmypaint exactly. An eraser (alpha_eraser = 0) is a
+            // no-op instead of painting the brush colour, and a smudge
+            // bucket's transparency weakens the mix. (Weighting src by
+            // `alpha_eraser` but dst by the bare mask, as this used to,
+            // shrinks premultiplied colour under a fixed alpha: black.)
+            let (color_opa_alpha, color_inv, write_alpha) = if lock_alpha > 0.0 {
                 let locked = fix15::mul(opa_alpha_raw, da);
                 let blended = lerp_fix15(opa_alpha_raw, locked, lock_alpha);
-                (blended, lock_alpha < 1.0)
+                let inv = lerp_fix15(inv_mask, FIX15_ONE - opa_alpha_raw, lock_alpha);
+                (blended, inv, lock_alpha < 1.0)
             } else {
-                (opa_alpha_raw, true)
+                (opa_alpha_raw, inv_mask, true)
             };
 
             // Colorize: replace dst's hue and saturation (HSV) with the dab's,
@@ -433,9 +444,9 @@ fn paint_into_tile<S: TiledSurface + ?Sized>(
                 continue;
             }
 
-            dst[0] = blend(dr, inv_mask, src_r, color_opa_alpha);
-            dst[1] = blend(dg, inv_mask, src_g, color_opa_alpha);
-            dst[2] = blend(db, inv_mask, src_b, color_opa_alpha);
+            dst[0] = blend(dr, color_inv, src_r, color_opa_alpha);
+            dst[1] = blend(dg, color_inv, src_g, color_opa_alpha);
+            dst[2] = blend(db, color_inv, src_b, color_opa_alpha);
             if write_alpha {
                 dst[3] = blend(da, inv_mask, FIX15_ONE, opa_alpha_raw);
             }

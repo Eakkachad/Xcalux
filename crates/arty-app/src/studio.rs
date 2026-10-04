@@ -340,6 +340,7 @@ impl Studio {
                         StrokeRefused::NotRaster => "Select a raster layer to paint",
                         StrokeRefused::Locked => "Layer is locked",
                         StrokeRefused::Hidden => "Layer is hidden",
+                        StrokeRefused::AlphaLocked => "Layer transparency is locked",
                     }
                     .into(),
                 );

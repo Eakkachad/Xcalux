@@ -7,7 +7,8 @@ use crate::input::InputSample;
 use crate::preset::BrushPreset;
 
 /// Paint an S-curve with a 0 → 1 → 0 pressure ramp and return premultiplied
-/// RGBA8 pixels (`width × height`, transparent background).
+/// RGBA8 pixels (`width × height`, transparent background; blending brushes
+/// smear a backdrop of bars instead).
 pub fn render_preview(preset: &BrushPreset, width: u32, height: u32, color: [f32; 3]) -> Vec<u8> {
     let mut doc = Document::new(width, height, 72);
     doc.set_paper(None);
@@ -19,8 +20,13 @@ pub fn render_preview(preset: &BrushPreset, width: u32, height: u32, color: [f32
     p.eraser = false;
 
     let mut engine = StrokeEngine::new();
-    engine.configure(&p, color);
     let (w, h) = (width as f32, height as f32);
+    // A mostly-blending brush only moves color around and the preview page
+    // starts empty: give it bars to smear.
+    if p.blending > 0.5 {
+        paint_backdrop(&mut engine, &mut doc, color, w, h);
+    }
+    engine.configure(&p, color);
     let n = 90;
     for i in 0..=n {
         let t = i as f32 / n as f32;
@@ -65,4 +71,26 @@ pub fn render_preview(preset: &BrushPreset, width: u32, height: u32, color: [f32
         }
     }
     rgba
+}
+
+/// Upright bars across the preview's middle, alternating `color` and grey.
+fn paint_backdrop(engine: &mut StrokeEngine, doc: &mut Document, color: [f32; 3], w: f32, h: f32) {
+    let pen = BrushPreset { size: (h * 0.14).max(2.0), min_size: 1.0, hardness: 0.9, stabilizer: 0, ..Default::default() };
+    for i in 0..6 {
+        let x = w * (0.2 + 0.12 * i as f32);
+        engine.configure(&pen, if i % 2 == 0 { color } else { [0.6; 3] });
+        let at = |j: u32| InputSample {
+            x,
+            y: h * (0.15 + 0.7 * j as f32 / 8.0),
+            pressure: 1.0,
+            time: j as f64 * 0.008,
+            ..Default::default()
+        };
+        if engine.begin(doc, at(0)).is_ok() {
+            for j in 1..=8 {
+                engine.feed(doc, at(j));
+            }
+            engine.end(doc);
+        }
+    }
 }
