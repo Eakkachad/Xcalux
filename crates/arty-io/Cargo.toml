@@ -32,6 +32,8 @@ fault-injection = []
 
 [dev-dependencies]
 arty-testkit.workspace = true
+# Integration tests simulate crashes through `FailAfter`.
+arty-io = { path = ".", features = ["fault-injection"] }
 
 [lints]
 workspace = true

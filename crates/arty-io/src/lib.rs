@@ -11,20 +11,69 @@
 #[cfg(target_endian = "big")]
 compile_error!("arty-io reads and writes tiles as little-endian bytes in place");
 
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+
 pub mod codec;
 pub mod error;
 pub mod format;
 pub mod limits;
+pub mod manifest;
 pub mod names;
 pub mod readat;
+pub mod reader;
 pub mod sink;
+pub mod table;
+pub mod writer;
 
 pub use codec::{BlobCodec, CodecScratch, TileClass};
 pub use error::{IoError, LoadWarning};
 pub use format::FileIdentity;
 pub use limits::LoadLimits;
+pub use manifest::{AppSection, LayerExt};
 pub use readat::ReadAt;
+pub use reader::{FileInfo, LoadOptions, Loaded, load, load_from, read_info};
 pub use sink::Sink;
+pub use writer::{CommitMeta, FileWriter, SaveExtras, SaveOptions, SaveStats, Session, SessionId, Verify};
+
+/// Values of [`Progress::phase`].
+pub mod phase {
+    pub const IDLE: u8 = 0;
+    /// Reading the manifest and tile tables.
+    pub const READ: u8 = 1;
+    pub const DECODE: u8 = 2;
+    /// Classifying tiles and planning blobs.
+    pub const PLAN: u8 = 3;
+    pub const ENCODE: u8 = 4;
+    pub const VERIFY: u8 = 5;
+}
+
+/// Progress of the running load or save, shared with the UI. `done` and
+/// `total` count tiles in the current phase.
+#[derive(Debug, Default)]
+pub struct Progress {
+    pub phase: AtomicU8,
+    pub done: AtomicU64,
+    pub total: AtomicU64,
+    /// Set by the UI; loads stop at the next tile run, saves at the next
+    /// batch, with `IoError::Cancelled`.
+    pub cancel: AtomicBool,
+}
+
+impl Progress {
+    pub fn begin(&self, phase: u8, total: u64) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        self.phase.store(phase, Ordering::Relaxed);
+    }
+
+    pub fn advance(&self, n: u64) {
+        self.done.fetch_add(n, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+}
 
 /// What the first bytes of a file say it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

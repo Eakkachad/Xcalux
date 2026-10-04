@@ -307,6 +307,7 @@ version = "0.2.0"
 dependencies = [
  "ahash",
  "arty-core",
+ "arty-io",
  "arty-testkit",
  "bytemuck",
  "crc32fast",
