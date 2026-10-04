@@ -1,0 +1,17 @@
+[package]
+name = "arty-brush"
+description = "ARTY brush pipeline: input samples, stabilizer, presets, hokusai bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arty-core.workspace = true
+hokusai.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+arty-testkit.workspace = true
+
+[lints]
+workspace = true

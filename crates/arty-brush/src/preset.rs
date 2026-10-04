@@ -1,0 +1,310 @@
+//! Brush presets ("sub tools") as plain data, compiled to hokusai brushes.
+//!
+//! Parameters are the ones an illustrator thinks in — size in pixels,
+//! minimum size / opacity under light pressure, hardness, blending — in the
+//! spirit of SAI and Clip Studio. [`BrushPreset::to_hokusai`] maps them onto
+//! libmypaint settings.
+
+use hokusai::mapping::{InputMapping, SettingValue};
+use hokusai::{BrushInput, BrushSetting};
+use serde::{Deserialize, Serialize};
+
+/// Tool group a preset belongs to (CSP "tool" → "sub tool").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BrushGroup {
+    Pen,
+    Pencil,
+    Brush,
+    Airbrush,
+    Blend,
+    Eraser,
+}
+
+impl BrushGroup {
+    pub const ALL: [BrushGroup; 6] = [
+        BrushGroup::Pen,
+        BrushGroup::Pencil,
+        BrushGroup::Brush,
+        BrushGroup::Airbrush,
+        BrushGroup::Blend,
+        BrushGroup::Eraser,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BrushGroup::Pen => "Pen",
+            BrushGroup::Pencil => "Pencil",
+            BrushGroup::Brush => "Brush",
+            BrushGroup::Airbrush => "Airbrush",
+            BrushGroup::Blend => "Blend",
+            BrushGroup::Eraser => "Eraser",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BrushPreset {
+    pub name: String,
+    pub group: BrushGroup,
+    /// Diameter in document pixels at full pressure.
+    pub size: f32,
+    /// Size at zero pressure as a fraction of `size` (1.0 = no size pressure).
+    pub min_size: f32,
+    /// 0..=1
+    pub opacity: f32,
+    /// Opacity at zero pressure as a fraction of `opacity` (1.0 = none).
+    pub min_opacity: f32,
+    /// Edge hardness, 0 (airbrush) ..= 1 (crisp).
+    pub hardness: f32,
+    /// Dabs per radius; higher gives smoother edges on fast strokes.
+    pub density: f32,
+    /// Picks up color already on the canvas (SAI "Blending"), 0..=1.
+    pub blending: f32,
+    /// How long picked-up color lingers (SAI "Persistence"), 0..=1.
+    pub persistence: f32,
+    /// Random size jitter, 0..=1.
+    pub jitter: f32,
+    pub eraser: bool,
+    /// Stabilizer strength 0..=15 (SAI "S-levels").
+    pub stabilizer: u8,
+}
+
+impl Default for BrushPreset {
+    fn default() -> Self {
+        Self {
+            name: "Brush".into(),
+            group: BrushGroup::Brush,
+            size: 10.0,
+            min_size: 0.3,
+            opacity: 1.0,
+            min_opacity: 1.0,
+            hardness: 0.8,
+            density: 4.0,
+            blending: 0.0,
+            persistence: 0.5,
+            jitter: 0.0,
+            eraser: false,
+            stabilizer: 3,
+        }
+    }
+}
+
+pub const MIN_BRUSH_SIZE: f32 = 0.5;
+pub const MAX_BRUSH_SIZE: f32 = 2000.0;
+
+/// libmypaint's documented defaults (`brushsettings.json`). hokusai zeroes
+/// every setting, which would e.g. give dabs a 0 aspect ratio.
+const LIBMYPAINT_DEFAULTS: &[(BrushSetting, f32)] = &[
+    (BrushSetting::Opaque, 1.0),
+    (BrushSetting::OpaqueLinearize, 0.9),
+    (BrushSetting::Radius, 2.0),
+    (BrushSetting::Hardness, 0.8),
+    (BrushSetting::AntiAliasing, 1.0),
+    (BrushSetting::DabsPerActualRadius, 2.0),
+    (BrushSetting::Speed1Slowness, 0.04),
+    (BrushSetting::Speed2Slowness, 0.8),
+    (BrushSetting::Speed1Gamma, 4.0),
+    (BrushSetting::Speed2Gamma, 4.0),
+    (BrushSetting::OffsetBySpeedSlowness, 1.0),
+    (BrushSetting::SmudgeLength, 0.5),
+    (BrushSetting::StrokeDurationLogarithmic, 4.0),
+    (BrushSetting::EllipticalDabRatio, 1.0),
+    (BrushSetting::EllipticalDabAngle, 90.0),
+    (BrushSetting::DirectionFilter, 2.0),
+    (BrushSetting::PosterizeNum, 0.05),
+    (BrushSetting::GridmapScaleX, 1.0),
+    (BrushSetting::GridmapScaleY, 1.0),
+];
+
+fn constant(b: &mut hokusai::Brush, s: BrushSetting, v: f32) {
+    b.set(s, SettingValue::constant(v));
+}
+
+/// `base + f(pressure)`, sampled at a few knots (libmypaint mappings are
+/// piecewise linear).
+fn pressure_curve(b: &mut hokusai::Brush, s: BrushSetting, base: f32, f: impl Fn(f32) -> f32) {
+    let mut m = InputMapping::new(BrushInput::Pressure);
+    m.points = [0.0f32, 0.015, 0.1, 0.25, 0.45, 0.7, 1.0].iter().map(|&p| (p, f(p))).collect();
+    let mut v = SettingValue::constant(base);
+    v.inputs.push(m);
+    b.set(s, v);
+}
+
+impl BrushPreset {
+    /// Compile to a hokusai brush painting `color` (sRGB, 0..=1).
+    pub fn to_hokusai(&self, color: [f32; 3]) -> hokusai::Brush {
+        let mut b = hokusai::Brush::new();
+        for &(s, v) in LIBMYPAINT_DEFAULTS {
+            constant(&mut b, s, v);
+        }
+        // Classic (non-spectral) mixing: our pixels are display-space.
+        constant(&mut b, BrushSetting::Paint, 0.0);
+
+        let radius = (self.size.clamp(MIN_BRUSH_SIZE, MAX_BRUSH_SIZE) * 0.5).max(0.2);
+        let min_size = self.min_size.clamp(0.01, 1.0);
+        if min_size < 0.999 {
+            // ln(r · lerp(min, 1, p)) = ln r + ln(lerp(min, 1, p))
+            pressure_curve(&mut b, BrushSetting::Radius, radius.ln(), |p| {
+                (min_size + (1.0 - min_size) * p).ln()
+            });
+        } else {
+            constant(&mut b, BrushSetting::Radius, radius.ln());
+        }
+
+        constant(&mut b, BrushSetting::Opaque, self.opacity.clamp(0.0, 1.0));
+        let min_op = self.min_opacity.clamp(0.0, 1.0);
+        if min_op < 0.999 {
+            // Zero pressure (hover / lift-off) must not paint.
+            pressure_curve(&mut b, BrushSetting::OpaqueMultiply, 0.0, |p| {
+                if p <= 0.0 { 0.0 } else { min_op + (1.0 - min_op) * p }
+            });
+        } else {
+            // Opaque only while the pen touches (pressure > 0).
+            let mut m = InputMapping::new(BrushInput::Pressure);
+            m.points = vec![(0.0, 0.0), (0.015, 1.0), (1.0, 1.0)];
+            let mut v = SettingValue::constant(0.0);
+            v.inputs.push(m);
+            b.set(BrushSetting::OpaqueMultiply, v);
+        }
+        // Thin, dense dabs need less linearization to avoid faint lines.
+        constant(&mut b, BrushSetting::OpaqueLinearize, if self.density > 3.0 { 0.35 } else { 0.9 });
+
+        // libmypaint drops dabs with hardness <= 0, so 0% means "softest".
+        constant(&mut b, BrushSetting::Hardness, self.hardness.clamp(0.02, 1.0));
+        constant(&mut b, BrushSetting::DabsPerActualRadius, self.density.clamp(0.5, 12.0));
+        constant(&mut b, BrushSetting::RadiusByRandom, self.jitter.clamp(0.0, 1.0) * 0.4);
+
+        if self.blending > 0.0 {
+            constant(&mut b, BrushSetting::Smudge, self.blending.clamp(0.0, 1.0));
+            // persistence 1 → color lingers (smudge_length → 1).
+            constant(&mut b, BrushSetting::SmudgeLength, self.persistence.clamp(0.0, 1.0));
+        }
+        if self.eraser {
+            constant(&mut b, BrushSetting::Eraser, 1.0);
+        }
+
+        let hsv = hokusai::color::rgb_to_hsv(color[0], color[1], color[2]);
+        constant(&mut b, BrushSetting::ColorH, hsv.h);
+        constant(&mut b, BrushSetting::ColorS, hsv.s);
+        constant(&mut b, BrushSetting::ColorV, hsv.v);
+        b
+    }
+}
+
+/// The built-in sub tools, tuned for manga inking and coloring.
+pub fn default_presets() -> Vec<BrushPreset> {
+    let p = |name: &str, group, f: &dyn Fn(&mut BrushPreset)| {
+        let mut b = BrushPreset { name: name.into(), group, ..Default::default() };
+        f(&mut b);
+        b
+    };
+    vec![
+        p("G-Pen", BrushGroup::Pen, &|b| {
+            b.size = 8.0;
+            b.min_size = 0.12;
+            b.hardness = 0.92;
+            b.density = 6.0;
+            b.stabilizer = 4;
+        }),
+        p("Mapping Pen", BrushGroup::Pen, &|b| {
+            b.size = 3.5;
+            b.min_size = 0.05;
+            b.hardness = 0.95;
+            b.density = 7.0;
+            b.stabilizer = 6;
+        }),
+        p("Marker", BrushGroup::Pen, &|b| {
+            b.size = 6.0;
+            b.min_size = 1.0;
+            b.hardness = 0.9;
+            b.density = 6.0;
+            b.stabilizer = 3;
+        }),
+        p("Pencil", BrushGroup::Pencil, &|b| {
+            b.size = 5.0;
+            b.min_size = 0.6;
+            b.opacity = 0.9;
+            b.min_opacity = 0.15;
+            b.hardness = 0.55;
+            b.density = 4.0;
+            b.jitter = 0.15;
+            b.stabilizer = 2;
+        }),
+        p("Sketch Pencil", BrushGroup::Pencil, &|b| {
+            b.size = 12.0;
+            b.min_size = 0.5;
+            b.opacity = 0.55;
+            b.min_opacity = 0.1;
+            b.hardness = 0.35;
+            b.density = 3.0;
+            b.jitter = 0.3;
+            b.stabilizer = 1;
+        }),
+        p("Brush", BrushGroup::Brush, &|b| {
+            b.size = 24.0;
+            b.min_size = 0.35;
+            b.opacity = 0.95;
+            b.hardness = 0.65;
+            b.density = 4.0;
+            b.blending = 0.45;
+            b.persistence = 0.6;
+            b.stabilizer = 2;
+        }),
+        p("Watercolor", BrushGroup::Brush, &|b| {
+            b.size = 40.0;
+            b.min_size = 0.5;
+            b.opacity = 0.8;
+            b.min_opacity = 0.3;
+            b.hardness = 0.3;
+            b.density = 3.0;
+            b.blending = 0.55;
+            b.persistence = 0.8;
+            b.stabilizer = 1;
+        }),
+        p("Flat Color", BrushGroup::Brush, &|b| {
+            b.size = 30.0;
+            b.min_size = 0.8;
+            b.hardness = 0.95;
+            b.density = 4.0;
+            b.stabilizer = 1;
+        }),
+        p("Airbrush", BrushGroup::Airbrush, &|b| {
+            b.size = 120.0;
+            b.min_size = 1.0;
+            b.opacity = 0.45;
+            b.min_opacity = 0.0;
+            b.hardness = 0.0;
+            b.density = 2.5;
+            b.stabilizer = 0;
+        }),
+        p("Blender", BrushGroup::Blend, &|b| {
+            b.size = 40.0;
+            b.min_size = 0.6;
+            b.opacity = 0.7;
+            b.hardness = 0.4;
+            b.density = 3.0;
+            b.blending = 1.0;
+            b.persistence = 0.7;
+            b.stabilizer = 1;
+        }),
+        p("Hard Eraser", BrushGroup::Eraser, &|b| {
+            b.size = 20.0;
+            b.min_size = 0.6;
+            b.hardness = 0.95;
+            b.density = 4.0;
+            b.eraser = true;
+            b.stabilizer = 1;
+        }),
+        p("Soft Eraser", BrushGroup::Eraser, &|b| {
+            b.size = 80.0;
+            b.min_size = 1.0;
+            b.opacity = 0.6;
+            b.min_opacity = 0.1;
+            b.hardness = 0.1;
+            b.density = 2.5;
+            b.eraser = true;
+            b.stabilizer = 0;
+        }),
+    ]
+}

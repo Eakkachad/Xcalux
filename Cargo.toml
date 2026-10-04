@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["legacy", "hokusai-0.2.0", "vendor"]
+
+
+default-members = ["crates/arty-app"]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Eakkachat Sathaphol"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+arty-core = { path = "crates/arty-core" }
+arty-brush = { path = "crates/arty-brush" }
+arty-render = { path = "crates/arty-render" }
+arty-testkit = { path = "crates/arty-testkit" }
+hokusai = { path = "hokusai-0.2.0/hokusai-0.2.0/hokusai", default-features = false }
+
+ahash = "0.8"
+bytemuck = { version = "1", features = ["derive"] }
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "persistence"] }
+egui = "0.36"
+egui-wgpu = "0.36"
+egui_dock = { version = "0.21", features = ["serde"] }
+egui-phosphor = "0.14"
+log = "0.4"
+env_logger = "0.11"
+png = "0.18"
+rayon = "1"
+rfd = "0.17"
+serde = { version = "1", features = ["derive"] }
+wgpu = "30"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+needless_range_loop = "allow"
+too_many_arguments = "allow"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

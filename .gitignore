@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/legacy/target/
 
 # Agent specific configuration
 /.agent/

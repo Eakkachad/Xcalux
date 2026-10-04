@@ -1,57 +1,53 @@
-# ARTY (Xcalux) Digital Painting Workstation
+# ARTY (Xcalux) v2
 
-ARTY (Xcalux) is a high-performance digital painting application built for Windows. It is designed around four primary core pillars: ultra-low latency brush strokes, a minimal memory footprint, a lightweight UI, and a zero-allocation drawing loop to deliver a smooth and responsive drawing experience similar to Paint Tool SAI.
+A manga and coloring app in the spirit of Clip Studio Paint, with SAI-quality
+brushes. Written in Rust (egui 0.36 + wgpu 30), designed to be fast and light.
 
-## Core Features
+## Running
 
-- **Infinite Tiled Canvas & GPU Cache**: The canvas is split into a sparse grid of 64x64 pixel tiles, using a Fix15 premultiplied RGBA pixel format. It utilizes an LRU cache on the GPU to manage tile textures efficiently, enabling work on large canvases without performance degradation.
-- **Dynamic Brush Engine**: Powered by the Hokusai (libmypaint) brush engine, it supports real-time color blending (smudging) and dilution to simulate painting with wet media.
-- **Hardware-Accelerated Canvas Transformation**: Supports real-time horizontal mirroring, rotation, and zooming via GPU vertex shaders, with accurate inverse-coordinate transformations for stylus tracking.
-- **Zero-Allocation Stroke Loop**: The active drawing path performs zero heap allocations. It utilizes a pre-allocated object pool for undo/redo history and circular buffers for input stabilization.
-- **Input Stabilization**: Implements physics-based Spring-Mass-Damper stabilizers (S-levels) and Exponential Moving Average (EMA) smoothing to eliminate pen jitter.
-- **Asynchronous Incremental Saving**: Automatically saves the canvas to the `.arty` format in a background thread, preventing UI lag during saving.
+```powershell
+cargo run --release          # ARTY v2
+$env:ARTY_DEMO=1; cargo run  # opens with sample strokes from every preset (smoke test)
+cargo test --workspace       # all tests, including the zero-allocation gates
+cargo run -p arty-core --release --example bench_composite   # composite benchmark
+```
 
-## Directory Structure
+The old version (egui 0.27) is in `legacy/` and still runs: `cd legacy; cargo run --release`
+(it uses the vendored crates in `vendor/`).
 
-- **src/**: Core application source code
-  - `main.rs`: Entry point and CLI argument handling
-  - `app.rs`: Main application logic, UI state, and input dispatch
-  - `renderer.rs`: WGPU rendering engine and layer compositing
-  - `canvas.rs`: Data models for layers, tiles, and blend modes
-  - `input.rs`: Stylus/tablet input handling and stabilizers
-  - `history.rs`: Heap-allocation-free undo/redo manager
-  - `brush_io.rs`: Preset serialization and Clip Studio Paint (`.sut`) texture extraction
-  - `save.rs`: Asynchronous background saving pipeline
-  - `stress_test.rs`: Performance and allocation tracking harness
-- **hokusai-0.2.0/**: Local dependency containing the brush engine
-- **vendor/**: Offline vendored dependency crates
-- **bigplane.md**: Authoritative development plan and roadmap
-- **system_documentation.md**: Detailed system architecture reference
+## Layout
 
-## Setup and Installation
+| Crate | Purpose |
+|---|---|
+| `crates/arty-core` | Document model: 64×64 fix15 tiles (Arc copy-on-write), layer tree (folder/clip/blend), per-tile compositing, undo |
+| `crates/arty-brush` | Pen input → stabilizer → hokusai (libmypaint) → tiles; presets for G-pen, Mapping pen, Pencil, Brush, Watercolor, Airbrush, Eraser |
+| `crates/arty-render` | View transform (zoom/rotate/flip), CPU composite of dirty tiles → GPU texture array with mipmaps |
+| `crates/arty-app` | `arty` app: CSP-style docking (egui_dock), tool bar, Sub Tool with real previews, color wheel, layer panel |
+| `crates/arty-testkit` | `CountingAllocator` for testing that hot paths make no heap allocations |
+| `hokusai-0.2.0/` | Brush engine (modified libmypaint port) |
 
-### Prerequisites
-- Rust compiler (Stable channel recommended)
-- Windows OS (required for the native RealTimeStylus/Windows Ink integration)
+Dependencies point one way only: `core ← brush ← app`, `core ← render ← app`.
 
-### Running the Application
+## Engineering principles
 
-- **Run in Debug Mode**:
-  ```powershell
-  cargo run
-  ```
+- **No allocation on hot paths:** dab painting and tile compositing are checked by tests (`tests/alloc_gate.rs`, `tests/stroke.rs`).
+- **Composite on the CPU, show on the GPU:** only the flattened page lives on the GPU, so VRAM doesn't grow with layer count.
+- **Copy-on-write tiles:** undo snapshots and layer duplication share pixels until they're edited.
+- **Reproducible benchmarks:** results go in `plans/bench/` with the command used.
 
-- **Run in optimized Release Mode (Recommended)**:
-  ```powershell
-  cargo run --release
-  ```
+Roadmap: `plans/v2_roadmap.md`
 
-- **Run Stress Tests**:
-  ```powershell
-  cargo run -- --stress-test
-  ```
+## Shortcuts (similar to CSP)
 
-- **Check Compilation**:
-  ```powershell
-  cargo check
-  ```
+| Key | Action |
+|---|---|
+| P / N / B / J / U / E | Pen / Pencil / Brush / Airbrush / Blend / Eraser |
+| I, Alt (while drawing) | Eyedropper |
+| Space / Shift+Space / Ctrl+Space | Hand / Rotate / Zoom (temporary) |
+| Mouse wheel, Alt+wheel | Zoom at cursor, Rotate |
+| `[` `]` | Brush smaller / larger |
+| X | Swap main/sub color |
+| `-` `=` / F | Rotate view 15° / Flip horizontal |
+| Ctrl+Z, Ctrl+Y | Undo, Redo |
+| Ctrl+Shift+N, Ctrl+E, Ctrl+Alt+G | New layer, Merge down, Clip to layer below |
+| Ctrl+0, Ctrl+Alt+0 | Fit to window, 100% |

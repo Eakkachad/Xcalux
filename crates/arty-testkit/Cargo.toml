@@ -1,0 +1,9 @@
+[package]
+name = "arty-testkit"
+description = "Test utilities: allocation-counting allocator for zero-alloc hot-path gates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

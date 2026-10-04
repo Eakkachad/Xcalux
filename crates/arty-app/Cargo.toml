@@ -1,0 +1,29 @@
+[package]
+name = "arty-app"
+description = "ARTY: manga and illustration painting workstation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "arty"
+path = "src/main.rs"
+
+[dependencies]
+arty-brush.workspace = true
+arty-core.workspace = true
+arty-render.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui_dock.workspace = true
+egui-phosphor.workspace = true
+env_logger.workspace = true
+log.workspace = true
+png.workspace = true
+rayon.workspace = true
+rfd.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

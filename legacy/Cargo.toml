@@ -11,7 +11,7 @@ eframe = { version = "0.27", features = ["wgpu"] } # Forces eframe onto the wgpu
 
 # Graphics & Core Engine
 wgpu = "0.19" # Core low-level hardware abstraction layer
-hokusai = { path = "hokusai-0.2.0/hokusai-0.2.0/hokusai", features = ["tile-mem", "myb-json"] } # Pure Rust brush engine with libmypaint compatibility
+hokusai = { path = "../hokusai-0.2.0/hokusai-0.2.0/hokusai", features = ["tile-mem", "myb-json"] } # Pure Rust brush engine with libmypaint compatibility
 
 # Input Handling
 octotablet = "0.1.0" # Native stylus and pressure API integration for Windows
@@ -36,3 +36,5 @@ opt-level = 3       # Enable maximum optimizations
 lto = true          # Enable Link-Time Optimization across all dependency crates
 codegen-units = 1   # Reduce parallel code generation units to maximize optimization localizations
 panic = "abort"     # Strip stack unwinding overhead to minimize memory and binary footprint
+
+[workspace]
