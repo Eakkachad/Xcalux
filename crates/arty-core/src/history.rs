@@ -235,7 +235,7 @@ mod tests {
         let mut doc = Document::new(64, 64, 72);
         let mut h = History::default();
         let snap = doc.snapshot_structure();
-        let added = doc.add_raster_layer();
+        let added = doc.add_raster_layer().unwrap();
         h.push(Edit::Structure(Box::new(snap)));
         assert!(doc.layer(added).is_some());
         h.undo(&mut doc);

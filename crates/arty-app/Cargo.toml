@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 arty-brush.workspace = true
 arty-core.workspace = true
+arty-io.workspace = true
 arty-render.workspace = true
 eframe.workspace = true
 egui.workspace = true
@@ -24,6 +25,11 @@ png.workspace = true
 rayon.workspace = true
 rfd.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+arty-testkit.workspace = true
+# Tests hold the IO thread with `Request::Pause`.
+arty-io = { workspace = true, features = ["fault-injection"] }
 
 [lints]
 workspace = true

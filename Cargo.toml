@@ -16,6 +16,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 arty-core = { path = "crates/arty-core" }
 arty-brush = { path = "crates/arty-brush" }
+arty-io = { path = "crates/arty-io" }
 arty-render = { path = "crates/arty-render" }
 arty-testkit = { path = "crates/arty-testkit" }
 hokusai = { path = "hokusai-0.2.0/hokusai-0.2.0/hokusai", default-features = false }

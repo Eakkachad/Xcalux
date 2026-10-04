@@ -15,7 +15,9 @@ pub mod tile;
 
 pub use blend::BlendMode;
 pub use composite::CompositeScratch;
-pub use document::{DirtyRegion, Document, PAPER_WHITE, StructureSnapshot};
+pub use document::{
+    DirtyRegion, DocParts, Document, MAX_LAYERS, MAX_NEXT_ID, MAX_TREE_DEPTH, PAPER_WHITE, StructureSnapshot, TreeError,
+};
 pub use grid::TileGrid;
 pub use history::{Edit, History, PixelRecorder};
 pub use layer::{Layer, LayerContent, LayerId, LayerProps};

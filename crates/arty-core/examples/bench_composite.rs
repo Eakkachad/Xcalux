@@ -14,7 +14,7 @@ fn build(layers: usize, mixed: bool) -> Document {
     // A 1024² region is enough to measure per-tile cost.
     let mut doc = Document::new(1024, 1024, 600);
     for i in 0..layers {
-        let id = if i == 0 { doc.active() } else { doc.add_raster_layer() };
+        let id = if i == 0 { doc.active() } else { doc.add_raster_layer().unwrap() };
         let (grid, _) = doc.paint_target(id).unwrap();
         for ty in 0..16 {
             for tx in 0..16 {

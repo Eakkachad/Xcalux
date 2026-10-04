@@ -7,10 +7,16 @@ mod canvas;
 mod commands;
 mod demo;
 mod export;
+mod files;
 mod panels;
 mod shell;
 mod studio;
 mod theme;
+
+// `files` tests check that an idle frame does not allocate.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();

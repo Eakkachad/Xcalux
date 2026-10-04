@@ -258,7 +258,7 @@ mod tests {
     fn upper_layer_covers_lower() {
         let mut doc = Document::new(64, 64, 72);
         let a = doc.active();
-        let b = doc.add_raster_layer();
+        let b = doc.add_raster_layer().unwrap();
         paint(&mut doc, a, 0, RED);
         paint(&mut doc, b, 0, BLUE);
         paint(&mut doc, a, 1, RED);
@@ -271,7 +271,7 @@ mod tests {
     fn hidden_layer_and_its_clips_are_skipped() {
         let mut doc = Document::new(64, 64, 72);
         let base = doc.active();
-        let clip = doc.add_raster_layer();
+        let clip = doc.add_raster_layer().unwrap();
         paint(&mut doc, base, 0, RED);
         paint(&mut doc, clip, 0, BLUE);
         let mut p = props(&doc, clip);
@@ -287,7 +287,7 @@ mod tests {
     fn clipping_masks_to_base_alpha() {
         let mut doc = Document::new(64, 64, 72);
         let base = doc.active();
-        let clip = doc.add_raster_layer();
+        let clip = doc.add_raster_layer().unwrap();
         paint(&mut doc, base, 0, RED); // base only at x=0
         paint(&mut doc, clip, 0, BLUE);
         paint(&mut doc, clip, 1, BLUE); // outside base
@@ -302,12 +302,12 @@ mod tests {
     #[test]
     fn isolated_folder_opacity_applies_to_group() {
         let mut doc = Document::new(64, 64, 72);
-        let folder = doc.add_folder();
+        let folder = doc.add_folder().unwrap();
         let mut p = props(&doc, folder);
         p.blend = BlendMode::Normal;
         p.opacity = 0.5;
         doc.set_props(folder, p);
-        let inner = doc.add_raster_layer();
+        let inner = doc.add_raster_layer().unwrap();
         doc.move_layer(inner, Some(folder), 0);
         paint(&mut doc, inner, 0, [0, 0, 0, O]);
         let out = flatten(&doc);
@@ -320,8 +320,8 @@ mod tests {
         let mut doc = Document::new(64, 64, 72);
         let bottom = doc.active();
         paint(&mut doc, bottom, 0, RED);
-        let folder = doc.add_folder();
-        let inner = doc.add_raster_layer();
+        let folder = doc.add_folder().unwrap();
+        let inner = doc.add_raster_layer().unwrap();
         doc.move_layer(inner, Some(folder), 0);
         paint(&mut doc, inner, 0, [0, 0, O / 2, O / 2]);
         let mut p = props(&doc, inner);
@@ -332,7 +332,7 @@ mod tests {
         let mut flat = Document::new(64, 64, 72);
         let b = flat.active();
         paint(&mut flat, b, 0, RED);
-        let top = flat.add_raster_layer();
+        let top = flat.add_raster_layer().unwrap();
         paint(&mut flat, top, 0, [0, 0, O / 2, O / 2]);
         let mut p = props(&flat, top);
         p.blend = BlendMode::Multiply;
@@ -361,8 +361,8 @@ mod tests {
     /// `[red, folder{multiply gray}]` over two tiles; returns the folder.
     fn red_under_multiply_folder(doc: &mut Document) -> LayerId {
         let bottom = doc.active();
-        let folder = doc.add_folder();
-        let inner = doc.add_raster_layer();
+        let folder = doc.add_folder().unwrap();
+        let inner = doc.add_raster_layer().unwrap();
         doc.move_layer(inner, Some(folder), 0);
         edit(doc, inner, |p| p.blend = BlendMode::Multiply);
         for x in 0..2 {
@@ -378,7 +378,7 @@ mod tests {
         let mut doc = Document::new(128, 64, 72);
         red_under_multiply_folder(&mut doc);
         // A clip layer whose only tile, at x = 0, is fully erased.
-        let clip = doc.add_raster_layer();
+        let clip = doc.add_raster_layer().unwrap();
         edit(&mut doc, clip, |p| p.clip = true);
         fill(&mut doc, clip, 0, [0; 4]);
         let (with_clip_tile, without) = (render(&doc, 0), render(&doc, 1));
@@ -396,12 +396,12 @@ mod tests {
             let base = nested.active();
             fill(&mut nested, base, 0, RED);
             paint(&mut nested, base, 1, [O / 2, 0, 0, O / 2]);
-            let folder = nested.add_folder();
+            let folder = nested.add_folder().unwrap();
             edit(&mut nested, folder, |p| {
                 p.clip = true;
                 p.opacity = opacity;
             });
-            let inner = nested.add_raster_layer();
+            let inner = nested.add_raster_layer().unwrap();
             nested.move_layer(inner, Some(folder), 0);
             edit(&mut nested, inner, |p| p.blend = BlendMode::Multiply);
             fill(&mut nested, inner, 0, GRAY);
@@ -411,7 +411,7 @@ mod tests {
             let base = direct.active();
             fill(&mut direct, base, 0, RED);
             paint(&mut direct, base, 1, [O / 2, 0, 0, O / 2]);
-            let top = direct.add_raster_layer();
+            let top = direct.add_raster_layer().unwrap();
             edit(&mut direct, top, |p| {
                 p.clip = true;
                 p.opacity = opacity;
@@ -457,8 +457,8 @@ mod tests {
         // `x` or, once `x` clips too, to `base`.
         let mut doc = Document::new(128, 64, 72);
         let base = doc.active();
-        let x = doc.add_raster_layer();
-        let z = doc.add_raster_layer();
+        let x = doc.add_raster_layer().unwrap();
+        let z = doc.add_raster_layer().unwrap();
         edit(&mut doc, z, |p| p.clip = true);
         for t in 0..2 {
             fill(&mut doc, base, t, RED);
@@ -476,7 +476,7 @@ mod tests {
         // renders everywhere, not just where the clip has pixels.
         let mut doc = Document::new(128, 64, 72);
         red_under_multiply_folder(&mut doc);
-        let clip = doc.add_raster_layer();
+        let clip = doc.add_raster_layer().unwrap();
         fill(&mut doc, clip, 0, BLUE);
         let mut cache = Vec::new();
         assert_cache_fresh(&mut doc, &mut cache);

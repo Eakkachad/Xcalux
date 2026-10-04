@@ -2,14 +2,19 @@
 //! all go through [`execute`], so behaviour and labels stay in one place.
 
 use arty_brush::BrushGroup;
+use arty_core::LayerId;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
-use crate::shell::Shell;
+use crate::shell::{FileRequest, Shell};
 use crate::studio::{Studio, Tool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     NewDocument,
+    Open,
+    Save,
+    SaveAs,
+    ToggleAutosave,
     ExportPng,
     Quit,
     Undo,
@@ -22,6 +27,9 @@ pub enum Command {
     DeleteLayer,
     LayerUp,
     LayerDown,
+    /// Move a layer to `index` among the children of `parent` (`None` = top
+    /// level), counted before the move as `Document::move_layer` does.
+    MoveLayer { layer: LayerId, parent: Option<LayerId>, index: usize },
     ToggleClip,
     ToggleLockAlpha,
     ZoomIn,
@@ -44,6 +52,10 @@ impl Command {
     pub fn label(self) -> &'static str {
         match self {
             Command::NewDocument => "New…",
+            Command::Open => "Open…",
+            Command::Save => "Save",
+            Command::SaveAs => "Save As…",
+            Command::ToggleAutosave => "Autosave",
             Command::ExportPng => "Export PNG…",
             Command::Quit => "Quit",
             Command::Undo => "Undo",
@@ -56,6 +68,7 @@ impl Command {
             Command::DeleteLayer => "Delete Layer",
             Command::LayerUp => "Move Layer Up",
             Command::LayerDown => "Move Layer Down",
+            Command::MoveLayer { .. } => "Move Layer",
             Command::ToggleClip => "Clip to Layer Below",
             Command::ToggleLockAlpha => "Lock Transparent Pixels",
             Command::ZoomIn => "Zoom In",
@@ -90,10 +103,13 @@ const NONE: Modifiers = Modifiers::NONE;
 pub const SHORTCUTS: &[(KeyboardShortcut, Command)] = &[
     (sc(CTRL_SHIFT, Key::Z), Command::Redo),
     (sc(CTRL_SHIFT, Key::N), Command::NewLayer),
+    (sc(CTRL_SHIFT, Key::S), Command::SaveAs),
     (sc(CTRL_ALT, Key::Num0), Command::Zoom100),
     (sc(CTRL, Key::Z), Command::Undo),
     (sc(CTRL, Key::Y), Command::Redo),
     (sc(CTRL, Key::N), Command::NewDocument),
+    (sc(CTRL, Key::O), Command::Open),
+    (sc(CTRL, Key::S), Command::Save),
     (sc(CTRL, Key::E), Command::MergeDown),
     (sc(CTRL, Key::Num0), Command::ZoomFit),
     (sc(CTRL, Key::Plus), Command::ZoomIn),
@@ -148,25 +164,34 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
     let origin = shell.canvas_center_px;
     let step = 15f32.to_radians();
     match cmd {
-        Command::NewDocument => shell.new_doc_open = true,
+        Command::NewDocument => shell.file_request = Some(FileRequest::New),
+        Command::Open => shell.file_request = Some(FileRequest::Open),
+        Command::Save => shell.file_request = Some(FileRequest::Save),
+        Command::SaveAs => shell.file_request = Some(FileRequest::SaveAs),
+        Command::ToggleAutosave => shell.autosave.enabled = !shell.autosave.enabled,
         Command::ExportPng => shell.export_requested = true,
         Command::Quit => shell.quit_requested = true,
         Command::Undo => studio.undo(),
         Command::Redo => studio.redo(),
         Command::ClearLayer => studio.clear_active_layer(),
-        Command::NewLayer => studio.edit_structure(|d| {
-            d.add_raster_layer();
-            true
-        }),
-        Command::NewFolder => studio.edit_structure(|d| {
-            d.add_folder();
-            true
-        }),
+        Command::NewLayer => {
+            studio.edit_structure(|d| d.layer_count() < arty_core::MAX_LAYERS && d.add_raster_layer().is_some())
+        }
+        Command::NewFolder => {
+            studio.edit_structure(|d| d.layer_count() < arty_core::MAX_LAYERS && d.add_folder().is_some())
+        }
         Command::DuplicateLayer => studio.edit_structure(|d| d.duplicate_layer(d.active()).is_some()),
         Command::MergeDown => studio.edit_structure(|d| d.merge_down(d.active())),
         Command::DeleteLayer => studio.edit_structure(|d| d.delete_layer(d.active())),
         Command::LayerUp => studio.edit_structure(|d| d.shift_layer(d.active(), 1)),
         Command::LayerDown => studio.edit_structure(|d| d.shift_layer(d.active(), -1)),
+        Command::MoveLayer { layer, parent, index } => studio.edit_structure(|d| {
+            let moved = d.move_layer(layer, parent, index);
+            if moved {
+                d.set_active(layer);
+            }
+            moved
+        }),
         Command::ToggleClip | Command::ToggleLockAlpha => {
             let id = studio.doc.active();
             if let Some(layer) = studio.doc.layer(id) {
@@ -230,6 +255,37 @@ mod tests {
                 .drop_without_applying_deltas();
             }
             assert_eq!(studio.doc.active_layer().raster().unwrap().is_empty(), !modal);
+        }
+    }
+
+    /// The file request each shortcut leaves, with or without a modal open.
+    fn file_request_after(modifiers: Modifiers, key: Key, modal: bool) -> Option<FileRequest> {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::new(Document::new(64, 64, 72));
+        let mut shell = Shell::new(ThemeKind::Dark);
+        let press = Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        for events in [vec![], vec![press]] {
+            ctx.run_ui(RawInput { events, ..Default::default() }, |ui| {
+                handle_shortcuts(ui.ctx(), &mut studio, &mut shell);
+                if modal {
+                    egui::Modal::new(egui::Id::new("test-modal")).show(ui.ctx(), |ui| ui.label("modal"));
+                }
+            })
+            .drop_without_applying_deltas();
+        }
+        shell.file_request
+    }
+
+    #[test]
+    fn file_shortcuts_and_save_as_before_save() {
+        assert_eq!(file_request_after(CTRL_SHIFT, Key::S, false), Some(FileRequest::SaveAs));
+        assert_eq!(file_request_after(CTRL, Key::S, false), Some(FileRequest::Save));
+        assert_eq!(file_request_after(CTRL, Key::O, false), Some(FileRequest::Open));
+        assert_eq!(file_request_after(CTRL, Key::N, false), Some(FileRequest::New));
+        let pos = |cmd| SHORTCUTS.iter().position(|(_, c)| *c == cmd).unwrap();
+        assert!(pos(Command::SaveAs) < pos(Command::Save), "egui matches Shift loosely");
+        for (m, k) in [(CTRL_SHIFT, Key::S), (CTRL, Key::S), (CTRL, Key::O)] {
+            assert_eq!(file_request_after(m, k, true), None, "blocked behind a modal");
         }
     }
 }

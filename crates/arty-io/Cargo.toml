@@ -1,0 +1,48 @@
+[package]
+name = "arty-io"
+description = "ARTY .arty v2 file format: tile codecs, container records, load and save"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arty-core.workspace = true
+ahash.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
+log.workspace = true
+smallvec = "1"
+crc32fast = "1.4"
+getrandom = "0.3"
+# `checked-decode` is mandatory: release builds use `panic = "abort"`, and
+# hostile lz4 input must come back as an error.
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
+serde = { workspace = true, optional = true }
+serde_json = { version = "1", optional = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Threading", "Win32_System_SystemInformation"] }
+
+[features]
+default = ["legacy"]
+# Import of v1 (.arty 0.1) files.
+legacy = ["dep:serde", "dep:serde_json", "dep:flate2"]
+# Exposes `sink::FailAfter` outside this crate's unit tests.
+fault-injection = []
+
+[dev-dependencies]
+arty-testkit = { workspace = true, features = ["synthetic"] }
+# Integration tests simulate crashes through `FailAfter`.
+arty-io = { path = ".", features = ["fault-injection"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "legacy"
+required-features = ["legacy"]
+
+[[example]]
+name = "io_bench"
+required-features = ["legacy"]
