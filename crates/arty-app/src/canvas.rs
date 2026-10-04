@@ -8,7 +8,7 @@
 
 use arty_brush::InputSample;
 use arty_render::{CanvasGpu, CanvasSync, View};
-use egui::{Color32, CursorIcon, Event, PointerButton, Pos2, Rect, Sense, Shape, Stroke, TouchPhase, Vec2};
+use egui::{Color32, CursorIcon, Event, PointerButton, Pos2, Rect, Sense, Shape, Stroke, TouchDeviceId, TouchId, TouchPhase, Vec2};
 
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
@@ -16,17 +16,27 @@ use crate::studio::{Studio, Tool};
 #[derive(Clone, Copy, PartialEq)]
 enum Nav {
     Pan,
-    Rotate { start_angle: f32, start_rotation: f32 },
+    /// `temporary` = entered with the Shift+Space chord, where Shift is
+    /// already held, so Ctrl snaps instead.
+    Rotate { start_angle: f32, start_rotation: f32, temporary: bool },
     Zoom { anchor: Pos2, start_x: f32, start_zoom: f32, moved: bool },
     Pick,
+}
+
+/// Input that owns the brush stroke in progress.
+#[derive(Clone, Copy, PartialEq)]
+enum StrokeSrc {
+    Mouse,
+    /// Pen or finger contact; other contacts can't feed or end the stroke.
+    Touch(TouchDeviceId, TouchId),
 }
 
 pub struct CanvasPane {
     pub gpu: Option<CanvasGpu>,
     pub render: Option<egui_wgpu::RenderState>,
     sync: CanvasSync,
-    /// `Some(is_pen)` while a brush stroke is in progress.
-    stroke: Option<bool>,
+    /// Set while a brush stroke is in progress.
+    stroke: Option<StrokeSrc>,
     nav: Option<Nav>,
     last_input_time: f64,
     events: Vec<Event>,
@@ -108,12 +118,7 @@ impl CanvasPane {
         self.events.clear();
         ui.input(|i| self.events.extend(i.events.iter().cloned()));
         let has_touch = self.events.iter().any(|e| matches!(e, Event::Touch { .. }));
-        let stroke_count = self
-            .events
-            .iter()
-            .filter(|e| matches!(e, Event::Touch { .. } | Event::PointerMoved(_) | Event::PointerButton { .. }))
-            .count()
-            .max(1);
+        let stroke_count = sample_count(&self.events, has_touch, self.stroke == Some(StrokeSrc::Mouse));
         let t0 = if self.last_input_time > 0.0 { self.last_input_time.max(now - frame_dt.max(0.001)) } else { now };
         let mut k = 0usize;
         let mut sample_time = || {
@@ -126,18 +131,19 @@ impl CanvasPane {
             let events = std::mem::take(&mut self.events);
             for e in &events {
                 match *e {
-                    Event::Touch { phase, pos, force, .. } => {
+                    Event::Touch { device_id, id, phase, pos, force } => {
                         let t = sample_time();
                         let pressure = studio.shape_pressure(force.unwrap_or(1.0));
                         let [x, y] = to_doc(&studio.view, pos);
                         let s = InputSample { x, y, pressure, time: t, ..Default::default() };
+                        let owner = self.stroke == Some(StrokeSrc::Touch(device_id, id));
                         match phase {
                             TouchPhase::Start if self.stroke.is_none() && self.nav.is_none() && rect.contains(pos) && hovered
                                 && studio.begin_stroke(s) => {
-                                    self.stroke = Some(true);
+                                    self.stroke = Some(StrokeSrc::Touch(device_id, id));
                                 }
-                            TouchPhase::Move if self.stroke == Some(true) => studio.feed_stroke(s),
-                            TouchPhase::End | TouchPhase::Cancel if self.stroke == Some(true) => {
+                            TouchPhase::Move if owner => studio.feed_stroke(s),
+                            TouchPhase::End | TouchPhase::Cancel if owner => {
                                 studio.feed_stroke(InputSample { pressure: 0.0, ..s });
                                 studio.end_stroke();
                                 self.stroke = None;
@@ -152,15 +158,15 @@ impl CanvasPane {
                         let s = InputSample { x, y, pressure: p, time: t, ..Default::default() };
                         if pressed && self.stroke.is_none() && self.nav.is_none() && hovered {
                             if studio.begin_stroke(s) {
-                                self.stroke = Some(false);
+                                self.stroke = Some(StrokeSrc::Mouse);
                             }
-                        } else if !pressed && self.stroke == Some(false) {
+                        } else if !pressed && self.stroke == Some(StrokeSrc::Mouse) {
                             studio.feed_stroke(s);
                             studio.end_stroke();
                             self.stroke = None;
                         }
                     }
-                    Event::PointerMoved(pos) if !has_touch && self.stroke == Some(false) => {
+                    Event::PointerMoved(pos) if !has_touch && self.stroke == Some(StrokeSrc::Mouse) => {
                         let t = sample_time();
                         let [x, y] = to_doc(&studio.view, pos);
                         let p = studio.input.mouse_pressure;
@@ -171,7 +177,7 @@ impl CanvasPane {
             }
             self.events = events;
             // Release can be lost (e.g. focus change): never leave a stroke hanging.
-            if self.stroke == Some(false) && !ui.input(|i| i.pointer.primary_down()) {
+            if self.stroke == Some(StrokeSrc::Mouse) && !ui.input(|i| i.pointer.primary_down()) {
                 studio.end_stroke();
                 self.stroke = None;
             }
@@ -190,6 +196,7 @@ impl CanvasPane {
                 Tool::Rotate => Some(Nav::Rotate {
                     start_angle: angle_from(rect.center(), press),
                     start_rotation: studio.view.rotation,
+                    temporary: ui.input(|i| i.key_down(egui::Key::Space)),
                 }),
                 Tool::Zoom => Some(Nav::Zoom { anchor: press, start_x: press.x, start_zoom: studio.view.zoom, moved: false }),
                 Tool::Eyedropper => Some(Nav::Pick),
@@ -202,9 +209,9 @@ impl CanvasPane {
                     let d = response.drag_delta();
                     studio.view.pan(origin, [d.x * ppp, d.y * ppp]);
                 }
-                Nav::Rotate { start_angle, start_rotation } => {
+                Nav::Rotate { start_angle, start_rotation, temporary } => {
                     let mut r = *start_rotation + (angle_from(rect.center(), p) - *start_angle);
-                    if ui.input(|i| i.modifiers.shift) {
+                    if ui.input(|i| if *temporary { i.modifiers.command } else { i.modifiers.shift }) {
                         let step = 15f32.to_radians();
                         r = (r / step).round() * step;
                     }
@@ -350,4 +357,168 @@ impl CanvasPane {
 
 fn angle_from(center: Pos2, p: Pos2) -> f32 {
     (p.y - center.y).atan2(p.x - center.x)
+}
+
+/// Number of events in a frame that become brush samples, so sample times
+/// spread evenly over the frame. Mirrors the brush match arms: with pen input
+/// only `Touch` counts (egui-winit adds a simulated pointer event per touch),
+/// otherwise primary button events and moves while the mouse button is down.
+fn sample_count(events: &[Event], has_touch: bool, mouse_stroking: bool) -> usize {
+    let mut down = mouse_stroking;
+    let mut n = 0;
+    for e in events {
+        match e {
+            Event::Touch { .. } => n += 1,
+            Event::PointerButton { button: PointerButton::Primary, pressed, .. } if !has_touch => {
+                down = *pressed;
+                n += 1;
+            }
+            Event::PointerMoved(_) if !has_touch && down => n += 1,
+            _ => {}
+        }
+    }
+    n.max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeKind;
+    use arty_core::{Document, TileCoord};
+    use egui::{Key, Modifiers, RawInput, pos2};
+
+    /// Headless egui frames driving a GPU-less canvas.
+    struct Harness {
+        ctx: egui::Context,
+        pane: CanvasPane,
+        studio: Studio,
+        shell: Shell,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let mut h = Self {
+                ctx: egui::Context::default(),
+                pane: CanvasPane::new(None),
+                studio: Studio::new(Document::new(512, 512, 72)),
+                shell: Shell::new(ThemeKind::Dark),
+                time: 0.0,
+            };
+            h.frame(vec![Event::PointerMoved(pos2(200.0, 150.0))]); // lay out and fit the page
+            h
+        }
+
+        fn frame(&mut self, events: Vec<Event>) {
+            self.time += 1.0 / 60.0;
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let Self { ctx, pane, studio, shell, .. } = self;
+            ctx.run_ui(input, |ui| pane.ui(ui, studio, shell)).drop_without_applying_deltas();
+        }
+
+        fn screen(&self, doc: [f32; 2]) -> Pos2 {
+            let [x, y] = self.studio.view.doc_to_screen(self.shell.canvas_center_px).apply(doc);
+            pos2(x, y)
+        }
+
+        fn painted(&self) -> Vec<TileCoord> {
+            self.studio.doc.active_layer().raster().unwrap().coords().collect()
+        }
+    }
+
+    fn touch(id: u64, phase: TouchPhase, pos: Pos2) -> Event {
+        Event::Touch { device_id: TouchDeviceId(7), id: TouchId(id), phase, pos, force: Some(0.6) }
+    }
+
+    fn primary(pos: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
+        Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers }
+    }
+
+    #[test]
+    fn second_touch_neither_feeds_nor_ends_pen_stroke() {
+        let mut h = Harness::new();
+        let (pen, pen2, finger) = (h.screen([100.0, 100.0]), h.screen([120.0, 100.0]), h.screen([450.0, 450.0]));
+        h.frame(vec![Event::PointerMoved(pen), touch(1, TouchPhase::Start, pen)]);
+        assert!(h.studio.engine.is_stroking());
+        h.frame(vec![
+            touch(2, TouchPhase::Start, finger),
+            touch(1, TouchPhase::Move, pen2),
+            touch(2, TouchPhase::Move, finger + Vec2::new(4.0, 4.0)),
+            touch(2, TouchPhase::End, finger + Vec2::new(4.0, 4.0)),
+        ]);
+        assert!(h.studio.engine.is_stroking(), "another contact's End ended the pen stroke");
+        h.frame(vec![touch(1, TouchPhase::End, pen2)]);
+        assert!(!h.studio.engine.is_stroking());
+        let tiles = h.painted();
+        assert!(tiles.contains(&TileCoord::from_pixel(110, 100)));
+        assert!(tiles.iter().all(|c| c.x <= 2 && c.y <= 2), "another contact's Move was fed into the stroke: {tiles:?}");
+    }
+
+    #[test]
+    fn sample_count_skips_simulated_and_idle_pointer_events() {
+        let m = Modifiers::NONE;
+        let p = pos2(1.0, 1.0);
+        // egui-winit pairs every pen/touch event with a simulated pointer event.
+        let pen = [
+            Event::PointerMoved(p),
+            touch(1, TouchPhase::Move, p),
+            Event::PointerMoved(p),
+            touch(1, TouchPhase::Move, p),
+            primary(p, false, m),
+            touch(1, TouchPhase::End, p),
+        ];
+        assert_eq!(sample_count(&pen, true, false), 3);
+        // Moves only count while the mouse button is down.
+        let mouse = [
+            Event::PointerMoved(p),
+            primary(p, true, m),
+            Event::PointerMoved(p),
+            Event::PointerMoved(p),
+            primary(p, false, m),
+            Event::PointerMoved(p),
+        ];
+        assert_eq!(sample_count(&mouse, false, false), 4);
+        assert_eq!(sample_count(&[Event::PointerMoved(p)], false, true), 1);
+        assert_eq!(sample_count(&[], false, false), 1);
+    }
+
+    /// Drags the view by `deg` around the canvas center, holding `mods`
+    /// (and Space when `space`), and returns the resulting rotation.
+    fn drag_rotate(tool: Tool, space: bool, mods: Modifiers, deg: f32) -> f32 {
+        let mut h = Harness::new();
+        h.studio.select_tool(tool);
+        let c = pos2(h.shell.canvas_center_px[0], h.shell.canvas_center_px[1]);
+        let a = c + Vec2::new(100.0, 0.0);
+        let b = c + Vec2::angled(deg.to_radians()) * 100.0;
+        let mut first = vec![Event::ModifiersChanged(mods)];
+        if space {
+            first.push(Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: mods });
+        }
+        first.push(Event::PointerMoved(a));
+        h.frame(first);
+        h.frame(vec![primary(a, true, mods)]);
+        // Leave the click distance so the drag starts at `a`, then rotate to `b`.
+        h.frame(vec![Event::PointerMoved(a + Vec2::new(10.0, 0.0)), Event::PointerMoved(a)]);
+        h.frame(vec![Event::PointerMoved(b)]);
+        let r = h.studio.view.rotation.to_degrees();
+        h.frame(vec![primary(b, false, mods)]);
+        r
+    }
+
+    #[test]
+    fn temporary_rotate_snaps_only_with_ctrl() {
+        let pen = Tool::Brush(arty_brush::BrushGroup::Pen);
+        let free = drag_rotate(pen, true, Modifiers::SHIFT, 10.0);
+        assert!((free - 10.0).abs() < 0.5, "Shift+Space rotate snapped: {free}");
+        let snapped = drag_rotate(pen, true, Modifiers::SHIFT | Modifiers::COMMAND, 10.0);
+        assert!((snapped - 15.0).abs() < 0.01, "{snapped}");
+        // The Rotate tool itself still snaps with Shift.
+        let tool = drag_rotate(Tool::Rotate, false, Modifiers::SHIFT, 10.0);
+        assert!((tool - 15.0).abs() < 0.01, "{tool}");
+    }
 }

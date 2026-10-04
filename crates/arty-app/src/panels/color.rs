@@ -119,6 +119,17 @@ pub fn wheel_ui(ui: &mut egui::Ui, studio: &mut Studio) {
     sliders(ui, studio);
 }
 
+/// `RRGGBB` with an optional leading `#`; anything else is `None`.
+fn parse_hex(s: &str) -> Option<Rgb> {
+    let s = s.trim();
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(s, 16).ok()?;
+    Some([(v >> 16) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0])
+}
+
 fn marker(painter: &egui::Painter, p: Pos2, r: f32) {
     painter.circle_stroke(p, r, Stroke::new(2.0, Color32::BLACK));
     painter.circle_stroke(p, r - 1.5, Stroke::new(1.5, Color32::WHITE));
@@ -143,14 +154,25 @@ fn sliders(ui: &mut egui::Ui, studio: &mut Studio) {
     }
 
     let c = studio.color.main;
-    let mut hex = format!("{:02X}{:02X}{:02X}", (c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8);
+    // While the hex field has focus it keeps its own text, so partial input
+    // isn't replaced by the current color on the next frame.
+    let edit_id = ui.make_persistent_id("hex-edit");
+    let buf_id = edit_id.with("buf");
     ui.horizontal(|ui| {
         ui.label("#");
-        let r = ui.add(egui::TextEdit::singleline(&mut hex).desired_width(64.0).char_limit(6));
-        if r.changed() && hex.len() == 6
-            && let Ok(v) = u32::from_str_radix(&hex, 16) {
-                studio.set_main_color([(v >> 16) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0]);
+        let mut hex = ui.data(|d| d.get_temp::<String>(buf_id)).unwrap_or_else(|| {
+            format!("{:02X}{:02X}{:02X}", (c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8)
+        });
+        let r = ui.add(egui::TextEdit::singleline(&mut hex).id(edit_id).desired_width(64.0).char_limit(7));
+        if r.changed()
+            && let Some(rgb) = parse_hex(&hex) {
+                studio.set_main_color(rgb);
             }
+        if ui.memory(|m| m.has_focus(edit_id)) {
+            ui.data_mut(|d| d.insert_temp(buf_id, hex));
+        } else {
+            ui.data_mut(|d| d.remove::<String>(buf_id));
+        }
         let (r, _) = ui.allocate_exact_size(Vec2::new(28.0, 18.0), Sense::hover());
         ui.painter().rect_filled(r, CornerRadius::same(3), to32(studio.color.main));
         let (r2, resp) = ui.allocate_exact_size(Vec2::new(28.0, 18.0), Sense::click());
@@ -220,4 +242,46 @@ fn swatch(ui: &egui::Ui, r: Rect, c: Rgb, selected: bool) {
         Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
     };
     p.rect_stroke(r, CornerRadius::same(3), stroke, egui::StrokeKind::Inside);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arty_core::Document;
+    use egui::{Event, Id, Key, Modifiers, RawInput};
+
+    fn frame(ctx: &egui::Context, studio: &mut Studio, events: Vec<Event>) -> Id {
+        let mut id = Id::NULL;
+        ctx.run_ui(RawInput { events, ..Default::default() }, |ui| {
+            id = ui.make_persistent_id("hex-edit");
+            sliders(ui, studio);
+        })
+        .drop_without_applying_deltas();
+        id
+    }
+
+    #[test]
+    fn parse_hex_needs_six_hex_digits() {
+        assert_eq!(parse_hex("#ff0000"), Some([1.0, 0.0, 0.0]));
+        assert_eq!(parse_hex(" 00FF00 "), Some([0.0, 1.0, 0.0]));
+        assert_eq!(parse_hex("3f9"), None);
+        assert_eq!(parse_hex("+3f9bd"), None);
+        assert_eq!(parse_hex("3f9bdz"), None);
+    }
+
+    #[test]
+    fn hex_field_accepts_a_typed_color() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::new(Document::new(64, 64, 72));
+        let id = frame(&ctx, &mut studio, vec![]);
+        ctx.memory_mut(|m| m.request_focus(id));
+        let select_all = Event::Key { key: Key::A, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND };
+        frame(&ctx, &mut studio, vec![select_all]);
+        // A partial entry must survive to the next frame.
+        frame(&ctx, &mut studio, vec![Event::Text("3".into())]);
+        assert_eq!(studio.color.main, [0.0; 3]);
+        frame(&ctx, &mut studio, vec![Event::Text("f9bd9".into())]);
+        let want = parse_hex("3f9bd9").unwrap();
+        assert_eq!(studio.color.main, want);
+    }
 }

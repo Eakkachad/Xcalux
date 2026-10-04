@@ -127,7 +127,8 @@ pub fn shortcut_for(cmd: Command) -> Option<KeyboardShortcut> {
 
 /// Fire commands whose shortcut was pressed this frame.
 pub fn handle_shortcuts(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
-    if ctx.egui_wants_keyboard_input() {
+    // egui::Modal blocks pointer input below it but not the keyboard.
+    if ctx.egui_wants_keyboard_input() || ctx.memory(|m| m.top_modal_layer().is_some()) {
         return;
     }
     let mut fired = Vec::new();
@@ -200,5 +201,35 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::SelectTool(t) => studio.select_tool(t),
         Command::ToggleTheme => shell.toggle_theme(),
         Command::ResetLayout => shell.reset_layout_requested = true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::ThemeKind;
+    use arty_core::{Document, TileCoord};
+    use egui::{Event, RawInput};
+
+    #[test]
+    fn no_shortcuts_behind_a_modal() {
+        let delete = || Event::Key { key: Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: NONE };
+        for modal in [true, false] {
+            let ctx = egui::Context::default();
+            let mut studio = Studio::new(Document::new(64, 64, 72));
+            let mut shell = Shell::new(ThemeKind::Dark);
+            let id = studio.doc.active();
+            studio.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1, 1, 1, 1];
+            for events in [vec![], vec![delete()]] {
+                ctx.run_ui(RawInput { events, ..Default::default() }, |ui| {
+                    handle_shortcuts(ui.ctx(), &mut studio, &mut shell);
+                    if modal {
+                        egui::Modal::new(egui::Id::new("test-modal")).show(ui.ctx(), |ui| ui.label("modal"));
+                    }
+                })
+                .drop_without_applying_deltas();
+            }
+            assert_eq!(studio.doc.active_layer().raster().unwrap().is_empty(), !modal);
+        }
     }
 }

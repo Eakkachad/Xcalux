@@ -230,6 +230,12 @@ impl Studio {
         let mut p = self.presets[i].clone();
         p.name.push_str(" copy");
         self.presets.insert(i + 1, p);
+        // Presets after `i` moved up one slot; keep remembered indices on them.
+        for (_, idx) in &mut self.group_memory {
+            if *idx > i {
+                *idx += 1;
+            }
+        }
         self.preset_rev += 1;
         self.select_preset(i + 1);
     }
@@ -252,12 +258,23 @@ impl Studio {
         self.select_preset(next);
     }
 
+    /// Restore the default sub tools. Always leaves `active_preset` valid,
+    /// even when a non-brush tool is active (it stays active).
     pub fn reset_presets(&mut self) {
+        if self.engine.is_stroking() {
+            return;
+        }
+        let group = match self.tool {
+            Tool::Brush(g) => g,
+            _ => self.preset().group,
+        };
         self.presets = default_presets();
         self.group_memory.clear();
         self.preset_rev += 1;
-        let tool = self.tool;
-        self.select_tool(tool);
+        let idx = self.presets.iter().position(|p| p.group == group).unwrap_or(0);
+        self.active_preset = idx;
+        self.group_memory.push((self.presets[idx].group, idx));
+        self.brush_dirty = true;
     }
 
     pub fn nudge_brush_size(&mut self, grow: bool) {
@@ -449,6 +466,39 @@ mod tests {
         assert!(s.preset().eraser);
         s.select_tool(Tool::Brush(BrushGroup::Pen));
         assert_eq!(s.active_preset, mapping);
+    }
+
+    #[test]
+    fn reset_presets_with_hand_tool_keeps_valid_preset() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let last = s.presets.len() - 1;
+        let group = s.presets[last].group;
+        s.duplicate_preset(last);
+        assert_eq!(s.active_preset, last + 1);
+        s.select_tool(Tool::Hand);
+        s.reset_presets();
+        assert_eq!(s.presets.len(), default_presets().len());
+        assert!(s.active_preset < s.presets.len());
+        assert_eq!(s.preset().group, group);
+        assert_eq!(s.tool, Tool::Hand);
+        s.select_tool(Tool::Brush(group));
+        assert_eq!(s.preset().group, group);
+    }
+
+    #[test]
+    fn duplicate_preset_shifts_remembered_sub_tools() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let first_pen = s.presets.iter().position(|p| p.group == BrushGroup::Pen).unwrap();
+        // A remembered preset that sits after the duplicated one.
+        let pencil = s.presets.iter().rposition(|p| p.group == BrushGroup::Pencil).unwrap();
+        assert!(pencil > first_pen);
+        assert!(s.presets.iter().filter(|p| p.group == BrushGroup::Pencil).count() > 1);
+        let name = s.presets[pencil].name.clone();
+        s.select_preset(pencil);
+        s.select_tool(Tool::Brush(BrushGroup::Pen));
+        s.duplicate_preset(first_pen);
+        s.select_tool(Tool::Brush(BrushGroup::Pencil));
+        assert_eq!(s.preset().name, name);
     }
 
     #[test]

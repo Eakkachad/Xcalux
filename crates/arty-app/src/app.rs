@@ -43,6 +43,10 @@ pub struct ArtyApp {
 impl ArtyApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
+        // Ctrl+= / Ctrl+- / Ctrl+0 zoom the canvas (commands.rs), never the UI.
+        // The option isn't persisted, but a zoom factor saved by an older build is.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        cc.egui_ctx.set_zoom_factor(1.0);
         let saved: Option<Persisted> = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY));
 
         let (_, w, h, dpi) = PAGE_PRESETS[3];
@@ -297,7 +301,8 @@ impl eframe::App for ArtyApp {
             self.dock = panels::default_layout();
             self.shell.reset_layout_requested = false;
         }
-        if !self.canvas.is_busy() {
+        // A modal dialog owns the keyboard: no document shortcuts behind it.
+        if !self.canvas.is_busy() && !self.shell.new_doc_open {
             commands::handle_shortcuts(&ctx, &mut self.studio, &mut self.shell);
         }
         if self.shell.export_requested {
