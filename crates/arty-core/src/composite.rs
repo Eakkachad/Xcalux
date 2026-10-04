@@ -3,9 +3,16 @@
 //! Only dirty tiles are recomposited, each independently, so callers can
 //! fan tiles out across threads (one [`CompositeScratch`] per worker).
 //! Steady-state compositing performs no heap allocation.
+//!
+//! Clipping: a layer with clipping layers stacked on it renders as an
+//! isolated group. A pass-through folder used as a clip base is therefore
+//! composited like a Normal folder (as CSP and Photoshop do), in every tile.
+//! A pass-through *clipping* folder stays pass-through: its children blend
+//! against the clip group they are clipped to.
 
 use crate::blend::{BlendMode, blend_tile, blend_tile_atop, lerp_tile};
 use crate::document::Document;
+use crate::fix15::{self, ONE, ONE_U16};
 use crate::layer::{Layer, LayerContent, LayerId};
 use crate::tile::{TileCoord, TilePixels, clear_tile, fill_tile, new_tile_box};
 
@@ -59,7 +66,13 @@ impl Document {
             }
             if base.props.visible {
                 let clips = &ids[i + 1..end];
-                if clips.iter().any(|id| self.contributes(&self.layers[id], c)) {
+                // Whether a pass-through folder is isolated must not depend
+                // on the tile. Other bases look the same with or without the
+                // group, so skip it where no clip has pixels.
+                let pass_through = base.is_folder() && base.props.blend == BlendMode::PassThrough;
+                if !clips.is_empty()
+                    && (pass_through || clips.iter().any(|id| self.contributes(&self.layers[id], c)))
+                {
                     self.composite_clip_group(base, clips, c, dst, scratch);
                 } else {
                     self.composite_layer(base, c, dst, scratch);
@@ -154,14 +167,28 @@ impl Document {
                         blend_tile_atop(group, t, clip.props.opacity, clip.props.blend);
                     }
                 }
+                LayerContent::Folder { children, .. } if clip.props.blend == BlendMode::PassThrough => {
+                    let op = clip.props.opacity;
+                    if children.is_empty() || op <= 0.0 {
+                        continue;
+                    }
+                    // The children blend against the group itself. Since
+                    // atop(s, d) = αd·over(s, d/αd), composite them over the
+                    // un-premultiplied (opaque) group, then restore its alpha.
+                    let (tmp, rest2) = rest.split_first_mut().expect("scratch depth");
+                    unpremultiply_opaque(tmp, group);
+                    self.composite_stack(children, c, tmp, rest2);
+                    premultiply_by_alpha(tmp, group);
+                    if op >= 1.0 {
+                        **group = **tmp;
+                    } else {
+                        lerp_tile(group, tmp, op);
+                    }
+                }
                 LayerContent::Folder { .. } => {
                     let (tmp, rest2) = rest.split_first_mut().expect("scratch depth");
                     self.render_isolated(clip, c, tmp, rest2);
-                    let mode = match clip.props.blend {
-                        BlendMode::PassThrough => BlendMode::Normal,
-                        m => m,
-                    };
-                    blend_tile_atop(group, tmp, clip.props.opacity, mode);
+                    blend_tile_atop(group, tmp, clip.props.opacity, clip.props.blend);
                 }
             }
         }
@@ -170,6 +197,31 @@ impl Document {
             m => m,
         };
         blend_tile(dst, group, base.props.opacity, mode);
+    }
+}
+
+/// `out = src / αsrc` with alpha 1; fully transparent pixels become
+/// transparent black.
+fn unpremultiply_opaque(out: &mut TilePixels, src: &TilePixels) {
+    for (o, s) in out.as_flattened_mut().iter_mut().zip(src.as_flattened()) {
+        let a = s[3] as u32;
+        *o = if a == 0 {
+            [0; 4]
+        } else {
+            let un = |v: u16| ((v as u32 * ONE + a / 2) / a).min(ONE) as u16;
+            [un(s[0]), un(s[1]), un(s[2]), ONE_U16]
+        };
+    }
+}
+
+/// Scale `px` to the coverage of `alpha`: `rgb·αalpha`, alpha = `αalpha`.
+fn premultiply_by_alpha(px: &mut TilePixels, alpha: &TilePixels) {
+    for (p, m) in px.as_flattened_mut().iter_mut().zip(alpha.as_flattened()) {
+        let a = m[3] as u32;
+        for v in &mut p[..3] {
+            *v = fix15::mul(*v as u32, a) as u16;
+        }
+        p[3] = m[3];
     }
 }
 
@@ -286,5 +338,151 @@ mod tests {
         p.blend = BlendMode::Multiply;
         flat.set_props(top, p);
         assert_eq!(nested, flatten(&flat)[0][0]);
+    }
+
+    const GRAY: [u16; 4] = [O / 2, O / 2, O / 2, O];
+
+    fn fill(doc: &mut Document, id: LayerId, x: i32, color: [u16; 4]) {
+        fill_tile(doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(x, 0)), color);
+    }
+
+    fn edit(doc: &mut Document, id: LayerId, f: impl FnOnce(&mut LayerProps)) {
+        let mut p = props(doc, id);
+        f(&mut p);
+        doc.set_props(id, p);
+    }
+
+    fn render(doc: &Document, x: i32) -> Box<TilePixels> {
+        let mut out = new_tile_box();
+        doc.composite_tile(TileCoord::new(x, 0), &mut out, &mut CompositeScratch::new());
+        out
+    }
+
+    /// `[red, folder{multiply gray}]` over two tiles; returns the folder.
+    fn red_under_multiply_folder(doc: &mut Document) -> LayerId {
+        let bottom = doc.active();
+        let folder = doc.add_folder();
+        let inner = doc.add_raster_layer();
+        doc.move_layer(inner, Some(folder), 0);
+        edit(doc, inner, |p| p.blend = BlendMode::Multiply);
+        for x in 0..2 {
+            fill(doc, bottom, x, RED);
+            fill(doc, inner, x, GRAY);
+        }
+        doc.set_active(folder);
+        folder
+    }
+
+    #[test]
+    fn clipped_pass_through_folder_renders_the_same_in_every_tile() {
+        let mut doc = Document::new(128, 64, 72);
+        red_under_multiply_folder(&mut doc);
+        // A clip layer whose only tile, at x = 0, is fully erased.
+        let clip = doc.add_raster_layer();
+        edit(&mut doc, clip, |p| p.clip = true);
+        fill(&mut doc, clip, 0, [0; 4]);
+        let (with_clip_tile, without) = (render(&doc, 0), render(&doc, 1));
+        assert_eq!(with_clip_tile, without);
+        // Rule: the clip base is isolated, i.e. the multiply child is drawn
+        // over transparency and lands as plain gray.
+        assert_eq!(without[5][5], GRAY);
+    }
+
+    #[test]
+    fn pass_through_clip_folder_blends_children_against_base() {
+        for opacity in [1.0, 0.5] {
+            // base, clip folder { multiply gray }
+            let mut nested = Document::new(64, 64, 72);
+            let base = nested.active();
+            fill(&mut nested, base, 0, RED);
+            paint(&mut nested, base, 1, [O / 2, 0, 0, O / 2]);
+            let folder = nested.add_folder();
+            edit(&mut nested, folder, |p| {
+                p.clip = true;
+                p.opacity = opacity;
+            });
+            let inner = nested.add_raster_layer();
+            nested.move_layer(inner, Some(folder), 0);
+            edit(&mut nested, inner, |p| p.blend = BlendMode::Multiply);
+            fill(&mut nested, inner, 0, GRAY);
+
+            // base, multiply gray clipped directly
+            let mut direct = Document::new(64, 64, 72);
+            let base = direct.active();
+            fill(&mut direct, base, 0, RED);
+            paint(&mut direct, base, 1, [O / 2, 0, 0, O / 2]);
+            let top = direct.add_raster_layer();
+            edit(&mut direct, top, |p| {
+                p.clip = true;
+                p.opacity = opacity;
+                p.blend = BlendMode::Multiply;
+            });
+            fill(&mut direct, top, 0, GRAY);
+
+            let (a, b) = (flatten(&nested), flatten(&direct));
+            if opacity >= 1.0 {
+                assert_eq!(a[5][5], [O / 2, 0, 0, O], "red multiplied by gray");
+            }
+            for (pa, pb) in a.as_flattened().iter().zip(b.as_flattened()) {
+                for ch in 0..4 {
+                    assert!((pa[ch] as i32 - pb[ch] as i32).abs() <= 2, "opacity {opacity}: {pa:?} vs {pb:?}");
+                }
+            }
+        }
+    }
+
+    /// Composite every page tile into `cache`, or only the dirty ones.
+    fn refresh(doc: &mut Document, cache: &mut Vec<Box<TilePixels>>) {
+        let mut dirty = Vec::new();
+        let all = doc.dirty_mut().drain_into(&mut dirty) || cache.is_empty();
+        let n = doc.tiles_wide() as i32;
+        cache.resize_with(n as usize, new_tile_box);
+        for x in 0..n {
+            if all || dirty.contains(&TileCoord::new(x, 0)) {
+                cache[x as usize] = render(doc, x);
+            }
+        }
+    }
+
+    fn assert_cache_fresh(doc: &mut Document, cache: &mut Vec<Box<TilePixels>>) {
+        refresh(doc, cache);
+        for (x, tile) in cache.iter().enumerate() {
+            assert_eq!(**tile, *render(doc, x as i32), "stale tile {x}");
+        }
+    }
+
+    #[test]
+    fn clip_toggle_invalidates_regrouped_tiles() {
+        // Root [base, x, z]: `x` only has pixels in tile 0, `z` clips to
+        // `x` or, once `x` clips too, to `base`.
+        let mut doc = Document::new(128, 64, 72);
+        let base = doc.active();
+        let x = doc.add_raster_layer();
+        let z = doc.add_raster_layer();
+        edit(&mut doc, z, |p| p.clip = true);
+        for t in 0..2 {
+            fill(&mut doc, base, t, RED);
+            fill(&mut doc, z, t, BLUE);
+        }
+        fill(&mut doc, x, 0, GRAY);
+        let mut cache = Vec::new();
+        assert_cache_fresh(&mut doc, &mut cache);
+        for clip in [true, false] {
+            edit(&mut doc, x, |p| p.clip = clip);
+            assert_cache_fresh(&mut doc, &mut cache);
+        }
+
+        // A clip layer above a pass-through folder changes how the folder
+        // renders everywhere, not just where the clip has pixels.
+        let mut doc = Document::new(128, 64, 72);
+        red_under_multiply_folder(&mut doc);
+        let clip = doc.add_raster_layer();
+        fill(&mut doc, clip, 0, BLUE);
+        let mut cache = Vec::new();
+        assert_cache_fresh(&mut doc, &mut cache);
+        for on in [true, false] {
+            edit(&mut doc, clip, |p| p.clip = on);
+            assert_cache_fresh(&mut doc, &mut cache);
+        }
     }
 }

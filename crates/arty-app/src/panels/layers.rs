@@ -52,6 +52,7 @@ fn active_layer_controls(ui: &mut egui::Ui, studio: &mut Studio) {
     let is_folder = layer.is_folder();
     let mut p = layer.props.clone();
     let mut coalesce = false;
+    let (mut drag_started, mut drag_stopped) = (false, false);
 
     ui.horizontal(|ui| {
         let modes: Vec<BlendMode> = if is_folder {
@@ -66,9 +67,14 @@ fn active_layer_controls(ui: &mut egui::Ui, studio: &mut Studio) {
         });
         let mut pct = p.opacity * 100.0;
         let r = ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).max_decimals(0).suffix("%"));
+        // One drag is one undo step. The slider senses drags only, so the
+        // drag starts on the press frame; the release frame reports
+        // `drag_stopped` instead of `dragged` but may still move the value.
+        drag_started = r.drag_started();
+        drag_stopped = r.drag_stopped();
         if r.changed() {
             p.opacity = pct / 100.0;
-            coalesce = r.dragged();
+            coalesce = r.dragged() || drag_stopped;
         }
     });
     ui.horizontal(|ui| {
@@ -78,7 +84,13 @@ fn active_layer_controls(ui: &mut egui::Ui, studio: &mut Studio) {
         }
         toggle(ui, &mut p.locked, icon::LOCK_SIMPLE, "Lock layer");
     });
+    if drag_started {
+        studio.history.end_props_gesture(); // never merge into an earlier entry
+    }
     studio.set_layer_props(id, p, coalesce);
+    if drag_stopped {
+        studio.history.end_props_gesture();
+    }
 }
 
 fn toggle(ui: &mut egui::Ui, value: &mut bool, glyph: &str, tip: &str) {

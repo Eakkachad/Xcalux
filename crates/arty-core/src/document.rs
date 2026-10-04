@@ -2,7 +2,7 @@
 
 use ahash::{AHashMap, AHashSet};
 
-use crate::blend::{BlendMode, blend_tile};
+use crate::blend::{BlendMode, blend_tile, blend_tile_atop};
 use crate::fix15::ONE_U16;
 use crate::grid::TileGrid;
 use crate::layer::{Layer, LayerContent, LayerId, LayerProps};
@@ -183,12 +183,14 @@ impl Document {
         if layer.props == props {
             return None;
         }
+        let clip_changed = layer.props.clip != props.clip;
         let affects_pixels = layer.props.visible != props.visible
             || layer.props.opacity != props.opacity
-            || layer.props.blend != props.blend
-            || layer.props.clip != props.clip;
+            || layer.props.blend != props.blend;
         let old = std::mem::replace(&mut layer.props, props);
-        if affects_pixels {
+        if clip_changed {
+            self.mark_clip_change_dirty(id);
+        } else if affects_pixels {
             self.mark_layer_dirty(id);
         }
         Some(old)
@@ -196,7 +198,7 @@ impl Document {
 
     /// Invalidate every tile a layer (or folder subtree) has pixels in.
     /// Clipped layers only show inside their base's pixels, so this also
-    /// covers clip-group changes.
+    /// covers changes to a clip group's base.
     pub fn mark_layer_dirty(&mut self, id: LayerId) {
         let Some(layer) = self.layers.get(&id) else { return };
         match &layer.content {
@@ -210,6 +212,27 @@ impl Document {
                     self.mark_layer_dirty(c);
                 }
             }
+        }
+    }
+
+    /// Toggling `id`'s clip flag regroups the clip run around it: the clip
+    /// layers directly above it switch base, and the bases on either side
+    /// gain or lose a clip group (which changes how a pass-through folder
+    /// base renders). Invalidate all of them.
+    fn mark_clip_change_dirty(&mut self, id: LayerId) {
+        let Some((parent, index)) = self.location(id) else { return };
+        let siblings = match parent {
+            None => &self.root,
+            Some(p) => self.layers[&p].children().expect("folder"),
+        };
+        let is_clip = |s: &LayerId| self.layers[s].props.clip;
+        // The bottom sibling is always a base, even when flagged as clip.
+        let base = siblings[..index].iter().rposition(|s| !is_clip(s)).or((index > 0).then_some(0));
+        let mut affected: Vec<LayerId> = base.map(|b| siblings[b]).into_iter().collect();
+        affected.push(id);
+        affected.extend(siblings[index + 1..].iter().take_while(|s| is_clip(s)));
+        for l in affected {
+            self.mark_layer_dirty(l);
         }
     }
 
@@ -446,7 +469,10 @@ impl Document {
         new_id
     }
 
-    /// Merge a raster layer into the raster layer directly below it.
+    /// Merge a raster layer into the raster layer directly below it. The
+    /// merged layer keeps the lower layer's settings. A clipping layer merged
+    /// into its base stays clipped to the base's pixels; a normal layer is
+    /// not merged into a clipping layer, which would clip its content.
     pub fn merge_down(&mut self, id: LayerId) -> bool {
         let Some((parent, index)) = self.location(id) else { return false };
         if index == 0 {
@@ -459,15 +485,27 @@ impl Document {
         let (Some(upper), Some(lower)) = (self.layers.get(&id), self.layers.get(&below)) else {
             return false;
         };
-        if upper.is_folder() || lower.is_folder() || lower.props.locked {
+        // The bottom sibling is a base even when flagged as clip.
+        let lower_is_base = !lower.props.clip || index == 1;
+        if upper.is_folder() || lower.is_folder() || lower.props.locked || (!lower_is_base && !upper.props.clip) {
             return false;
         }
+        // Upper clips to lower: apply it the way the clip group does.
+        // (Two clip layers on the same base merge with plain Over.)
+        let clip_to_lower = upper.props.clip && lower_is_base;
         let upper = upper.clone();
         let src = upper.raster().expect("raster");
         let opacity = if upper.props.visible { upper.props.opacity } else { 0.0 };
         let dst = self.layers.get_mut(&below).and_then(|l| l.raster_mut()).expect("raster");
         for (c, tile) in src.iter() {
-            blend_tile(dst.get_mut_or_create(c), tile, opacity, upper.props.blend);
+            if clip_to_lower {
+                // Nothing shows where the base has no pixels.
+                if dst.get(c).is_some() {
+                    blend_tile_atop(dst.get_mut_or_create(c), tile, opacity, upper.props.blend);
+                }
+            } else {
+                blend_tile(dst.get_mut_or_create(c), tile, opacity, upper.props.blend);
+            }
         }
         self.siblings_mut(parent).remove(index);
         self.layers.remove(&id);
@@ -553,6 +591,66 @@ mod tests {
             ga.get_ref(TileCoord::new(0, 0)).unwrap(),
             gb.get_ref(TileCoord::new(0, 0)).unwrap()
         ));
+    }
+
+    fn set_clip(doc: &mut Document, id: LayerId) {
+        let mut p = doc.layer(id).unwrap().props.clone();
+        p.clip = true;
+        doc.set_props(id, p);
+    }
+
+    fn put(doc: &mut Document, id: LayerId, c: TileCoord, x: usize, v: [u16; 4]) {
+        doc.paint_target(id).unwrap().0.get_mut_or_create(c)[0][x] = v;
+    }
+
+    fn flatten(doc: &Document, c: TileCoord) -> Box<crate::tile::TilePixels> {
+        let mut out = crate::tile::new_tile_box();
+        doc.composite_tile(c, &mut out, &mut crate::composite::CompositeScratch::new());
+        out
+    }
+
+    #[test]
+    fn merge_down_keeps_clipping() {
+        const O: u16 = ONE_U16;
+        let (t0, t1) = (TileCoord::new(0, 0), TileCoord::new(1, 0));
+        let mut doc = Document::new(128, 64, 72);
+        let base = doc.active();
+        put(&mut doc, base, t0, 0, [O, 0, 0, O]);
+        // Two clip layers spilling past the base, also into a tile the base
+        // does not have.
+        let first = doc.add_raster_layer();
+        let second = doc.add_raster_layer();
+        for (id, v) in [(first, [0, 0, O, O]), (second, [0, O / 2, 0, O / 2])] {
+            set_clip(&mut doc, id);
+            for x in 0..2 {
+                put(&mut doc, id, t0, x, v);
+            }
+            put(&mut doc, id, t1, 0, v);
+        }
+        let before = (flatten(&doc, t0), flatten(&doc, t1));
+
+        assert!(doc.merge_down(second), "clip into clip on the same base");
+        assert!(doc.merge_down(first), "clip into its base");
+        assert_eq!(doc.root(), &[base]);
+        let after = (flatten(&doc, t0), flatten(&doc, t1));
+        assert_eq!(after.1, before.1);
+        for (a, b) in after.0.as_flattened().iter().zip(before.0.as_flattened()) {
+            for ch in 0..4 {
+                assert!((a[ch] as i32 - b[ch] as i32).abs() <= 2, "{a:?} vs {b:?}");
+            }
+        }
+        assert!(doc.layer(base).unwrap().raster().unwrap().get(t1).is_none());
+    }
+
+    #[test]
+    fn merge_down_refuses_normal_layer_into_clip_layer() {
+        let mut doc = Document::new(64, 64, 72);
+        let _base = doc.active();
+        let clip = doc.add_raster_layer();
+        set_clip(&mut doc, clip);
+        let top = doc.add_raster_layer();
+        assert!(!doc.merge_down(top));
+        assert!(doc.layer(top).is_some());
     }
 
     #[test]

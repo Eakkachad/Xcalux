@@ -388,6 +388,10 @@ impl Studio {
         }
     }
 
+    /// Change a layer's settings with undo. `coalesce` merges the change into
+    /// the undo step of the gesture in progress (see `History::push_props`);
+    /// callers mark the gesture's start and end with
+    /// `history.end_props_gesture()`.
     pub fn set_layer_props(&mut self, id: LayerId, props: LayerProps, coalesce: bool) {
         if let Some(before) = self.doc.set_props(id, props) {
             self.history.push_props(id, before, coalesce);
