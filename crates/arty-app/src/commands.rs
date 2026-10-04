@@ -155,12 +155,18 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::Redo => studio.redo(),
         Command::ClearLayer => studio.clear_active_layer(),
         Command::NewLayer => studio.edit_structure(|d| {
-            d.add_raster_layer();
-            true
+            let room = d.layer_count() < arty_core::MAX_LAYERS;
+            if room {
+                d.add_raster_layer();
+            }
+            room
         }),
         Command::NewFolder => studio.edit_structure(|d| {
-            d.add_folder();
-            true
+            let room = d.layer_count() < arty_core::MAX_LAYERS;
+            if room {
+                d.add_folder();
+            }
+            room
         }),
         Command::DuplicateLayer => studio.edit_structure(|d| d.duplicate_layer(d.active()).is_some()),
         Command::MergeDown => studio.edit_structure(|d| d.merge_down(d.active())),

@@ -8,6 +8,13 @@ use crate::grid::TileGrid;
 use crate::layer::{Layer, LayerContent, LayerId, LayerProps};
 use crate::tile::{TILE_SIZE, TileCoord};
 
+/// Deepest allowed folder nesting (top level = 1). `move_layer` refuses
+/// moves past it and file readers reject deeper trees.
+pub const MAX_TREE_DEPTH: usize = 64;
+
+/// Most layers (rasters and folders) a document may hold.
+pub const MAX_LAYERS: usize = 65_535;
+
 /// Tiles whose composite is out of date.
 #[derive(Default)]
 pub struct DirtyRegion {
@@ -67,6 +74,48 @@ pub struct Document {
     pub(crate) next_id: u32,
     pub(crate) active: LayerId,
     pub(crate) dirty: DirtyRegion,
+    /// Bumped by every content change (pixels, props, paper, structure).
+    revision: u64,
+    /// Bumped by view-only changes (active layer, folder expansion).
+    view_revision: u64,
+}
+
+/// Everything needed to rebuild a document, e.g. by a file reader.
+/// [`Document::from_parts`] validates it.
+pub struct DocParts {
+    pub width: u32,
+    pub height: u32,
+    pub dpi: u32,
+    pub paper: Option<[u16; 4]>,
+    /// Every layer, in any order. Folder children are ordered bottom → top.
+    pub layers: Vec<Layer>,
+    /// Top-level layers, bottom → top.
+    pub root: Vec<LayerId>,
+    pub active: LayerId,
+    pub next_id: u32,
+}
+
+/// Why [`Document::from_parts`] refused a layer tree.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TreeError {
+    ZeroId,
+    DuplicateId(LayerId),
+    /// The root or a folder lists an id with no layer.
+    MissingLayer(LayerId),
+    MultipleParents(LayerId),
+    /// A raster layer named as a parent. `DocParts` cannot express this
+    /// (rasters have no children); readers that store parent ids report it.
+    ChildOfRaster(LayerId),
+    /// A layer not reachable from the root (including folder cycles).
+    Orphan(LayerId),
+    TooDeep,
+    TooManyLayers,
+    NoRasterLayer,
+    BadActive,
+    /// `next_id` not above every layer id.
+    BadNextId,
+    /// Zero width, height or dpi.
+    BadPage,
 }
 
 pub const PAPER_WHITE: [u16; 4] = [ONE_U16; 4];
@@ -84,6 +133,8 @@ impl Document {
             next_id: 1,
             active: LayerId(0),
             dirty: DirtyRegion::default(),
+            revision: 0,
+            view_revision: 0,
         };
         let id = doc.alloc_id();
         doc.layers.insert(
@@ -113,8 +164,126 @@ impl Document {
     }
 
     pub fn set_paper(&mut self, paper: Option<[u16; 4]>) {
-        self.paper = paper;
-        self.dirty.mark_all();
+        if self.paper != paper {
+            self.paper = paper;
+            self.dirty.mark_all();
+            self.bump();
+        }
+    }
+
+    /// Content revision: changes whenever the document's saved content may
+    /// have changed. Compare against a remembered value to detect edits.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// View revision: changes with the active layer or folder expansion.
+    pub fn view_revision(&self) -> u64 {
+        self.view_revision
+    }
+
+    pub(crate) fn bump(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn bump_view(&mut self) {
+        self.view_revision = self.view_revision.wrapping_add(1);
+    }
+
+    /// The id the next new layer will get.
+    pub fn next_layer_id(&self) -> u32 {
+        self.next_id
+    }
+
+    /// A copy for saving off the UI thread. O(layers): pixel maps and tiles
+    /// are `Arc`-shared and copied on the next write. The copy has a clean
+    /// dirty set and the same revisions.
+    pub fn snapshot(&self) -> Document {
+        Document {
+            width: self.width,
+            height: self.height,
+            dpi: self.dpi,
+            paper: self.paper,
+            layers: self.layers.clone(),
+            root: self.root.clone(),
+            next_id: self.next_id,
+            active: self.active,
+            dirty: DirtyRegion::default(),
+            revision: self.revision,
+            view_revision: self.view_revision,
+        }
+    }
+
+    /// Build a document from untrusted parts, checking every invariant the
+    /// compositor and tree code rely on (they index layers by id).
+    pub fn from_parts(p: DocParts) -> Result<Document, TreeError> {
+        if p.width == 0 || p.height == 0 || p.dpi == 0 {
+            return Err(TreeError::BadPage);
+        }
+        if p.layers.len() > MAX_LAYERS {
+            return Err(TreeError::TooManyLayers);
+        }
+        let mut index = AHashMap::with_capacity(p.layers.len());
+        for (i, l) in p.layers.iter().enumerate() {
+            if l.id.0 == 0 {
+                return Err(TreeError::ZeroId);
+            }
+            if index.insert(l.id, i).is_some() {
+                return Err(TreeError::DuplicateId(l.id));
+            }
+        }
+        // Each referenced id exists and is referenced once.
+        let mut parented = AHashSet::with_capacity(p.layers.len());
+        let children = p.layers.iter().filter_map(Layer::children).flatten();
+        for &c in p.root.iter().chain(children) {
+            if !index.contains_key(&c) {
+                return Err(TreeError::MissingLayer(c));
+            }
+            if !parented.insert(c) {
+                return Err(TreeError::MultipleParents(c));
+            }
+        }
+        // With single parents every layer is visited at most once, and any
+        // layer the walk misses is an orphan (or part of a folder cycle).
+        let mut reached = vec![false; p.layers.len()];
+        let mut stack: Vec<(LayerId, usize)> = p.root.iter().map(|&id| (id, 1)).collect();
+        while let Some((id, depth)) = stack.pop() {
+            if depth > MAX_TREE_DEPTH {
+                return Err(TreeError::TooDeep);
+            }
+            let i = index[&id];
+            reached[i] = true;
+            if let Some(children) = p.layers[i].children() {
+                stack.extend(children.iter().map(|&c| (c, depth + 1)));
+            }
+        }
+        if let Some(i) = reached.iter().position(|r| !r) {
+            return Err(TreeError::Orphan(p.layers[i].id));
+        }
+        if p.layers.iter().all(Layer::is_folder) {
+            return Err(TreeError::NoRasterLayer);
+        }
+        if !index.contains_key(&p.active) {
+            return Err(TreeError::BadActive);
+        }
+        if p.layers.iter().any(|l| l.id.0 >= p.next_id) {
+            return Err(TreeError::BadNextId);
+        }
+        let mut doc = Document {
+            width: p.width,
+            height: p.height,
+            dpi: p.dpi,
+            paper: p.paper,
+            layers: p.layers.into_iter().map(|l| (l.id, l)).collect(),
+            root: p.root,
+            next_id: p.next_id,
+            active: p.active,
+            dirty: DirtyRegion::default(),
+            revision: 0,
+            view_revision: 0,
+        };
+        doc.dirty.mark_all();
+        Ok(doc)
     }
 
     /// Number of tile columns / rows covering the page.
@@ -146,8 +315,9 @@ impl Document {
     }
 
     pub fn set_active(&mut self, id: LayerId) {
-        if self.layers.contains_key(&id) {
+        if self.active != id && self.layers.contains_key(&id) {
             self.active = id;
+            self.bump_view();
         }
     }
 
@@ -170,6 +340,8 @@ impl Document {
     pub fn paint_target(&mut self, id: LayerId) -> Option<(&mut TileGrid, &mut DirtyRegion)> {
         let layer = self.layers.get_mut(&id)?;
         let grid = layer.raster_mut()?;
+        // `self.bump()` would conflict with the layer borrow.
+        self.revision = self.revision.wrapping_add(1);
         Some((grid, &mut self.dirty))
     }
 
@@ -188,6 +360,7 @@ impl Document {
             || layer.props.opacity != props.opacity
             || layer.props.blend != props.blend;
         let old = std::mem::replace(&mut layer.props, props);
+        self.bump();
         if clip_changed {
             self.mark_clip_change_dirty(id);
         } else if affects_pixels {
@@ -237,8 +410,11 @@ impl Document {
     }
 
     pub fn set_folder_expanded(&mut self, id: LayerId, open: bool) {
-        if let Some(Layer { content: LayerContent::Folder { expanded, .. }, .. }) = self.layers.get_mut(&id) {
+        if let Some(Layer { content: LayerContent::Folder { expanded, .. }, .. }) = self.layers.get_mut(&id)
+            && *expanded != open
+        {
             *expanded = open;
+            self.bump_view();
         }
     }
 
@@ -321,6 +497,7 @@ impl Document {
             next_id: std::mem::replace(&mut self.next_id, snap.next_id),
         };
         self.dirty.mark_all();
+        self.bump();
         old
     }
 
@@ -333,6 +510,7 @@ impl Document {
         siblings.insert(at, id);
         self.active = id;
         self.dirty.mark_all();
+        self.bump();
         id
     }
 
@@ -392,6 +570,7 @@ impl Document {
             };
         }
         self.dirty.mark_all();
+        self.bump();
         true
     }
 
@@ -405,6 +584,7 @@ impl Document {
         }
         siblings.swap(index, target as usize);
         self.dirty.mark_all();
+        self.bump();
         true
     }
 
@@ -423,12 +603,36 @@ impl Document {
         false
     }
 
-    /// Move `id` to `index` within `parent` (`None` = top level).
+    /// Nesting depth of a layer (top level = 1).
+    fn depth_of(&self, id: LayerId) -> usize {
+        let mut depth = 1;
+        let mut at = id;
+        while let Some((Some(parent), _)) = self.location(at) {
+            depth += 1;
+            at = parent;
+        }
+        depth
+    }
+
+    /// Levels a subtree occupies (a raster or empty folder = 1).
+    fn subtree_height(&self, id: LayerId) -> usize {
+        match self.layers.get(&id).and_then(|l| l.children()) {
+            Some(children) => 1 + children.iter().map(|&c| self.subtree_height(c)).max().unwrap_or(0),
+            None => 1,
+        }
+    }
+
+    /// Move `id` to `index` within `parent` (`None` = top level). Refuses
+    /// moves that would nest deeper than [`MAX_TREE_DEPTH`].
     pub fn move_layer(&mut self, id: LayerId, parent: Option<LayerId>, index: usize) -> bool {
         if let Some(p) = parent
-            && (p == id || self.is_descendant(id, p) || !self.layers.get(&p).is_some_and(|l| l.is_folder())) {
-                return false;
-            }
+            && (p == id
+                || self.is_descendant(id, p)
+                || !self.layers.get(&p).is_some_and(|l| l.is_folder())
+                || self.depth_of(p) + self.subtree_height(id) > MAX_TREE_DEPTH)
+        {
+            return false;
+        }
         let Some((old_parent, old_index)) = self.location(id) else { return false };
         self.siblings_mut(old_parent).remove(old_index);
         let siblings = self.siblings_mut(parent);
@@ -438,12 +642,19 @@ impl Document {
         }
         siblings.insert(at.min(siblings.len()), id);
         self.dirty.mark_all();
+        self.bump();
         true
     }
 
     /// Duplicate a layer (deep for folders). Pixels are shared until edited.
+    /// Refuses when the copy would exceed [`MAX_LAYERS`].
     pub fn duplicate_layer(&mut self, id: LayerId) -> Option<LayerId> {
         let (parent, index) = self.location(id)?;
+        let mut subtree = Vec::new();
+        self.collect_subtree(id, &mut subtree);
+        if self.layers.len() + subtree.len() > MAX_LAYERS {
+            return None;
+        }
         let copy = self.clone_subtree(id);
         if let Some(l) = self.layers.get_mut(&copy) {
             l.props.name.push_str(" copy");
@@ -452,6 +663,7 @@ impl Document {
         siblings.insert(index + 1, copy);
         self.active = copy;
         self.dirty.mark_all();
+        self.bump();
         Some(copy)
     }
 
@@ -511,6 +723,7 @@ impl Document {
         self.layers.remove(&id);
         self.active = below;
         self.dirty.mark_all();
+        self.bump();
         true
     }
 
@@ -664,5 +877,230 @@ mod tests {
         d.mark_all();
         assert!(d.drain_into(&mut out));
         assert!(out.is_empty());
+    }
+
+    fn raster(id: u32) -> Layer {
+        Layer { id: LayerId(id), props: LayerProps::named("r"), content: LayerContent::Raster(TileGrid::new()) }
+    }
+
+    fn folder(id: u32, children: &[u32]) -> Layer {
+        Layer {
+            id: LayerId(id),
+            props: LayerProps::named("f"),
+            content: LayerContent::Folder { children: children.iter().map(|&c| LayerId(c)).collect(), expanded: true },
+        }
+    }
+
+    /// Raster 1 and folder 2 { raster 3 } at the top level.
+    fn parts() -> DocParts {
+        DocParts {
+            width: 100,
+            height: 50,
+            dpi: 350,
+            paper: None,
+            layers: vec![raster(1), folder(2, &[3]), raster(3)],
+            root: vec![LayerId(1), LayerId(2)],
+            active: LayerId(3),
+            next_id: 7,
+        }
+    }
+
+    #[test]
+    fn from_parts_accepts_a_valid_tree() {
+        let doc = Document::from_parts(parts()).unwrap();
+        assert_eq!(doc.root(), &[LayerId(1), LayerId(2)]);
+        assert_eq!(doc.layer(LayerId(2)).unwrap().children(), Some(&[LayerId(3)][..]));
+        assert_eq!((doc.active(), doc.next_layer_id(), doc.paper()), (LayerId(3), 7, None));
+        assert_eq!(doc.tree_depth(), 2);
+        let mut dirty = doc.dirty;
+        assert!(dirty.drain_into(&mut Vec::new()), "a loaded document is all dirty");
+    }
+
+    #[test]
+    fn from_parts_rejects_every_tree_error() {
+        type Case = (TreeError, fn(&mut DocParts));
+        let cases: [Case; 14] = [
+            (TreeError::BadPage, |p| p.width = 0),
+            (TreeError::BadPage, |p| p.dpi = 0),
+            (TreeError::ZeroId, |p| p.layers[0].id = LayerId(0)),
+            (TreeError::DuplicateId(LayerId(3)), |p| p.layers.push(raster(3))),
+            (TreeError::MissingLayer(LayerId(9)), |p| p.root.push(LayerId(9))),
+            (TreeError::MultipleParents(LayerId(3)), |p| p.root.push(LayerId(3))),
+            (TreeError::MultipleParents(LayerId(3)), |p| p.layers[1] = folder(2, &[3, 3])),
+            (TreeError::Orphan(LayerId(4)), |p| p.layers.push(raster(4))),
+            // A folder cycle detached from the root: 4 → 5 → 4.
+            (TreeError::Orphan(LayerId(4)), |p| p.layers.extend([folder(4, &[5]), folder(5, &[4])])),
+            (TreeError::MultipleParents(LayerId(2)), |p| p.layers[1] = folder(2, &[2, 3])),
+            // A folder holding itself, detached from the root.
+            (TreeError::Orphan(LayerId(2)), |p| {
+                p.layers[1] = folder(2, &[2, 3]);
+                p.root.pop();
+            }),
+            (TreeError::NoRasterLayer, |p| {
+                p.layers = vec![folder(1, &[])];
+                p.root = vec![LayerId(1)];
+                p.active = LayerId(1);
+            }),
+            (TreeError::BadActive, |p| p.active = LayerId(6)),
+            (TreeError::BadNextId, |p| p.next_id = 3),
+        ];
+        for (want, edit) in cases {
+            let mut p = parts();
+            edit(&mut p);
+            assert_eq!(Document::from_parts(p).err(), Some(want.clone()), "{want:?}");
+        }
+
+        // Depth: a chain of folders 1 → 2 → … ending in a raster.
+        let chain = |levels: u32| {
+            let mut layers: Vec<Layer> = (1..levels).map(|i| folder(i, &[i + 1])).collect();
+            layers.push(raster(levels));
+            DocParts { layers, root: vec![LayerId(1)], active: LayerId(levels), next_id: levels + 1, ..parts() }
+        };
+        assert!(Document::from_parts(chain(MAX_TREE_DEPTH as u32)).is_ok());
+        assert_eq!(Document::from_parts(chain(MAX_TREE_DEPTH as u32 + 1)).err(), Some(TreeError::TooDeep));
+
+        let many = DocParts {
+            layers: (1..=MAX_LAYERS as u32 + 1).map(raster).collect(),
+            root: (1..=MAX_LAYERS as u32 + 1).map(LayerId).collect(),
+            active: LayerId(1),
+            next_id: MAX_LAYERS as u32 + 2,
+            ..parts()
+        };
+        assert_eq!(Document::from_parts(many).err(), Some(TreeError::TooManyLayers));
+    }
+
+    #[test]
+    fn move_layer_refuses_nesting_past_max_depth() {
+        let mut doc = Document::new(64, 64, 72);
+        let first = doc.active();
+        let mut parent = None;
+        let mut deepest = None;
+        for _ in 0..MAX_TREE_DEPTH - 1 {
+            let f = doc.add_folder();
+            assert!(doc.move_layer(f, parent, 0));
+            parent = Some(f);
+            deepest = Some(f);
+        }
+        assert_eq!(doc.tree_depth(), MAX_TREE_DEPTH - 1);
+        // A raster fits at depth 64; a folder holding a raster does not.
+        let r = doc.add_raster_layer();
+        assert!(doc.move_layer(r, deepest, 0));
+        assert_eq!(doc.tree_depth(), MAX_TREE_DEPTH);
+        doc.set_active(first);
+        let f = doc.add_folder();
+        let inner = doc.add_raster_layer();
+        assert!(doc.move_layer(inner, Some(f), 0));
+        assert!(!doc.move_layer(f, deepest, 0));
+        assert_eq!(doc.tree_depth(), MAX_TREE_DEPTH);
+    }
+
+    #[test]
+    fn revision_bumps_on_content_and_view_changes() {
+        use crate::history::{Edit, History};
+
+        let mut doc = Document::new(64, 64, 72);
+        let base = doc.active();
+        let mut h = History::default();
+        let mut last = (doc.revision(), doc.view_revision());
+        // Each step asserts which counter moved: (content, view).
+        let mut step = |doc: &mut Document, what: &str, want: (bool, bool), f: &mut dyn FnMut(&mut Document)| {
+            f(doc);
+            let now = (doc.revision(), doc.view_revision());
+            assert_eq!((now.0 != last.0, now.1 != last.1), want, "{what}");
+            last = now;
+        };
+        let content = (true, false);
+        let view = (false, true);
+        let none = (false, false);
+
+        step(&mut doc, "paint_target", content, &mut |d| {
+            d.paint_target(base).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1; 4];
+        });
+        step(&mut doc, "dirty_mut", none, &mut |d| d.dirty_mut().mark_all());
+        step(&mut doc, "mark_layer_dirty", none, &mut |d| d.mark_layer_dirty(base));
+        step(&mut doc, "set_paper same", none, &mut |d| d.set_paper(Some(PAPER_WHITE)));
+        step(&mut doc, "set_paper", content, &mut |d| d.set_paper(None));
+        let mut p = doc.layer(base).unwrap().props.clone();
+        step(&mut doc, "set_props same", none, &mut |d| assert!(d.set_props(base, p.clone()).is_none()));
+        p.opacity = 0.5;
+        step(&mut doc, "set_props", content, &mut |d| assert!(d.set_props(base, p.clone()).is_some()));
+        let mut top = base;
+        step(&mut doc, "add_raster_layer", content, &mut |d| top = d.add_raster_layer());
+        let mut f = base;
+        step(&mut doc, "add_folder", content, &mut |d| f = d.add_folder());
+        step(&mut doc, "set_active", view, &mut |d| d.set_active(base));
+        step(&mut doc, "set_active same", none, &mut |d| d.set_active(base));
+        step(&mut doc, "set_active missing", none, &mut |d| d.set_active(LayerId(999)));
+        step(&mut doc, "collapse", view, &mut |d| d.set_folder_expanded(f, false));
+        step(&mut doc, "collapse same", none, &mut |d| d.set_folder_expanded(f, false));
+        step(&mut doc, "move_layer", content, &mut |d| assert!(d.move_layer(top, Some(f), 0)));
+        step(&mut doc, "move_layer refused", none, &mut |d| assert!(!d.move_layer(f, Some(f), 0)));
+        step(&mut doc, "shift_layer", content, &mut |d| assert!(d.shift_layer(f, -1)));
+        step(&mut doc, "shift_layer refused", none, &mut |d| assert!(!d.shift_layer(base, 5)));
+        let mut copy = base;
+        step(&mut doc, "duplicate_layer", content, &mut |d| copy = d.duplicate_layer(base).unwrap());
+        step(&mut doc, "merge_down", content, &mut |d| assert!(d.merge_down(copy)));
+        step(&mut doc, "merge_down refused", none, &mut |d| assert!(!d.merge_down(f)));
+        step(&mut doc, "clear_layer", content, &mut |d| assert!(d.clear_layer(base)));
+        step(&mut doc, "delete_layer", content, &mut |d| assert!(d.delete_layer(top)));
+        step(&mut doc, "delete_layer refused", none, &mut |d| assert!(!d.delete_layer(LayerId(999))));
+        step(&mut doc, "snapshot", none, &mut |d| {
+            let s = d.snapshot();
+            assert_eq!((s.revision(), s.view_revision()), (d.revision(), d.view_revision()));
+        });
+
+        // History apply paths: pixels, props and structure, both directions.
+        h.push(Edit::Pixels { layer: base, tiles: vec![(TileCoord::new(3, 3), None)] });
+        let before = doc.layer(base).unwrap().props.clone();
+        let mut changed = before.clone();
+        changed.visible = false;
+        doc.set_props(base, changed);
+        h.push(Edit::Props { layer: base, props: before });
+        let snap = doc.snapshot_structure();
+        doc.add_raster_layer();
+        h.push(Edit::Structure(Box::new(snap)));
+        step(&mut doc, "setup", content, &mut |_| ());
+        for what in ["undo structure", "undo props", "undo pixels"] {
+            step(&mut doc, what, content, &mut |d| {
+                h.undo(d);
+            });
+        }
+        for what in ["redo pixels", "redo props", "redo structure"] {
+            step(&mut doc, what, content, &mut |d| {
+                h.redo(d);
+            });
+        }
+    }
+
+    #[test]
+    fn snapshot_shares_maps_until_written() {
+        let mut doc = Document::new(64, 64, 72);
+        let id = doc.active();
+        let c = TileCoord::new(0, 0);
+        put(&mut doc, id, c, 0, [5; 4]);
+        let snap = doc.snapshot();
+        assert!(snap.dirty.is_clean());
+        let grid = |d: &Document| d.layer(id).unwrap().raster().unwrap().clone();
+        assert!(grid(&doc).shares_storage(&grid(&snap)));
+
+        put(&mut doc, id, c, 0, [7; 4]);
+        put(&mut doc, id, TileCoord::new(1, 0), 0, [7; 4]);
+        assert!(!grid(&doc).shares_storage(&grid(&snap)), "first write copies the map");
+        let tile = |d: &Document, c| d.layer(id).unwrap().raster().unwrap().get(c).map(|t| t[0][0]);
+        assert_eq!(tile(&snap, c), Some([5; 4]));
+        assert_eq!(tile(&snap, TileCoord::new(1, 0)), None);
+        assert_eq!(tile(&doc, c), Some([7; 4]));
+    }
+
+    #[test]
+    fn duplicate_refuses_past_max_layers() {
+        let mut doc = Document::new(64, 64, 72);
+        let id = doc.active();
+        let layers = (2..=MAX_LAYERS as u32).map(raster);
+        doc.layers.extend(layers.map(|l| (l.id, l)));
+        doc.root.extend((2..=MAX_LAYERS as u32).map(LayerId));
+        doc.next_id = MAX_LAYERS as u32 + 1;
+        assert_eq!(doc.layer_count(), MAX_LAYERS);
+        assert!(doc.duplicate_layer(id).is_none());
     }
 }
