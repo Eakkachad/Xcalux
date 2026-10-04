@@ -8,6 +8,9 @@ pub mod gpu;
 pub mod upload;
 pub mod view;
 
+#[cfg(test)]
+mod render_tests;
+
 pub use gpu::CanvasGpu;
 pub use upload::{CanvasSync, SyncStats};
 pub use view::{Affine2, View, ZOOM_STEPS};
