@@ -2,10 +2,11 @@
 //! in the background, one at a time, so the UI never waits on the disk.
 //!
 //! The UI sends [`Request`]s and polls [`IoEvent`]s each frame. Before each
-//! job the thread drains its queue, and an autosave is dropped when a later
-//! autosave or save is queued: only the newest state matters. Saves are
-//! never dropped. Snapshots are dropped on this thread, so freeing tiles
-//! never stalls a frame.
+//! job the thread drains its queue, and an autosave is dropped (answered
+//! with `Failed { error: Cancelled }`) when a later autosave or save is
+//! queued: only the newest state matters. Saves are never dropped.
+//! Snapshots are dropped on this thread, so freeing tiles never stalls a
+//! frame.
 //!
 //! Classify, encode, decode and verify run on a dedicated rayon pool of
 //! `cores - 1` threads at below-normal priority, so the compositor (global
@@ -58,7 +59,7 @@ pub enum Request {
     /// Write `doc` to the recovery file.
     Autosave { doc: Box<Document>, ex: SaveExtras, rev: u64 },
     /// Load a recovery file found by a scan. It is deleted after the first
-    /// autosave of the new session.
+    /// autosave or save of the new session.
     Restore { entry: RecoveryEntry },
     /// Delete a recovery file found by a scan.
     Discard { entry: RecoveryEntry },
@@ -235,7 +236,7 @@ struct Worker {
     load: LoadOptions,
     session: Session,
     /// The recovery file the document was restored from, with its lock;
-    /// deleted after the first autosave.
+    /// deleted after the first autosave or save.
     restored: Option<(PathBuf, SessionLock)>,
 }
 
@@ -253,7 +254,11 @@ impl Worker {
             let Some((ticket, req)) = queue.pop_front() else { continue };
             let superseded = matches!(req, Request::Autosave { .. }) && queue.iter().any(|(_, r)| r.is_save());
             let stop = matches!(req, Request::Shutdown);
-            if !superseded {
+            if superseded {
+                // Answered all the same: the app tracks its autosave in
+                // flight by ticket.
+                self.emit(IoEvent::Failed { ticket, op: "autosave", error: IoError::Cancelled });
+            } else {
                 self.begin(ticket);
                 self.handle(ticket, req);
                 self.begin(0);
@@ -302,6 +307,16 @@ impl Worker {
         }
     }
 
+    /// Delete the restored recovery file once another file holds its state.
+    fn drop_restored(&mut self) {
+        if let Some((path, lock)) = self.restored.take() {
+            if let Err(e) = discard_files(&path) {
+                log::warn!("{e}");
+            }
+            lock.release();
+        }
+    }
+
     fn handle(&mut self, ticket: Ticket, req: Request) {
         let shared = self.shared.clone();
         let p = &shared.progress;
@@ -324,19 +339,18 @@ impl Worker {
             Request::Save { doc, ex, path, rev, overwrite_external } => {
                 let o = SaveOptions::default();
                 match self.session.save_main(&doc, &ex, &path, overwrite_external, &o, &self.pool, p) {
-                    Ok(stats) => self.emit(IoEvent::Saved { ticket, path, rev, stats }),
+                    Ok(stats) => {
+                        // The main file holds the restored state now.
+                        self.drop_restored();
+                        self.emit(IoEvent::Saved { ticket, path, rev, stats });
+                    }
                     Err(e) => self.failed(ticket, "save", e),
                 }
             }
             Request::Autosave { doc, ex, rev } => match self.session.autosave(&doc, &ex, rev, &self.pool, p) {
                 Ok(stats) => {
                     // The new recovery file holds the restored state now.
-                    if let Some((path, lock)) = self.restored.take() {
-                        if let Err(e) = discard_files(&path) {
-                            log::warn!("{e}");
-                        }
-                        lock.release();
-                    }
+                    self.drop_restored();
                     self.emit(IoEvent::Autosaved { ticket, rev, stats });
                 }
                 Err(e) => self.failed(ticket, "autosave", e),

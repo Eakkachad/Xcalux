@@ -9,10 +9,10 @@ static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 fn composite_tile_is_allocation_free() {
     let mut doc = Document::new(256, 256, 350);
     let base = doc.active();
-    let folder = doc.add_folder();
-    let clip = doc.add_raster_layer();
+    let folder = doc.add_folder().unwrap();
+    let clip = doc.add_raster_layer().unwrap();
     doc.move_layer(clip, Some(folder), 0);
-    let inner_base = doc.add_raster_layer();
+    let inner_base = doc.add_raster_layer().unwrap();
     doc.move_layer(inner_base, Some(folder), 0);
     let mut p = doc.layer(clip).unwrap().props.clone();
     p.clip = true;

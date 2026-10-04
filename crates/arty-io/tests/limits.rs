@@ -125,6 +125,30 @@ fn fixable_problems_load_with_warnings() {
 }
 
 #[test]
+fn next_id_leaves_room_for_fresh_ids() {
+    let r = LAYER_KIND_RASTER;
+    let file = |next_id, top| {
+        Raw::new().finish(DocFields { next_id, ..doc(2) }, &[layer(1, 0, r), layer(top, 0, r)], |_| {})
+    };
+    // next_id near u32::MAX is lowered to just above the largest id.
+    let mut l = load(&file(u32::MAX, 2)).unwrap();
+    assert!(l.warnings.contains(&LoadWarning::FixedNextId));
+    assert_eq!(l.doc.next_layer_id(), 3);
+    assert_eq!(l.doc.add_raster_layer(), Some(LayerId(3)));
+
+    // A layer id that leaves no room is refused, whatever next_id says.
+    let high = arty_core::MAX_NEXT_ID;
+    for next_id in [2, u32::MAX] {
+        let refused = matches!(load(&file(next_id, high)), Err(IoError::InvalidTree(TreeError::BadNextId)));
+        assert!(refused, "next_id {next_id}");
+    }
+    // The largest id allowed still loads; no fresh id is left.
+    let mut l = load(&file(high, high - 1)).unwrap();
+    assert_eq!(l.doc.next_layer_id(), high);
+    assert_eq!(l.doc.add_raster_layer(), None);
+}
+
+#[test]
 fn pixels_are_sanitized_with_a_warning() {
     let mut t = new_tile_box();
     t[3][5] = [0x10, 0x20, 0x30, 0xFFFF];

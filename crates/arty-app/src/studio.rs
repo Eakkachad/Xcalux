@@ -627,7 +627,7 @@ mod tests {
         assert!(props.0 == cleared.0 && props.1 == cleared.1 && props.2 > cleared.2, "props bump only the tree");
 
         s.edit_structure(|d| {
-            d.add_raster_layer();
+            d.add_raster_layer().unwrap();
             true
         });
         let added = e(&s);

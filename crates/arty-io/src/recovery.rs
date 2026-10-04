@@ -8,6 +8,8 @@
 //! - a file whose main file has the same `session` and a revision at least
 //!   as new is obsolete (a crash between the save's rename and the clean
 //!   commit) and is deleted;
+//! - a file whose newest manifest is damaged is described by the commit
+//!   Restore falls back to, and always offered;
 //! - anything else is offered to the user;
 //! - unlocked `.saving~` temp files and stale lock files are deleted.
 
@@ -228,7 +230,11 @@ impl RecoveryDir {
             }
         };
         let meta = |key: &str| info.meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
-        if meta("clean") == Some("1") {
+        // Described by an earlier commit than the damaged newest one, whose
+        // META may say clean or be older than the main file while the
+        // newest state was not: offered, never deleted.
+        let fell_back = info.fell_back_from.is_some();
+        if meta("clean") == Some("1") && !fell_back {
             return Verdict::Clean;
         }
         let rev = meta("rev").and_then(|r| r.parse::<u64>().ok()).unwrap_or(0);
@@ -236,6 +242,7 @@ impl RecoveryDir {
         // A crash after the save's rename and before the clean commit: the
         // main file holds this session's state or a newer one.
         if let Some(src) = &src
+            && !fell_back
             && let Ok(main) = read_info(src)
         {
             let main_meta = |key: &str| main.meta.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());

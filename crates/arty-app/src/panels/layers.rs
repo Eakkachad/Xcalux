@@ -415,17 +415,12 @@ fn drop_target(doc: &Document, slots: &[Slot], y: f32) -> Option<Drop> {
     })
 }
 
-/// Whether moving `id` there is allowed and changes anything. A folder
-/// can't go into itself or its own subfolders.
+/// Whether moving `id` there is allowed (as `Document::move_layer` rules:
+/// not into itself or its own subfolders, nor past the depth limit) and
+/// changes anything.
 fn accepts(doc: &Document, id: LayerId, parent: Option<LayerId>, index: usize) -> bool {
-    let mut up = parent;
-    while let Some(folder) = up {
-        if folder == id {
-            return false;
-        }
-        up = doc.location(folder).and_then(|(p, _)| p);
-    }
-    doc.location(id).is_some_and(|(old_parent, old)| old_parent != parent || (index != old && index != old + 1))
+    doc.can_move(id, parent)
+        && doc.location(id).is_some_and(|(old_parent, old)| old_parent != parent || (index != old && index != old + 1))
 }
 
 /// Drop indicator, auto-scroll and the drop itself while a layer is being
@@ -499,12 +494,12 @@ mod tests {
     fn tree() -> (Document, [LayerId; 5]) {
         let mut doc = Document::new(64, 64, 72);
         let a = doc.active();
-        let folder = doc.add_folder();
-        let c1 = doc.add_raster_layer();
+        let folder = doc.add_folder().unwrap();
+        let c1 = doc.add_raster_layer().unwrap();
         doc.move_layer(c1, Some(folder), 0);
-        let c2 = doc.add_raster_layer();
+        let c2 = doc.add_raster_layer().unwrap();
         doc.set_active(folder);
-        let b = doc.add_raster_layer();
+        let b = doc.add_raster_layer().unwrap();
         (doc, [a, folder, c1, c2, b])
     }
 
@@ -553,7 +548,7 @@ mod tests {
     #[test]
     fn refuses_folder_into_itself_and_moves_that_change_nothing() {
         let (mut doc, [a, folder, c1, _, b]) = tree();
-        let sub = doc.add_folder();
+        let sub = doc.add_folder().unwrap();
         doc.move_layer(sub, Some(folder), 0);
         assert!(!accepts(&doc, folder, Some(folder), 0));
         assert!(!accepts(&doc, folder, Some(sub), 0), "into its own subfolder");
@@ -563,6 +558,25 @@ mod tests {
         assert!(accepts(&doc, b, None, 1));
         assert!(accepts(&doc, c1, None, 0));
         assert!(accepts(&doc, a, Some(folder), 3));
+    }
+
+    #[test]
+    fn refuses_drops_past_the_depth_limit() {
+        let (mut doc, [_, folder, _, _, b]) = tree();
+        // A chain of folders down to the deepest level that holds a raster.
+        let mut deepest = folder;
+        for _ in 2..arty_core::MAX_TREE_DEPTH {
+            let f = doc.add_folder().unwrap();
+            assert!(doc.move_layer(f, Some(deepest), 0));
+            deepest = f;
+        }
+        assert!(accepts(&doc, b, Some(deepest), 0), "a raster still fits");
+        doc.set_active(b);
+        let sub = doc.add_folder().unwrap();
+        let inner = doc.add_raster_layer().unwrap();
+        assert!(doc.move_layer(inner, Some(sub), 0));
+        assert!(!accepts(&doc, sub, Some(deepest), 0), "its content would nest one level too deep");
+        assert!(!doc.move_layer(sub, Some(deepest), 0));
     }
 
     struct Harness {
@@ -578,7 +592,7 @@ mod tests {
             let mut studio = Studio::new(Document::new(64, 64, 72));
             let bottom = studio.doc.active();
             studio.edit_structure(|d| {
-                d.add_raster_layer();
+                d.add_raster_layer().unwrap();
                 true
             });
             let top = studio.doc.active();
@@ -637,7 +651,7 @@ mod tests {
         let (mut h, bottom, top) = Harness::new();
         h.studio.doc.set_active(bottom);
         h.studio.edit_structure(|d| {
-            d.add_folder();
+            d.add_folder().unwrap();
             true
         });
         let folder = h.studio.doc.active();

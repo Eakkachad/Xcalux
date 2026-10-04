@@ -15,6 +15,11 @@ pub const MAX_TREE_DEPTH: usize = 64;
 /// Most layers (rasters and folders) a document may hold.
 pub const MAX_LAYERS: usize = 65_535;
 
+/// Largest `next_id` a document may hold. Fresh ids stay below it, so
+/// allocating one never overflows; layer adds are refused once it is
+/// reached.
+pub const MAX_NEXT_ID: u32 = u32::MAX - MAX_LAYERS as u32;
+
 /// Tiles whose composite is out of date.
 #[derive(Default)]
 pub struct DirtyRegion {
@@ -112,7 +117,7 @@ pub enum TreeError {
     TooManyLayers,
     NoRasterLayer,
     BadActive,
-    /// `next_id` not above every layer id.
+    /// `next_id` not above every layer id, or above [`MAX_NEXT_ID`].
     BadNextId,
     /// Zero width, height or dpi.
     BadPage,
@@ -130,13 +135,13 @@ impl Document {
             paper: Some(PAPER_WHITE),
             layers: AHashMap::default(),
             root: Vec::new(),
-            next_id: 1,
+            next_id: 2,
             active: LayerId(0),
             dirty: DirtyRegion::default(),
             revision: 0,
             view_revision: 0,
         };
-        let id = doc.alloc_id();
+        let id = LayerId(1);
         doc.layers.insert(
             id,
             Layer { id, props: LayerProps::named("Layer 1"), content: LayerContent::Raster(TileGrid::new()) },
@@ -266,7 +271,7 @@ impl Document {
         if !index.contains_key(&p.active) {
             return Err(TreeError::BadActive);
         }
-        if p.layers.iter().any(|l| l.id.0 >= p.next_id) {
+        if p.next_id > MAX_NEXT_ID || p.layers.iter().any(|l| l.id.0 >= p.next_id) {
             return Err(TreeError::BadNextId);
         }
         let mut doc = Document {
@@ -452,10 +457,14 @@ impl Document {
 
     // ----- tree structure -------------------------------------------------
 
-    fn alloc_id(&mut self) -> LayerId {
+    /// A fresh id, or `None` once ids reach [`MAX_NEXT_ID`].
+    fn alloc_id(&mut self) -> Option<LayerId> {
+        if self.next_id >= MAX_NEXT_ID {
+            return None;
+        }
         let id = LayerId(self.next_id);
         self.next_id += 1;
-        id
+        Some(id)
     }
 
     /// `(parent, index)` of a layer; `parent == None` means top level.
@@ -514,21 +523,27 @@ impl Document {
         id
     }
 
-    pub fn add_raster_layer(&mut self) -> LayerId {
-        let id = self.alloc_id();
+    /// `None` when layer ids are used up.
+    pub fn add_raster_layer(&mut self) -> Option<LayerId> {
+        let id = self.alloc_id()?;
         let name = format!("Layer {}", id.0);
-        self.insert_above_active(Layer { id, props: LayerProps::named(name), content: LayerContent::Raster(TileGrid::new()) })
+        Some(self.insert_above_active(Layer {
+            id,
+            props: LayerProps::named(name),
+            content: LayerContent::Raster(TileGrid::new()),
+        }))
     }
 
-    pub fn add_folder(&mut self) -> LayerId {
-        let id = self.alloc_id();
+    /// `None` when layer ids are used up.
+    pub fn add_folder(&mut self) -> Option<LayerId> {
+        let id = self.alloc_id()?;
         let mut props = LayerProps::named(format!("Folder {}", id.0));
         props.blend = BlendMode::PassThrough;
-        self.insert_above_active(Layer {
+        Some(self.insert_above_active(Layer {
             id,
             props,
             content: LayerContent::Folder { children: Vec::new(), expanded: true },
-        })
+        }))
     }
 
     fn count_rasters(&self) -> usize {
@@ -622,15 +637,22 @@ impl Document {
         }
     }
 
+    /// Whether `id` may move into `parent` (`None` = top level): not into
+    /// itself or its own subfolders, only into folders, and no deeper than
+    /// [`MAX_TREE_DEPTH`].
+    pub fn can_move(&self, id: LayerId, parent: Option<LayerId>) -> bool {
+        parent.is_none_or(|p| {
+            p != id
+                && !self.is_descendant(id, p)
+                && self.layers.get(&p).is_some_and(|l| l.is_folder())
+                && self.depth_of(p) + self.subtree_height(id) <= MAX_TREE_DEPTH
+        })
+    }
+
     /// Move `id` to `index` within `parent` (`None` = top level). Refuses
-    /// moves that would nest deeper than [`MAX_TREE_DEPTH`].
+    /// what [`Self::can_move`] refuses.
     pub fn move_layer(&mut self, id: LayerId, parent: Option<LayerId>, index: usize) -> bool {
-        if let Some(p) = parent
-            && (p == id
-                || self.is_descendant(id, p)
-                || !self.layers.get(&p).is_some_and(|l| l.is_folder())
-                || self.depth_of(p) + self.subtree_height(id) > MAX_TREE_DEPTH)
-        {
+        if !self.can_move(id, parent) {
             return false;
         }
         let Some((old_parent, old_index)) = self.location(id) else { return false };
@@ -647,12 +669,14 @@ impl Document {
     }
 
     /// Duplicate a layer (deep for folders). Pixels are shared until edited.
-    /// Refuses when the copy would exceed [`MAX_LAYERS`].
+    /// Refuses when the copy would exceed [`MAX_LAYERS`] or use up the ids.
     pub fn duplicate_layer(&mut self, id: LayerId) -> Option<LayerId> {
         let (parent, index) = self.location(id)?;
         let mut subtree = Vec::new();
         self.collect_subtree(id, &mut subtree);
-        if self.layers.len() + subtree.len() > MAX_LAYERS {
+        if self.layers.len() + subtree.len() > MAX_LAYERS
+            || self.next_id as usize + subtree.len() > MAX_NEXT_ID as usize
+        {
             return None;
         }
         let copy = self.clone_subtree(id);
@@ -669,7 +693,7 @@ impl Document {
 
     fn clone_subtree(&mut self, id: LayerId) -> LayerId {
         let src = self.layers[&id].clone();
-        let new_id = self.alloc_id();
+        let new_id = self.alloc_id().expect("room checked by duplicate_layer");
         let content = match src.content {
             LayerContent::Raster(g) => LayerContent::Raster(g),
             LayerContent::Folder { children, expanded } => LayerContent::Folder {
@@ -756,11 +780,11 @@ mod tests {
     fn add_inserts_above_active_and_panel_rows_are_top_down() {
         let mut doc = Document::new(64, 64, 72);
         let first = doc.active();
-        let second = doc.add_raster_layer();
-        let folder = doc.add_folder();
+        let second = doc.add_raster_layer().unwrap();
+        let folder = doc.add_folder().unwrap();
         let inner = {
             doc.set_active(folder);
-            doc.add_raster_layer()
+            doc.add_raster_layer().unwrap()
         };
         // `inner` went above the folder (siblings), not inside it.
         assert_eq!(doc.root(), &[first, second, folder, inner]);
@@ -775,8 +799,8 @@ mod tests {
     #[test]
     fn folder_cannot_move_into_itself() {
         let mut doc = Document::new(64, 64, 72);
-        let outer = doc.add_folder();
-        let inner = doc.add_folder();
+        let outer = doc.add_folder().unwrap();
+        let inner = doc.add_folder().unwrap();
         assert!(doc.move_layer(inner, Some(outer), 0));
         assert!(!doc.move_layer(outer, Some(inner), 0));
         assert!(!doc.move_layer(outer, Some(outer), 0));
@@ -787,7 +811,7 @@ mod tests {
         let mut doc = Document::new(64, 64, 72);
         let only = doc.active();
         assert!(!doc.delete_layer(only));
-        let other = doc.add_raster_layer();
+        let other = doc.add_raster_layer().unwrap();
         assert!(doc.delete_layer(other));
         assert_eq!(doc.active(), only);
     }
@@ -831,8 +855,8 @@ mod tests {
         put(&mut doc, base, t0, 0, [O, 0, 0, O]);
         // Two clip layers spilling past the base, also into a tile the base
         // does not have.
-        let first = doc.add_raster_layer();
-        let second = doc.add_raster_layer();
+        let first = doc.add_raster_layer().unwrap();
+        let second = doc.add_raster_layer().unwrap();
         for (id, v) in [(first, [0, 0, O, O]), (second, [0, O / 2, 0, O / 2])] {
             set_clip(&mut doc, id);
             for x in 0..2 {
@@ -859,9 +883,9 @@ mod tests {
     fn merge_down_refuses_normal_layer_into_clip_layer() {
         let mut doc = Document::new(64, 64, 72);
         let _base = doc.active();
-        let clip = doc.add_raster_layer();
+        let clip = doc.add_raster_layer().unwrap();
         set_clip(&mut doc, clip);
-        let top = doc.add_raster_layer();
+        let top = doc.add_raster_layer().unwrap();
         assert!(!doc.merge_down(top));
         assert!(doc.layer(top).is_some());
     }
@@ -919,7 +943,7 @@ mod tests {
     #[test]
     fn from_parts_rejects_every_tree_error() {
         type Case = (TreeError, fn(&mut DocParts));
-        let cases: [Case; 14] = [
+        let cases: [Case; 16] = [
             (TreeError::BadPage, |p| p.width = 0),
             (TreeError::BadPage, |p| p.dpi = 0),
             (TreeError::ZeroId, |p| p.layers[0].id = LayerId(0)),
@@ -943,6 +967,8 @@ mod tests {
             }),
             (TreeError::BadActive, |p| p.active = LayerId(6)),
             (TreeError::BadNextId, |p| p.next_id = 3),
+            (TreeError::BadNextId, |p| p.next_id = u32::MAX),
+            (TreeError::BadNextId, |p| p.next_id = MAX_NEXT_ID + 1),
         ];
         for (want, edit) in cases {
             let mut p = parts();
@@ -976,19 +1002,19 @@ mod tests {
         let mut parent = None;
         let mut deepest = None;
         for _ in 0..MAX_TREE_DEPTH - 1 {
-            let f = doc.add_folder();
+            let f = doc.add_folder().unwrap();
             assert!(doc.move_layer(f, parent, 0));
             parent = Some(f);
             deepest = Some(f);
         }
         assert_eq!(doc.tree_depth(), MAX_TREE_DEPTH - 1);
         // A raster fits at depth 64; a folder holding a raster does not.
-        let r = doc.add_raster_layer();
+        let r = doc.add_raster_layer().unwrap();
         assert!(doc.move_layer(r, deepest, 0));
         assert_eq!(doc.tree_depth(), MAX_TREE_DEPTH);
         doc.set_active(first);
-        let f = doc.add_folder();
-        let inner = doc.add_raster_layer();
+        let f = doc.add_folder().unwrap();
+        let inner = doc.add_raster_layer().unwrap();
         assert!(doc.move_layer(inner, Some(f), 0));
         assert!(!doc.move_layer(f, deepest, 0));
         assert_eq!(doc.tree_depth(), MAX_TREE_DEPTH);
@@ -1025,9 +1051,9 @@ mod tests {
         p.opacity = 0.5;
         step(&mut doc, "set_props", content, &mut |d| assert!(d.set_props(base, p.clone()).is_some()));
         let mut top = base;
-        step(&mut doc, "add_raster_layer", content, &mut |d| top = d.add_raster_layer());
+        step(&mut doc, "add_raster_layer", content, &mut |d| top = d.add_raster_layer().unwrap());
         let mut f = base;
-        step(&mut doc, "add_folder", content, &mut |d| f = d.add_folder());
+        step(&mut doc, "add_folder", content, &mut |d| f = d.add_folder().unwrap());
         step(&mut doc, "set_active", view, &mut |d| d.set_active(base));
         step(&mut doc, "set_active same", none, &mut |d| d.set_active(base));
         step(&mut doc, "set_active missing", none, &mut |d| d.set_active(LayerId(999)));
@@ -1057,7 +1083,7 @@ mod tests {
         doc.set_props(base, changed);
         h.push(Edit::Props { layer: base, props: before });
         let snap = doc.snapshot_structure();
-        doc.add_raster_layer();
+        doc.add_raster_layer().unwrap();
         h.push(Edit::Structure(Box::new(snap)));
         step(&mut doc, "setup", content, &mut |_| ());
         for what in ["undo structure", "undo props", "undo pixels"] {
@@ -1102,5 +1128,53 @@ mod tests {
         doc.next_id = MAX_LAYERS as u32 + 1;
         assert_eq!(doc.layer_count(), MAX_LAYERS);
         assert!(doc.duplicate_layer(id).is_none());
+    }
+
+    #[test]
+    fn adds_refuse_once_ids_run_out() {
+        // The highest next_id a file may carry: every fresh id still fits.
+        let p = DocParts { next_id: MAX_NEXT_ID - 2, ..parts() };
+        let mut doc = Document::from_parts(p).unwrap();
+        let folder = LayerId(2);
+        assert!(doc.add_raster_layer().is_some());
+        assert!(doc.duplicate_layer(folder).is_none(), "a folder copy needs two ids, one is left");
+        assert_eq!(doc.add_folder(), Some(LayerId(MAX_NEXT_ID - 1)));
+        assert_eq!(doc.next_layer_id(), MAX_NEXT_ID);
+        let count = doc.layer_count();
+        assert_eq!(doc.add_raster_layer(), None);
+        assert_eq!(doc.add_folder(), None);
+        assert_eq!(doc.duplicate_layer(LayerId(1)), None);
+        assert_eq!(doc.layer_count(), count, "no id was reused");
+    }
+
+    #[test]
+    fn can_move_matches_move_layer() {
+        let mut doc = Document::new(64, 64, 72);
+        let mut deepest = None;
+        for _ in 0..MAX_TREE_DEPTH - 2 {
+            let f = doc.add_folder().unwrap();
+            assert!(doc.move_layer(f, deepest, 0));
+            deepest = Some(f);
+        }
+        doc.set_active(doc.root()[0]);
+        let outer = doc.add_folder().unwrap();
+        let inner = doc.add_folder().unwrap();
+        assert!(doc.move_layer(inner, Some(outer), 0));
+        let r = doc.add_raster_layer().unwrap();
+        assert!(doc.move_layer(r, Some(inner), 0));
+        // outer is three levels high: one too many below depth 62.
+        for (id, parent, ok) in [
+            (outer, deepest, false),
+            (inner, deepest, true),
+            (outer, Some(inner), false),
+            (outer, Some(outer), false),
+            (outer, Some(r), false),
+            (outer, None, true),
+        ] {
+            assert_eq!(doc.can_move(id, parent), ok, "{id:?} into {parent:?}");
+            let snap = doc.snapshot_structure();
+            assert_eq!(doc.move_layer(id, parent, 0), ok);
+            doc.swap_structure(snap);
+        }
     }
 }

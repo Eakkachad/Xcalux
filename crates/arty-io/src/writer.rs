@@ -1318,14 +1318,27 @@ fn sniff_path(path: &Path) -> Option<FileKind> {
 }
 
 /// Copy a v1 file to `<stem>.v1-backup.arty` (or `-1`, `-2`, … when taken)
-/// before it is replaced. A copy, so the original never goes missing.
+/// before it is replaced. A copy, so the original never goes missing; it is
+/// on disk before this returns, so the rename that follows cannot outlive
+/// it in a power cut.
 fn backup_v1(path: &Path) -> Result<(), IoError> {
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     for i in 0..1000 {
         let name = if i == 0 { format!("{stem}.v1-backup.arty") } else { format!("{stem}.v1-backup-{i}.arty") };
         let backup = path.with_file_name(name);
         if !backup.exists() {
-            return fs::copy(path, &backup).map(|_| ()).map_err(IoError::io("back up the v1 file"));
+            fs::copy(path, &backup).map_err(IoError::io("back up the v1 file"))?;
+            // Write access: Windows flushes only through a writable handle.
+            // The copy keeps a read-only original's permissions; Unix can
+            // sync it read-only.
+            OpenOptions::new()
+                .write(true)
+                .open(&backup)
+                .or_else(|_| File::open(&backup))
+                .and_then(|f| f.sync_all())
+                .map_err(IoError::io("back up the v1 file"))?;
+            sync_dir(&backup);
+            return Ok(());
         }
     }
     Err(IoError::Io { op: "back up the v1 file", source: io::Error::from(io::ErrorKind::AlreadyExists) })

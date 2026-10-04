@@ -135,11 +135,23 @@ pub struct ThumbCache {
     generation: u64,
     /// Structure epoch at which deleted layers were last dropped.
     pruned_at: u64,
+    /// `Studio::doc_epoch` the entries belong to.
+    doc_epoch: u64,
     order: Vec<LayerId>,
     scratch: CompositeScratch,
 }
 
 impl ThumbCache {
+    /// Forget every thumbnail when the document is replaced. Called every
+    /// frame, not only while the Layers tab is drawn: raster sources would
+    /// otherwise keep the old document's tiles alive.
+    pub fn sync_doc(&mut self, doc_epoch: u64) {
+        if self.doc_epoch != doc_epoch {
+            self.entries.clear();
+            self.doc_epoch = doc_epoch;
+        }
+    }
+
     /// Bring thumbnails up to date within this frame's budget. Does nothing
     /// during a stroke. Returns `true` when work is left for later frames.
     pub fn update(&mut self, studio: &Studio, size: [usize; 2]) -> bool {
@@ -199,6 +211,8 @@ impl ThumbCache {
                 let mini = self.mirror(doc, children, size);
                 let t = self.entries.entry(id).or_insert_with(|| Thumb::new(size, page));
                 mini.composite_tile(TileCoord::new(0, 0), Arc::make_mut(&mut t.px), &mut self.scratch);
+                // An id that was a raster layer must not pin its old tiles.
+                t.source = None;
                 (t.size, t.page, t.seen, t.upload) = (size, page, seen, true);
             }
         }
@@ -213,7 +227,7 @@ impl ThumbCache {
     fn mirror(&self, doc: &Document, children: &[LayerId], size: [usize; 2]) -> Document {
         let mut mini = Document::new(size[0] as u32, size[1] as u32, doc.dpi());
         mini.set_paper(None);
-        let group = mini.add_folder();
+        let group = mini.add_folder().expect("a new document has free ids");
         let mut props = mini.layer(group).expect("just added").props.clone();
         props.blend = BlendMode::Normal;
         mini.set_props(group, props);
@@ -225,6 +239,7 @@ impl ThumbCache {
         for (i, id) in ids.iter().enumerate() {
             let Some(layer) = doc.layer(*id) else { continue };
             let copy = if layer.is_folder() { mini.add_folder() } else { mini.add_raster_layer() };
+            let Some(copy) = copy else { continue };
             mini.move_layer(copy, Some(parent), i);
             mini.set_props(copy, layer.props.clone());
             match &layer.content {
@@ -418,7 +433,7 @@ mod tests {
     fn only_changed_layers_are_refiltered() {
         let mut s = Studio::new(Document::new(64, 64, 72));
         let a = s.doc.active();
-        s.edit_structure(|d| d.add_raster_layer() != a);
+        s.edit_structure(|d| d.add_raster_layer().unwrap() != a);
         let b = s.doc.active();
         let mut cache = ThumbCache::default();
         assert_eq!(refresh(&mut cache, &s), 2, "first pass fills every layer");
@@ -437,7 +452,7 @@ mod tests {
         assert_eq!(refresh(&mut cache, &s), 0, "moving keeps pixels");
 
         s.edit_structure(|d| {
-            d.add_raster_layer();
+            d.add_raster_layer().unwrap();
             true
         });
         assert_eq!(refresh(&mut cache, &s), 1, "only the new layer");
@@ -471,11 +486,29 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_document_frees_its_tiles_without_a_refresh() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let id = s.doc.active();
+        fill_tile(s.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0)), RED);
+        let mut cache = ThumbCache::default();
+        cache.sync_doc(s.doc_epoch);
+        assert_eq!(refresh(&mut cache, &s), 1);
+        let old = Arc::downgrade(s.doc.layer(id).unwrap().raster().unwrap().get_ref(TileCoord::new(0, 0)).unwrap());
+
+        // The Layers tab is closed: only sync_doc runs.
+        s.replace_document(Document::new(64, 64, 72));
+        assert!(old.upgrade().is_some(), "the thumbnail's source holds the old tile");
+        cache.sync_doc(s.doc_epoch);
+        assert!(old.upgrade().is_none(), "the old document's tile was freed");
+        assert!(cache.pixels(id).is_none());
+    }
+
+    #[test]
     fn budget_spreads_work_over_frames() {
         let mut s = Studio::new(Document::new(64, 64, 72));
         for _ in 0..3 {
             s.edit_structure(|d| {
-                d.add_raster_layer();
+                d.add_raster_layer().unwrap();
                 true
             });
         }
@@ -492,13 +525,13 @@ mod tests {
         let mut s = Studio::new(Document::new(64, 64, 72));
         let folder = {
             s.edit_structure(|d| {
-                d.add_folder();
+                d.add_folder().unwrap();
                 true
             });
             s.doc.active()
         };
         s.edit_structure(|d| {
-            let inner = d.add_raster_layer();
+            let inner = d.add_raster_layer().unwrap();
             d.move_layer(inner, Some(folder), 0)
         });
         let inner = s.doc.active();
@@ -526,7 +559,7 @@ mod tests {
         t.elapsed().as_secs_f64() * 1000.0 / n as f64
     }
 
-    /// Timings for plans/bench (B002):
+    /// Timings for plans/bench (B003):
     /// `cargo test -p arty-app --release -- --ignored --nocapture bench_thumbnails`
     #[test]
     #[ignore]
@@ -558,13 +591,13 @@ mod tests {
         // A folder of 30 one-tile layers: a settings change recomposites it.
         let mut s = Studio::new(Document::new(2894, 4093, 350));
         s.edit_structure(|d| {
-            d.add_folder();
+            d.add_folder().unwrap();
             true
         });
         let folder = s.doc.active();
         for i in 0..30 {
             s.edit_structure(|d| {
-                let l = d.add_raster_layer();
+                let l = d.add_raster_layer().unwrap();
                 d.move_layer(l, Some(folder), i)
             });
             let id = s.doc.active();

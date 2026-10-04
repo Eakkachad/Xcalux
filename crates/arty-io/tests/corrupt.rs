@@ -24,10 +24,10 @@ fn base_file() -> Vec<u8> {
     let mut rng = Rng(0xC0FF_EE00);
     let mut a = Document::new(700, 500, 350);
     let bottom = a.active();
-    let folder = a.add_folder();
-    let inner = a.add_raster_layer();
+    let folder = a.add_folder().unwrap();
+    let inner = a.add_raster_layer().unwrap();
     a.move_layer(inner, Some(folder), 0);
-    let top = a.add_raster_layer();
+    let top = a.add_raster_layer().unwrap();
     let kinds = [[2, 3, 1, 0, 6].as_slice(), &[4, 5, 3, 1], &[6, 4, 0, 5, 3]];
     for (id, kinds) in [bottom, inner, top].into_iter().zip(kinds) {
         let (g, _) = a.paint_target(id).unwrap();

@@ -340,6 +340,7 @@ impl eframe::App for ArtyApp {
             commands::handle_shortcuts(&ctx, &mut self.studio, &mut self.shell);
         }
         self.files.tick(&ctx, &mut self.studio, &mut self.shell);
+        self.thumbs.sync_doc(self.studio.doc_epoch);
         if self.shell.export_requested {
             self.shell.export_requested = false;
             self.export_job = export::export_png(&self.studio.doc);

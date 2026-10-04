@@ -38,8 +38,8 @@ use std::sync::Arc;
 use ahash::{AHashMap, AHashSet};
 use arty_core::tile::{TILE_PIXELS, new_tile, new_tile_box};
 use arty_core::{
-    BlendMode, DocParts, Document, Layer, LayerContent, LayerId, LayerProps, MAX_TREE_DEPTH, TileGrid, TilePixels,
-    TileRef, TreeError,
+    BlendMode, DocParts, Document, Layer, LayerContent, LayerId, LayerProps, MAX_NEXT_ID, MAX_TREE_DEPTH, TileGrid,
+    TilePixels, TileRef, TreeError,
 };
 use rayon::ThreadPool;
 use rayon::prelude::*;
@@ -90,6 +90,9 @@ pub struct FileInfo {
     pub saved_ms: u64,
     /// The newest commit was found by scanning past a damaged tail.
     pub recovered: bool,
+    /// The newest commit was damaged and an earlier one is described (or
+    /// was loaded) instead: the newest one's `commit_seq`.
+    pub fell_back_from: Option<u64>,
     pub width: u32,
     pub height: u32,
     pub dpi: u32,
@@ -144,7 +147,7 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
     }
     let header = read_header(src, len)?;
     p.begin(phase::READ, 0);
-    let newest = locate_commit(src, len)?;
+    let newest = locate_commit(src, len, p)?;
     let mut warnings = Vec::new();
     if newest.recovered {
         warnings.push(LoadWarning::RecoveredTornTail);
@@ -172,6 +175,7 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
         commit_seq: used.commit.commit_seq,
         saved_ms: used.commit.unix_ms,
         recovered: newest.recovered,
+        fell_back_from: (used.at != newest.at).then_some(newest.commit.commit_seq),
         width: asm.doc.width(),
         height: asm.doc.height(),
         dpi: asm.doc.dpi(),
@@ -204,7 +208,10 @@ pub fn load_from<R: ReadAt + Sync + ?Sized>(
 }
 
 /// Header, newest commit and manifest of a file, without its pixels or
-/// tables (recovery prompt, recent files).
+/// tables (recovery prompt, recent files). When the newest manifest is
+/// damaged, earlier commits are tried as `fallback_to_previous` loads do
+/// (`fell_back_from` is then set), so a recovery file Restore can load is
+/// still offered.
 pub fn read_info(path: &Path) -> Result<FileInfo, IoError> {
     let file = File::open(path).map_err(IoError::io("open"))?;
     let len = file.len().map_err(IoError::io("read"))?;
@@ -213,15 +220,49 @@ pub fn read_info(path: &Path) -> Result<FileInfo, IoError> {
         return crate::legacy::read_info_v1(&file, LoadOptions::default().legacy_dpi);
     }
     let header = read_header(&file, len)?;
-    let located = locate_commit(&file, len)?;
-    let payload = read_manifest(&file, &located.commit)?;
-    let raw = manifest::decode_payload(&payload, located.commit.manifest_offset)?;
-    let m = manifest::parse(&raw, located.commit.manifest_offset, MAX_LAYER_COUNT)?;
+    let located = locate_commit(&file, len, &Progress::default())?;
+    let kind = FileKind::V2 { minor: header.minor };
+    let mut info = match info_at(&file, kind, &located.commit) {
+        Ok(info) => info,
+        Err(e) if recoverable(&e) => {
+            let mut c = located.commit;
+            let mut found = None;
+            for _ in 0..MAX_FALLBACK_COMMITS {
+                if c.prev_commit_offset == 0 {
+                    break;
+                }
+                let Ok(prev) = commit_at(&file, c.prev_commit_offset, len) else { break };
+                c = prev;
+                match info_at(&file, kind, &c) {
+                    Ok(info) => {
+                        found = Some(info);
+                        break;
+                    }
+                    Err(e) if recoverable(&e) => continue,
+                    Err(_) => break,
+                }
+            }
+            let mut info = found.ok_or(e)?;
+            info.fell_back_from = Some(located.commit.commit_seq);
+            info
+        }
+        Err(e) => return Err(e),
+    };
+    info.recovered = located.recovered;
+    Ok(info)
+}
+
+/// What commit `c`'s manifest says.
+fn info_at<R: ReadAt + ?Sized>(src: &R, kind: FileKind, c: &Commit) -> Result<FileInfo, IoError> {
+    let payload = read_manifest(src, c)?;
+    let raw = manifest::decode_payload(&payload, c.manifest_offset)?;
+    let m = manifest::parse(&raw, c.manifest_offset, MAX_LAYER_COUNT)?;
     Ok(FileInfo {
-        kind: FileKind::V2 { minor: header.minor },
-        commit_seq: located.commit.commit_seq,
-        saved_ms: located.commit.unix_ms,
-        recovered: located.recovered,
+        kind,
+        commit_seq: c.commit_seq,
+        saved_ms: c.unix_ms,
+        recovered: false,
+        fell_back_from: None,
         width: m.doc.width,
         height: m.doc.height,
         dpi: m.doc.dpi,
@@ -242,7 +283,7 @@ pub(crate) fn identity_of(file: &File) -> Option<FileIdentity> {
     let meta = file.metadata().ok()?;
     let len = meta.len();
     let header = read_header(file, len).ok()?;
-    let located = locate_commit(file, len).ok()?;
+    let located = locate_commit(file, len, &Progress::default()).ok()?;
     Some(FileIdentity {
         file_uuid: header.file_uuid,
         len,
@@ -343,14 +384,20 @@ pub(crate) fn commit_at<R: ReadAt + ?Sized>(src: &R, at: u64, len: u64) -> Resul
     }
     let mut b = [0u8; COMMIT_RECORD_LEN];
     read_at(src, &mut b, at)?;
-    let c = Commit::decode_record(&b, at)?;
+    commit_in(src, &b, at).map(|(c, _)| c)
+}
+
+/// [`commit_at`] for a record already read into `b`; also returns the
+/// manifest's payload length.
+fn commit_in<R: ReadAt + ?Sized>(src: &R, b: &[u8], at: u64) -> Result<(Commit, u64), IoError> {
+    let c = Commit::decode_record(b, at)?;
     let mut hb = [0u8; RECORD_HEADER_LEN];
     read_at(src, &mut hb, c.manifest_offset)?;
     let h = RecordHeader::decode(&hb, c.manifest_offset)?;
     if h.kind != RecordKind::Manifest as u8 || h.payload_len > MAX_MANIFEST_STORED || h.end(c.manifest_offset)? > at {
         return Err(IoError::corrupt("commit manifest", at));
     }
-    Ok(c)
+    Ok((c, h.payload_len))
 }
 
 /// Keep the candidate with the highest `commit_seq` (later offset on ties).
@@ -360,7 +407,9 @@ fn keep_best(best: &mut Option<(Commit, u64)>, c: Commit, at: u64) {
     }
 }
 
-pub(crate) fn locate_commit<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Located, IoError> {
+/// The newest valid commit. Scans stop with `Cancelled` when `p` is
+/// cancelled.
+pub(crate) fn locate_commit<R: ReadAt + ?Sized>(src: &R, len: u64, p: &Progress) -> Result<Located, IoError> {
     if let Some(at) = len.checked_sub(COMMIT_RECORD_LEN as u64)
         && let Ok(commit) = commit_at(src, at, len)
     {
@@ -373,6 +422,9 @@ pub(crate) fn locate_commit<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Loc
     let stopped_early = loop {
         if pos == len {
             break false;
+        }
+        if p.is_cancelled() {
+            return Err(IoError::Cancelled);
         }
         if read_at(src, &mut hb, pos).is_err() {
             break true;
@@ -387,7 +439,7 @@ pub(crate) fn locate_commit<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Loc
         pos = end;
     };
     if stopped_early {
-        backward_scan(src, len, &mut best)?;
+        backward_scan(src, len, &mut best, p)?;
     }
     let (commit, at) = best.ok_or(IoError::corrupt("no valid commit", len))?;
     Ok(Located { commit, at, recovered: true })
@@ -395,23 +447,64 @@ pub(crate) fn locate_commit<R: ReadAt + ?Sized>(src: &R, len: u64) -> Result<Loc
 
 /// Look for `"ArRc"` at every byte, from the end back to the header, and
 /// keep the valid commit with the highest sequence number whose manifest
-/// checks out. Memory: one window buffer.
-fn backward_scan<R: ReadAt + ?Sized>(src: &R, len: u64, best: &mut Option<(Commit, u64)>) -> Result<(), IoError> {
+/// checks out. Memory: one window buffer. Work is bounded for hostile
+/// files: candidates are decoded from the window, each manifest is checked
+/// once, and the manifests checked add up to at most the file length.
+fn backward_scan<R: ReadAt + ?Sized>(
+    src: &R,
+    len: u64,
+    best: &mut Option<(Commit, u64)>,
+    p: &Progress,
+) -> Result<(), IoError> {
     let floor = HEADER_LEN as u64;
     let mut buf = vec![0u8; SCAN_WINDOW];
+    // Manifest offset -> whether it checked out.
+    let mut checked: AHashMap<u64, bool> = AHashMap::new();
+    let mut budget = len;
     let mut hi = len;
     while hi > floor {
+        if p.is_cancelled() {
+            return Err(IoError::Cancelled);
+        }
         let lo = hi.saturating_sub(SCAN_WINDOW as u64).max(floor);
         let n = usize::try_from(hi.saturating_sub(lo)).unwrap_or(SCAN_WINDOW).min(SCAN_WINDOW);
         let window = buf.get_mut(..n).unwrap_or_default();
         read_at(src, window, lo)?;
+        let window = &*window;
         for (i, w) in window.windows(REC_MAGIC.len()).enumerate().rev() {
+            if w != REC_MAGIC {
+                continue;
+            }
             let at = lo.saturating_add(i as u64);
-            if w == REC_MAGIC
-                && let Ok(c) = commit_at(src, at, len)
-                && best.is_none_or(|(b, _)| c.commit_seq > b.commit_seq)
-                && read_manifest(src, &c).is_ok()
-            {
+            // Only a record straddling the window's end is read again.
+            let found = match i.checked_add(COMMIT_RECORD_LEN).and_then(|end| window.get(i..end)) {
+                Some(b) => commit_in(src, b, at),
+                None => {
+                    let mut b = [0u8; COMMIT_RECORD_LEN];
+                    let fits = at.checked_add(COMMIT_RECORD_LEN as u64).is_some_and(|end| end <= len);
+                    if !fits {
+                        continue;
+                    }
+                    read_at(src, &mut b, at).and_then(|()| commit_in(src, &b, at))
+                }
+            };
+            let Ok((c, manifest_len)) = found else { continue };
+            if best.is_some_and(|(b, _)| c.commit_seq <= b.commit_seq) {
+                continue;
+            }
+            let ok = match checked.entry(c.manifest_offset) {
+                Entry::Occupied(e) => *e.get(),
+                Entry::Vacant(e) => {
+                    // Distinct manifests of a real file never overlap, so
+                    // they fit in its length; hostile overlapping ones stop.
+                    let ok = manifest_len <= budget && {
+                        budget = budget.saturating_sub(manifest_len);
+                        read_manifest(src, &c).is_ok()
+                    };
+                    *e.insert(ok)
+                }
+            };
+            if ok {
                 keep_best(best, c, at);
             }
         }
@@ -839,17 +932,19 @@ fn build_tree(m: &ManifestView<'_>, warnings: &mut Vec<LoadWarning>, lossy: &mut
         nodes.push(Node { id, props: layer_props(rec, warnings, lossy), folder });
     }
 
+    // Fresh ids must stay below MAX_NEXT_ID (a larger next_id would make
+    // adding a layer overflow and reuse ids).
     let max_id = m.layers.iter().map(|r| r.id).max().unwrap_or(0);
     let mut next_id = m.doc.next_id;
-    if next_id <= max_id {
-        next_id = max_id.checked_add(1).ok_or(TreeError::BadNextId)?;
+    if next_id <= max_id || next_id > MAX_NEXT_ID {
+        next_id = max_id.checked_add(1).filter(|&n| n <= MAX_NEXT_ID).ok_or(TreeError::BadNextId)?;
         warnings.push(LoadWarning::FixedNextId);
     }
     let top_raster = match top_raster {
         Some(id) => id,
         None => {
             let id = LayerId(next_id);
-            next_id = next_id.checked_add(1).ok_or(TreeError::BadNextId)?;
+            next_id = next_id.checked_add(1).filter(|&n| n <= MAX_NEXT_ID).ok_or(TreeError::BadNextId)?;
             nodes.push(Node { id, props: LayerProps::named(format!("Layer {}", id.0)), folder: None });
             root.push(id);
             warnings.push(LoadWarning::AddedMissingRaster);
@@ -974,10 +1069,63 @@ mod tests {
     #[test]
     fn locate_needs_a_commit() {
         let mut file = Header::new(0, [1; 16]).encode().to_vec();
-        assert!(matches!(locate_commit(&file[..], file.len() as u64), Err(IoError::Corrupt { what: "no valid commit", .. })));
+        let located = locate_commit(&file[..], file.len() as u64, &Progress::default());
+        assert!(matches!(located, Err(IoError::Corrupt { what: "no valid commit", .. })));
         file.extend_from_slice(&RecordHeader::for_payload(RecordKind::Segment, &[]).encode());
         file.extend_from_slice(b"junk");
         let o = LoadOptions::default();
         assert!(load_from(&file[..], None, &o, &pool(), &Progress::default()).is_err());
+    }
+
+    /// Counts the reads made through it and the bytes they return.
+    struct Counting<'a> {
+        data: &'a [u8],
+        reads: std::cell::Cell<u64>,
+        bytes: std::cell::Cell<u64>,
+    }
+
+    impl ReadAt for Counting<'_> {
+        fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+            self.reads.set(self.reads.get() + 1);
+            self.bytes.set(self.bytes.get() + buf.len() as u64);
+            self.data.read_exact_at(buf, offset)
+        }
+
+        fn len(&self) -> std::io::Result<u64> {
+            Ok(self.data.len() as u64)
+        }
+    }
+
+    #[test]
+    fn backward_scan_work_is_bounded_and_cancellable() {
+        let mut file = Header::new(0, [1; 16]).encode().to_vec();
+        // Damage right after the header: the forward scan stops at once.
+        file.extend_from_slice(&[0xEE; 40]);
+        // One 1 MiB manifest, then 2000 commits naming it, newest first.
+        let manifest_offset = file.len() as u64;
+        let payload = vec![7u8; 1 << 20];
+        file.extend_from_slice(&RecordHeader::for_payload(RecordKind::Manifest, &payload).encode());
+        file.extend_from_slice(&payload);
+        let first = file.len() as u64;
+        let n = 2000;
+        for k in 0..n {
+            let c = Commit { manifest_offset, prev_commit_offset: 0, commit_seq: n - k, unix_ms: k };
+            file.extend_from_slice(&c.encode_record());
+        }
+        // No valid commit at the very end.
+        file.push(0);
+        let len = file.len() as u64;
+
+        let src = Counting { data: &file, reads: Default::default(), bytes: Default::default() };
+        let located = locate_commit(&src, len, &Progress::default()).unwrap();
+        assert_eq!((located.at, located.commit.commit_seq, located.recovered), (first, n, true));
+        // Each candidate costs one manifest header read, the manifest is
+        // checked once (it was 2000 MiB of reads).
+        assert!(src.bytes.get() < 3 * len, "{} bytes read from a {len}-byte file", src.bytes.get());
+        assert!(src.reads.get() < n + 100, "{} reads", src.reads.get());
+
+        let cancelled = Progress::default();
+        cancelled.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(matches!(locate_commit(&file[..], len, &cancelled), Err(IoError::Cancelled)));
     }
 }

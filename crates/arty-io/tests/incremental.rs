@@ -18,7 +18,7 @@ fn doc_a() -> Document {
     let mut rng = Rng(0xA5);
     let mut doc = Document::new(640, 640, 350);
     let bottom = doc.active();
-    let top = doc.add_raster_layer();
+    let top = doc.add_raster_layer().unwrap();
     for (id, kinds) in [(bottom, [2, 3, 4, 5, 6, 1, 0, 2]), (top, [6, 3, 2, 3, 2, 1, 5, 6])] {
         let (g, _) = doc.paint_target(id).unwrap();
         for (x, kind) in kinds.into_iter().enumerate() {

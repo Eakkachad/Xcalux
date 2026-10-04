@@ -145,6 +145,8 @@ enum Then {
     New,
     Open,
     Quit,
+    /// Restore `FileController::restore`.
+    Restore,
 }
 
 /// The load or save in flight (at most one; autosaves are tracked apart).
@@ -217,6 +219,8 @@ pub struct FileController {
     modal: Option<Modal>,
     /// Recovery files found while another dialog was open.
     found: Vec<RecoveryEntry>,
+    /// The recovery file chosen in the prompt, restored by `Then::Restore`.
+    restore: Option<RecoveryEntry>,
     allow_close: bool,
     closing: bool,
     now: f64,
@@ -261,6 +265,7 @@ impl FileController {
             focused: true,
             modal: None,
             found: Vec::new(),
+            restore: None,
             allow_close: false,
             closing: false,
             now: 0.0,
@@ -337,11 +342,17 @@ impl FileController {
         }
         if self.closing && !self.busy() {
             self.closing = false;
-            self.allow_close = true;
             if matches!(self.modal, Some(Modal::Closing)) {
                 self.modal = None;
             }
-            out.close = true;
+            // A load may have finished while waiting (a restore is dirty).
+            // `allow_close` stays unset, so a load whose event is still
+            // queued is asked about when the close comes back.
+            if !self.allow_close && self.is_dirty(&studio.doc) {
+                self.modal = Some(Modal::Unsaved(Then::Quit));
+            } else {
+                out.close = true;
+            }
         }
 
         // Requests wait for dialogs, loads and saves in flight, and (to
@@ -461,7 +472,32 @@ impl FileController {
                 self.allow_close = true;
                 shell.quit_requested = true;
             }
+            Then::Restore => self.start_restore(),
         }
+    }
+
+    /// Restore `entry` (Restore in the recovery prompt), after asking about
+    /// unsaved changes. False, with nothing done, while a load or save runs.
+    fn choose_restore(&mut self, entry: RecoveryEntry, dirty: bool) -> bool {
+        if self.job.is_some() {
+            return false;
+        }
+        self.restore = Some(entry);
+        if dirty {
+            self.modal = Some(Modal::Unsaved(Then::Restore));
+        } else {
+            self.start_restore();
+        }
+        true
+    }
+
+    fn start_restore(&mut self) {
+        let Some(entry) = self.restore.take() else { return };
+        let Some(io) = self.io_or_report() else { return };
+        let ticket = io.send(Request::Restore { entry: entry.clone() });
+        self.job = Some(Job::Load { ticket, path: entry.src, restore: true });
+        // The other files are offered again next time.
+        self.modal = Some(Modal::Loading(ticket));
     }
 
     fn open(&mut self) {
@@ -522,7 +558,9 @@ impl FileController {
     fn on_close_requested(&mut self, studio: &Studio, out: &mut FrameOutput) {
         if !self.allow_close && self.is_dirty(&studio.doc) {
             out.cancel_close = true;
-            if !matches!(self.modal, Some(Modal::Unsaved(_))) {
+            // A load keeps its dialog (with Cancel): saving now would take
+            // the place of its job. Closing again afterwards asks.
+            if !matches!(self.modal, Some(Modal::Unsaved(_) | Modal::Loading(_))) {
                 self.modal = Some(Modal::Unsaved(Then::Quit));
             }
         } else if self.busy() {
@@ -563,11 +601,11 @@ impl FileController {
                 }
             }
             IoEvent::Loaded { ticket, path, loaded } => {
-                let Some(Job::Load { ticket: t, path: asked, restore }) = self.job.take() else { return };
-                if t != ticket {
-                    self.job = Some(Job::Load { ticket: t, path: asked, restore });
+                // Any other job in flight is left alone.
+                if !matches!(&self.job, Some(Job::Load { ticket: t, .. }) if *t == ticket) {
                     return;
                 }
+                let Some(Job::Load { path: asked, restore, .. }) = self.job.take() else { return };
                 self.apply_loaded(*loaded, path, asked, restore, studio, shell);
             }
             IoEvent::RecoveryFound(entries) => {
@@ -587,8 +625,13 @@ impl FileController {
     fn on_failed(&mut self, ticket: Ticket, op: &'static str, error: IoError) {
         if self.autosave == Some(ticket) {
             self.autosave = None;
-            // Retried after the next interval.
-            log::warn!("autosave: {error}");
+            // Not captured: retried after the next interval, even without
+            // further edits. Cancelled: a queued save took its place.
+            self.captured = None;
+            self.captured_at = self.now;
+            if !matches!(error, IoError::Cancelled) {
+                log::warn!("autosave: {error}");
+            }
             return;
         }
         let then = match self.job.take() {
@@ -684,6 +727,7 @@ impl FileController {
     /// Draw the open dialog, if any, and act on its buttons.
     pub fn ui(&mut self, ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
         let Some(modal) = self.modal.take() else { return };
+        let dirty = self.is_dirty(&studio.doc);
         let mut keep = true;
         let response = egui::Modal::new(egui::Id::new("file-dialog")).show(ctx, |ui| {
             ui.set_max_width(460.0);
@@ -703,6 +747,9 @@ impl FileController {
                         }
                         if ui.button("Cancel").clicked() {
                             keep = false;
+                            if *then == Then::Restore {
+                                self.restore = None;
+                            }
                         }
                     });
                 }
@@ -762,7 +809,7 @@ impl FileController {
                     }
                 }
                 Modal::Recovery(entries) => {
-                    keep = self.recovery_ui(ui, entries);
+                    keep = self.recovery_ui(ui, entries, dirty);
                 }
                 Modal::Closing => {
                     ui.heading("Finishing save…");
@@ -773,6 +820,9 @@ impl FileController {
         let dismissable = matches!(modal, Modal::Unsaved(_) | Modal::Lossy(_) | Modal::External { .. } | Modal::Message { .. });
         if dismissable && response.should_close() {
             keep = false;
+            if matches!(modal, Modal::Unsaved(Then::Restore)) {
+                self.restore = None;
+            }
         }
         // A button may have opened the next dialog.
         if keep && self.modal.is_none() {
@@ -780,8 +830,9 @@ impl FileController {
         }
     }
 
-    /// The recovery prompt; false once it should close.
-    fn recovery_ui(&mut self, ui: &mut egui::Ui, entries: &[RecoveryEntry]) -> bool {
+    /// The recovery prompt; false once it should close. `dirty`: the open
+    /// document has unsaved changes (Restore asks about them first).
+    fn recovery_ui(&mut self, ui: &mut egui::Ui, entries: &[RecoveryEntry], dirty: bool) -> bool {
         ui.heading("Recover unsaved work?");
         ui.label("ARTY closed without saving these documents.");
         ui.add_space(6.0);
@@ -795,7 +846,9 @@ impl FileController {
             }
             ui.weak(format!("{} · {:.1} MB", ago(e.saved_ms), e.size as f64 / (1024.0 * 1024.0)));
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("Restore").strong()).clicked() {
+                // Not while a load or save runs: it would replace its job.
+                let idle = self.job.is_none();
+                if ui.add_enabled(idle, egui::Button::new(RichText::new("Restore").strong())).clicked() {
                     restore = Some(i);
                 }
                 if ui.button("Discard").clicked() {
@@ -805,12 +858,9 @@ impl FileController {
         }
         ui.separator();
         let later = ui.button("Later").on_hover_text("Keep these files and ask again next time").clicked();
-        if let (Some(i), Some(io)) = (restore, &self.io) {
-            let entry = entries[i].clone();
-            let ticket = io.send(Request::Restore { entry: entry.clone() });
-            self.job = Some(Job::Load { ticket, path: entry.src, restore: true });
-            // The others are offered again next time.
-            self.modal = Some(Modal::Loading(ticket));
+        if let Some(i) = restore
+            && self.choose_restore(entries[i].clone(), dirty)
+        {
             return false;
         }
         if let (Some(i), Some(io)) = (discard, &self.io) {
@@ -1125,6 +1175,141 @@ mod tests {
         assert!(!r.frame(close).cancel_close);
     }
 
+    /// A recovery file left by an earlier session, as the scan offers it.
+    fn crashed_session(r: &Rig) -> RecoveryEntry {
+        let dir = r.dir.join("recovery");
+        let mut old = arty_io::Session::new(arty_io::SessionId([0x42; 16]), Some(&dir));
+        let mut doc = Document::new(64, 64, 72);
+        let id = doc.active();
+        doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1, 2, 3, 4];
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        old.autosave(&doc, &SaveExtras::default(), 7, &pool, &arty_io::Progress::default()).unwrap();
+        old.close(false).unwrap();
+        arty_io::RecoveryDir::new(&dir).scan().pop().unwrap()
+    }
+
+    /// Wait for the IO thread without handling its events.
+    fn wait_idle(r: &Rig) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while r.fc.busy() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn closing_during_a_restore_asks_and_keeps_the_recovery_file() {
+        let close = FrameInput { now: 1.0, focused: true, close_requested: true, ..Default::default() };
+        let mut r = Rig::new("close-restore");
+        let entry = crashed_session(&r);
+        let (go, rx) = channel();
+        r.fc.io.as_ref().unwrap().send(Request::Pause(rx));
+        assert!(r.fc.choose_restore(entry.clone(), false), "clean: no question");
+        // Clean and busy: the close waits for the IO thread.
+        assert!(r.frame(close).cancel_close);
+        assert!(matches!(r.fc.modal, Some(Modal::Closing)));
+        drop(go);
+        wait_idle(&r);
+        let out = r.at(2.0);
+        assert!(!out.close, "the restored document is unsaved");
+        assert!(r.fc.is_dirty(&r.studio.doc));
+        assert!(matches!(r.fc.modal, Some(Modal::Unsaved(Then::Quit))));
+        assert!(entry.path.exists(), "the restored work is still on disk");
+    }
+
+    #[test]
+    fn restore_asks_about_changes_and_waits_for_jobs() {
+        let mut r = Rig::new("restore-guard");
+        let entry = crashed_session(&r);
+        r.paint();
+        r.at(1.0);
+        let dirty = r.fc.is_dirty(&r.studio.doc);
+        assert!(r.fc.choose_restore(entry.clone(), dirty));
+        assert!(matches!(r.fc.modal, Some(Modal::Unsaved(Then::Restore))), "unsaved changes are not dropped silently");
+        assert!(r.fc.job.is_none(), "nothing sent yet");
+
+        // Save first: the restore waits for the save, then runs.
+        let page = r.dir.join("page.arty");
+        r.answers.borrow_mut().save = vec![page.clone()];
+        r.fc.modal = None;
+        r.fc.save(Some(Then::Restore), &r.studio); // the dialog's Save
+        assert!(!r.fc.choose_restore(entry.clone(), true), "refused while the save runs");
+        r.settle(2.0);
+        assert!(page.exists());
+        let id = r.studio.doc.active();
+        let px = r.studio.doc.layer(id).unwrap().raster().unwrap().get(TileCoord::new(0, 0)).unwrap()[0][0];
+        assert_eq!(px, [1, 2, 3, 4], "restored");
+        assert!(r.fc.is_dirty(&r.studio.doc));
+    }
+
+    #[test]
+    fn closing_during_an_open_keeps_the_load() {
+        let mut r = Rig::new("close-open");
+        let a = r.dir.join("a.arty");
+        r.answers.borrow_mut().save = vec![a.clone()];
+        r.shell.file_request = Some(FileRequest::SaveAs);
+        r.settle(1.0);
+        r.paint();
+        r.answers.borrow_mut().open = Some(a.clone());
+        let (go, rx) = channel();
+        r.fc.io.as_ref().unwrap().send(Request::Pause(rx));
+        r.fc.proceed(Then::Open, &mut r.shell); // Don't Save
+        assert!(matches!(r.fc.modal, Some(Modal::Loading(_))));
+        let close = FrameInput { now: 2.0, focused: true, close_requested: true, ..Default::default() };
+        assert!(r.frame(close).cancel_close);
+        assert!(matches!(r.fc.modal, Some(Modal::Loading(_))), "no Save that would replace the load");
+        assert!(matches!(r.fc.job, Some(Job::Load { .. })));
+        drop(go);
+        r.settle(2.0);
+        assert_eq!(r.fc.path.as_deref(), Some(a.as_path()));
+        assert!(!r.fc.is_dirty(&r.studio.doc), "the opened file replaced the edits");
+    }
+
+    #[test]
+    fn a_dropped_autosave_does_not_stop_autosaving() {
+        let mut r = Rig::new("autosave-dropped");
+        r.answers.borrow_mut().save = vec![r.dir.join("s.arty")];
+        r.paint();
+        let (go, rx) = channel();
+        r.fc.io.as_ref().unwrap().send(Request::Pause(rx));
+        r.at(63.0);
+        assert!(r.fc.autosave.is_some());
+        // A save queued behind it: the IO thread drops the autosave.
+        r.shell.file_request = Some(FileRequest::Save);
+        r.at(63.1);
+        assert!(r.fc.job.is_some());
+        drop(go);
+        r.settle(63.2);
+        assert_eq!(r.recovery_files(), 0, "dropped");
+        r.paint();
+        r.at(130.0);
+        assert!(r.fc.autosave.is_some(), "autosave runs again");
+        r.settle(130.0);
+        assert_eq!(r.recovery_files(), 1);
+    }
+
+    #[test]
+    fn a_failed_autosave_is_retried_after_the_interval() {
+        let mut r = Rig::new("autosave-retry");
+        // A file where the recovery folder should be: autosaves fail.
+        let rec = r.dir.join("recovery");
+        let _ = std::fs::remove_dir_all(&rec);
+        std::fs::write(&rec, b"").unwrap();
+        r.paint();
+        r.at(63.0);
+        assert!(r.fc.autosave.is_some());
+        r.settle(63.0);
+        assert_eq!(r.fc.captured, None, "nothing was captured");
+        assert_eq!(r.at(100.0).repaint_after, Some(23.0), "retried one interval later, without edits");
+
+        std::fs::remove_file(&rec).unwrap();
+        r.at(123.0);
+        assert!(r.fc.autosave.is_some());
+        r.settle(123.0);
+        assert_eq!(r.recovery_files(), 1);
+        assert_eq!(r.at(500.0).repaint_after, None, "captured now");
+    }
+
     #[test]
     fn title_asterisk_follows_the_revision() {
         let mut r = Rig::new("title");
@@ -1144,7 +1329,7 @@ mod tests {
         assert_eq!(r.fc.title(), "page.arty* — ARTY");
         // Dragging a layer in the panel is an edit too.
         r.studio.edit_structure(|d| {
-            d.add_raster_layer();
+            d.add_raster_layer().unwrap();
             true
         });
         r.shell.file_request = Some(FileRequest::Save);

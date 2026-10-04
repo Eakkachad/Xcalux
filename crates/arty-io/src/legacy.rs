@@ -24,10 +24,12 @@
     )
 )]
 
+use std::fmt;
+use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use arty_core::tile::new_tile;
 use arty_core::{
     BlendMode, DocParts, Document, Layer, LayerContent, LayerId, LayerProps, MAX_TREE_DEPTH, PAPER_WHITE, TileCoord,
@@ -36,6 +38,7 @@ use arty_core::{
 use flate2::{Decompress, FlushDecompress, Status};
 use rayon::ThreadPool;
 use serde::Deserialize;
+use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use smallvec::SmallVec;
 
 use crate::codec::{TileClass, classify, sanitize};
@@ -62,14 +65,17 @@ const MAX_KEPT_ID: u32 = u32::MAX - (1 << 17);
 const V1_FOLDER_DEPTH: usize = 3;
 
 /// The v1 JSON block. Unknown fields (and `vector_strokes`, which is never
-/// imported) are skipped by serde without being built.
+/// imported) are skipped by serde without being built. Lists are capped
+/// while parsing (see [`bounded`]).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Meta {
     canvas_width: u32,
     canvas_height: u32,
     /// Top → bottom.
+    #[serde(deserialize_with = "bounded")]
     layer_order: Vec<u32>,
+    #[serde(deserialize_with = "bounded")]
     layers: Vec<MetaLayer>,
 }
 
@@ -86,7 +92,37 @@ struct MetaLayer {
     blend_mode: String,
     kind: String,
     /// Top → bottom.
+    #[serde(deserialize_with = "bounded")]
     folder_child_ids: Vec<u32>,
+}
+
+/// Start of the parse error [`bounded`] gives.
+const TOO_LONG: &str = "list longer than the layer limit";
+
+/// A JSON array of at most `MAX_LAYER_COUNT` items, refused while it is
+/// parsed: `{}` costs 3 bytes of JSON but a whole `MetaLayer` in memory,
+/// and a valid list never names a layer twice.
+fn bounded<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
+    struct Bounded<T>(PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for Bounded<T> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "a list of at most {MAX_LAYER_COUNT} items")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(item) = seq.next_element()? {
+                if out.len() >= MAX_LAYER_COUNT as usize {
+                    return Err(de::Error::custom(TOO_LONG));
+                }
+                out.push(item);
+            }
+            Ok(out)
+        }
+    }
+    d.deserialize_seq(Bounded(PhantomData))
 }
 
 impl Default for MetaLayer {
@@ -155,7 +191,14 @@ fn read_meta<R: ReadAt + ?Sized>(src: &R, json_off: u64, dir_off: u64) -> Result
     let mut json = vec![0u8; n];
     read_at(src, &mut json, json_off)?;
     // serde_json's recursion limit stays on: nesting cannot blow the stack.
-    let meta: Meta = serde_json::from_slice(&json).map_err(|_| IoError::corrupt("v1 metadata", json_off))?;
+    let meta: Meta = serde_json::from_slice(&json).map_err(|e| {
+        let max = u64::from(MAX_LAYER_COUNT);
+        if e.to_string().starts_with(TOO_LONG) {
+            IoError::limit("layers", max.saturating_add(1), max)
+        } else {
+            IoError::corrupt("v1 metadata", json_off)
+        }
+    })?;
     let side = 1..=MAX_PAGE_SIDE;
     if !side.contains(&meta.canvas_width) || !side.contains(&meta.canvas_height) {
         return Err(IoError::corrupt("page size", json_off));
@@ -204,56 +247,86 @@ struct Tree {
 }
 
 /// Places layers depth-first, parent before children. A layer reached a
-/// second time (second parent, cycle, repeated listing) is skipped.
+/// second time (second parent, cycle, repeated listing) is skipped, with
+/// one warning per layer.
 struct Walk<'a> {
     meta: &'a [MetaLayer],
     ids: &'a [LayerId],
     kinds: &'a [Kind],
-    /// Child records of each folder, bottom → top.
-    kids: &'a [Vec<usize>],
+    by_old: &'a AHashMap<u32, usize>,
     visited: Vec<bool>,
+    /// Layers already reported as referenced twice.
+    warned: Vec<bool>,
     children: Vec<Vec<LayerId>>,
     root: Vec<LayerId>,
     /// Folders v1 never drew (nested deeper than `V1_FOLDER_DEPTH`).
     deep: u32,
-    /// `(record, parent record or root, depth)`. A stack rather than
-    /// recursion: hostile files can chain any number of folders.
-    stack: Vec<(usize, Option<usize>, usize)>,
+    /// Folders being walked: `(record, children taken, parent record of
+    /// those children, their depth)`. A stack rather than recursion:
+    /// hostile files can chain any number of folders. Child lists are read
+    /// in place, so memory stays linear in the layer count however long or
+    /// repetitive the lists are.
+    stack: Vec<(usize, usize, Option<usize>, usize)>,
 }
 
 impl Walk<'_> {
-    fn run(&mut self, warnings: &mut Vec<LoadWarning>) {
-        while let Some((i, parent, depth)) = self.stack.pop() {
-            let (Some(seen), Some(&id), Some(&kind)) = (self.visited.get_mut(i), self.ids.get(i), self.kinds.get(i)) else {
+    fn warn_repeat(&mut self, i: usize, warnings: &mut Vec<LoadWarning>) {
+        if let Some(w) = self.warned.get_mut(i)
+            && !*w
+        {
+            *w = true;
+            warnings.push(LoadWarning::LegacyDuplicateRef { layer: self.meta.get(i).map_or(0, |m| m.id) });
+        }
+    }
+
+    /// Place record `i` under `parent` (`None`: the root), then its subtree.
+    fn run(&mut self, i: usize, parent: Option<usize>, depth: usize, warnings: &mut Vec<LoadWarning>) {
+        self.place(i, parent, depth, warnings);
+        while let Some(&(f, taken, cp, cd)) = self.stack.last() {
+            // v1 lists are top → bottom: children are placed bottom first.
+            let list = self.meta.get(f).map_or(&[][..], |m| &m.folder_child_ids[..]);
+            let next = taken.checked_add(1).and_then(|k| list.len().checked_sub(k)).and_then(|k| list.get(k));
+            let Some(old) = next else {
+                self.stack.pop();
                 continue;
             };
-            if *seen {
-                let layer = self.meta.get(i).map_or(0, |m| m.id);
-                warnings.push(LoadWarning::LegacyDuplicateRef { layer });
+            if let Some(top) = self.stack.last_mut() {
+                top.1 = taken.saturating_add(1);
+            }
+            // Missing ids are skipped.
+            let Some(&c) = self.by_old.get(old) else { continue };
+            if c == f {
+                self.warn_repeat(f, warnings);
                 continue;
             }
-            *seen = true;
-            match parent.and_then(|p| self.children.get_mut(p)) {
-                Some(siblings) => siblings.push(id),
-                None => self.root.push(id),
-            }
-            if kind != Kind::Folder {
-                continue;
-            }
-            if depth > V1_FOLDER_DEPTH {
-                self.deep = self.deep.saturating_add(1);
-            }
-            // Past the depth limit, descendants are flattened into the
-            // deepest folder allowed.
-            let (cp, cd) = if depth < MAX_TREE_DEPTH { (Some(i), depth.saturating_add(1)) } else { (parent, depth) };
-            for &c in self.kids.get(i).into_iter().flatten().rev() {
-                if c == i {
-                    warnings.push(LoadWarning::LegacyDuplicateRef { layer: self.meta.get(i).map_or(0, |m| m.id) });
-                    continue;
-                }
-                self.stack.push((c, cp, cd));
-            }
+            self.place(c, cp, cd, warnings);
         }
+    }
+
+    /// Put record `i` in place and, for a folder, queue its children.
+    fn place(&mut self, i: usize, parent: Option<usize>, depth: usize, warnings: &mut Vec<LoadWarning>) {
+        let (Some(seen), Some(&id), Some(&kind)) = (self.visited.get_mut(i), self.ids.get(i), self.kinds.get(i)) else {
+            return;
+        };
+        if *seen {
+            self.warn_repeat(i, warnings);
+            return;
+        }
+        *seen = true;
+        match parent.and_then(|p| self.children.get_mut(p)) {
+            Some(siblings) => siblings.push(id),
+            None => self.root.push(id),
+        }
+        if kind != Kind::Folder {
+            return;
+        }
+        if depth > V1_FOLDER_DEPTH {
+            self.deep = self.deep.saturating_add(1);
+        }
+        // Past the depth limit, descendants are flattened into the
+        // deepest folder allowed.
+        let (cp, cd) = if depth < MAX_TREE_DEPTH { (Some(i), depth.saturating_add(1)) } else { (parent, depth) };
+        self.stack.push((i, 0, cp, cd));
     }
 }
 
@@ -297,54 +370,55 @@ fn build_tree(meta: &Meta, max_layers: u32, warnings: &mut Vec<LoadWarning>) -> 
         .collect();
     let kinds: Vec<Kind> = meta.layers.iter().map(|l| Kind::of(&l.kind)).collect();
 
-    // v1 lists are top → bottom; missing ids are skipped.
-    let resolve = |old: &u32| by_old.get(old).copied();
-    let kids: Vec<Vec<usize>> = meta
-        .layers
-        .iter()
-        .zip(&kinds)
-        .map(|(l, &k)| match k {
-            Kind::Folder => l.folder_child_ids.iter().rev().filter_map(resolve).collect(),
-            _ => Vec::new(),
-        })
-        .collect();
-    let claimed: AHashSet<usize> =
-        kids.iter().enumerate().flat_map(|(i, c)| c.iter().copied().filter(move |&c| c != i)).collect();
+    // Layers a folder lists as its child (a folder listing itself aside);
+    // missing ids are skipped.
+    let mut claimed = vec![false; n];
+    for (i, l) in meta.layers.iter().enumerate() {
+        if kinds.get(i) != Some(&Kind::Folder) {
+            continue;
+        }
+        for c in l.folder_child_ids.iter().filter_map(|old| by_old.get(old).copied()) {
+            if c != i
+                && let Some(slot) = claimed.get_mut(c)
+            {
+                *slot = true;
+            }
+        }
+    }
+    let is_claimed = |i: usize| claimed.get(i) == Some(&true);
 
     let mut walk = Walk {
         meta: &meta.layers,
         ids: &ids,
         kinds: &kinds,
-        kids: &kids,
+        by_old: &by_old,
         visited: vec![false; n],
+        warned: vec![false; n],
         children: vec![Vec::new(); n],
         root: Vec::new(),
         deep: 0,
         stack: Vec::new(),
     };
-    // A layer that is both listed at the top level and a folder's child
+    // v1 lists are top → bottom, so the bottom layer is placed first. A
+    // layer that is both listed at the top level and a folder's child
     // belongs to the folder.
-    for old in meta.layer_order.iter() {
-        if let Some(i) = resolve(old)
-            && claimed.contains(&i)
-        {
-            warnings.push(LoadWarning::LegacyDuplicateRef { layer: *old });
+    for old in meta.layer_order.iter().rev() {
+        let Some(&i) = by_old.get(old) else { continue };
+        if is_claimed(i) {
+            walk.warn_repeat(i, warnings);
+        } else {
+            walk.run(i, None, 1, warnings);
         }
     }
-    let top: Vec<usize> = meta.layer_order.iter().filter_map(resolve).filter(|i| !claimed.contains(i)).collect();
-    // Pushed top first, so the bottom layer is placed first.
-    walk.stack.extend(top.into_iter().map(|i| (i, None, 1)));
-    walk.run(warnings);
     // Unlisted layers go on top, listed order kept (the first listed ends
     // up highest). Folders first take the children they claim.
     for unclaimed_only in [true, false] {
         for i in (0..n).rev() {
-            if walk.visited.get(i) == Some(&false) && !(unclaimed_only && claimed.contains(&i)) {
+            if walk.visited.get(i) == Some(&false) && !(unclaimed_only && is_claimed(i)) {
                 if let Some(id) = ids.get(i) {
                     warnings.push(LoadWarning::LegacyOrphan { layer: id.0 });
                 }
-                walk.stack.push((i, None, 1));
-                walk.run(warnings);
+                walk.run(i, None, 1, warnings);
             }
         }
     }
@@ -611,6 +685,7 @@ pub fn import_v1<R: ReadAt + Sync + ?Sized>(
         commit_seq: 0,
         saved_ms: 0,
         recovered: false,
+        fell_back_from: None,
         width: doc.width(),
         height: doc.height(),
         dpi,
@@ -658,6 +733,7 @@ pub(crate) fn read_info_v1<R: ReadAt + ?Sized>(src: &R, legacy_dpi: u32) -> Resu
         commit_seq: 0,
         saved_ms: 0,
         recovered: false,
+        fell_back_from: None,
         width: meta.canvas_width,
         height: meta.canvas_height,
         dpi: legacy_dpi,
@@ -768,6 +844,62 @@ mod tests {
         assert_eq!(t.children[MAX_TREE_DEPTH - 2], (limit..=n).map(LayerId).collect::<Vec<_>>());
         assert!(t.children[MAX_TREE_DEPTH - 1..].iter().all(Vec::is_empty));
         assert!(w.contains(&LoadWarning::LegacyDeepFolders { count: n - 1 - V1_FOLDER_DEPTH as u32 }));
+    }
+
+    /// A v1 file holding only `json` (no tiles).
+    fn v1_file(json: &str) -> Vec<u8> {
+        let mut f = b"ARTY".to_vec();
+        f.extend_from_slice(&1u32.to_le_bytes());
+        f.extend_from_slice(&V1_HEADER_LEN.to_le_bytes());
+        f.extend_from_slice(&(V1_HEADER_LEN + json.len() as u64).to_le_bytes());
+        f.extend_from_slice(json.as_bytes());
+        f
+    }
+
+    fn meta_of(json: &str) -> Result<Meta, IoError> {
+        let f = v1_file(json);
+        let (json_off, dir_off) = read_offsets(&f[..], f.len() as u64)?;
+        read_meta(&f[..], json_off, dir_off)
+    }
+
+    fn list(item: &str, n: usize) -> String {
+        vec![item; n].join(",")
+    }
+
+    #[test]
+    fn long_lists_are_refused_while_parsing() {
+        let max = MAX_LAYER_COUNT as usize;
+        let page = r#""canvas_width":1,"canvas_height":1"#;
+        let ok = meta_of(&format!(r#"{{{page},"layers":[{}]}}"#, list("{}", max))).unwrap();
+        assert_eq!(ok.layers.len(), max);
+        for json in [
+            format!(r#"{{{page},"layers":[{}]}}"#, list("{}", max + 1)),
+            format!(r#"{{{page},"layer_order":[{}],"layers":[{{"id":1}}]}}"#, list("1", max + 1)),
+            format!(r#"{{{page},"layers":[{{"id":1,"kind":"Folder","folder_child_ids":[{}]}}]}}"#, list("2", max + 1)),
+        ] {
+            let err = meta_of(&json).err();
+            assert!(matches!(err, Some(IoError::LimitExceeded { what: "layers", .. })), "{err:?}");
+        }
+        // Other damage is still reported as such.
+        assert!(matches!(meta_of(r#"{"layers":[1]}"#).err(), Some(IoError::Corrupt { .. })));
+    }
+
+    #[test]
+    fn repeated_references_warn_once_per_layer() {
+        // Top → bottom: 1 listed 50k times, folder 2 listing 3 50k times
+        // and itself.
+        let mut kids = vec![3; 50_000];
+        kids.push(2);
+        let (t, w) = tree(&[vec![1; 50_000], vec![2]].concat(), vec![
+            layer(1, "Raster", &[]),
+            layer(2, "Folder", &kids),
+            layer(3, "Raster", &[]),
+        ]);
+        assert!(t.visited_all());
+        assert_eq!(t.root, [LayerId(2), LayerId(1)]);
+        assert_eq!(t.children[1], [LayerId(3)]);
+        let repeats = |id| w.iter().filter(|x| **x == LoadWarning::LegacyDuplicateRef { layer: id }).count();
+        assert_eq!((repeats(1), repeats(2), repeats(3)), (1, 1, 1), "{} warnings", w.len());
     }
 
     impl Tree {

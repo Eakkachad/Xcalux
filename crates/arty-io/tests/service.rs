@@ -1,7 +1,7 @@
 //! The IO thread and the recovery folder (plan item 11): queued autosaves
 //! coalesce to the newest, saves are never dropped, shutdown finishes the
 //! queued work, a cancelled load changes nothing, the startup scan sorts
-//! recovery files, and a restored file is deleted after the first
+//! recovery files, and a restored file is deleted after the first save or
 //! autosave.
 
 mod common;
@@ -12,9 +12,10 @@ use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
 use arty_core::{Document, TileCoord};
+use arty_io::format::{COMMIT_RECORD_LEN, Commit, RECORD_HEADER_LEN};
 use arty_io::{
-    IoConfig, IoError, IoEvent, IoService, LoadOptions, Progress, RecoveryDir, Request, SaveExtras, SaveOptions, Session,
-    SessionId,
+    IoConfig, IoError, IoEvent, IoService, LoadOptions, LoadWarning, Progress, RecoveryDir, Request, SaveExtras,
+    SaveOptions, Session, SessionId,
 };
 use common::*;
 
@@ -105,8 +106,11 @@ fn queued_autosaves_write_only_the_newest() {
     let tickets: Vec<u64> = docs.iter().map(|d| autosave(&io, d)).collect();
     drop(go);
     let events = settle(&io);
-    assert_eq!(events.len(), 1, "one write for three queued autosaves");
-    let IoEvent::Autosaved { ticket, rev, stats } = &events[0] else { panic!("expected Autosaved") };
+    assert_eq!(events.len(), 3, "one write for three queued autosaves, and an answer to each");
+    for (e, &t) in events.iter().zip(&tickets[..2]) {
+        assert!(matches!(e, IoEvent::Failed { ticket, error: IoError::Cancelled, .. } if *ticket == t), "dropped");
+    }
+    let IoEvent::Autosaved { ticket, rev, stats } = &events[2] else { panic!("expected Autosaved") };
     assert_eq!((*ticket, *rev), (tickets[2], docs[2].revision()));
     assert!(!stats.unchanged);
 
@@ -125,19 +129,21 @@ fn saves_are_never_dropped() {
     let go = pause(&io);
     let docs: Vec<Document> = (1..=5).map(|r| with_rev(doc(r * 7, 5), r)).collect();
     let (a, b) = (dir.join("a.arty"), dir.join("b.arty"));
-    autosave(&io, &docs[0]);
+    let t1 = autosave(&io, &docs[0]);
     let ta = save(&io, &docs[1], &a);
-    autosave(&io, &docs[2]);
+    let t3 = autosave(&io, &docs[2]);
     let tb = save(&io, &docs[3], &b);
     let t5 = autosave(&io, &docs[4]);
     drop(go);
 
     let mut saved = Vec::new();
     let mut autosaved = Vec::new();
+    let mut dropped = Vec::new();
     for e in settle(&io) {
         match e {
             IoEvent::Saved { ticket, path, rev, .. } => saved.push((ticket, path, rev)),
             IoEvent::Autosaved { ticket, rev, .. } => autosaved.push((ticket, rev)),
+            IoEvent::Failed { ticket, error: IoError::Cancelled, .. } => dropped.push(ticket),
             IoEvent::Failed { op, error, .. } => panic!("{op}: {error}"),
             _ => panic!("unexpected event"),
         }
@@ -145,6 +151,7 @@ fn saves_are_never_dropped() {
     let rev = |i: usize| docs[i].revision();
     assert_eq!(saved, vec![(ta, a.clone(), rev(1)), (tb, b.clone(), rev(3))]);
     assert_eq!(autosaved, vec![(t5, rev(4))], "autosaves followed by a save or autosave are dropped");
+    assert_eq!(dropped, vec![t1, t3]);
     assert_same_doc(&docs[1], &load(&a).doc);
     assert_same_doc(&docs[3], &load(&b).doc);
     io.shutdown();
@@ -297,6 +304,95 @@ fn recovery_scan_skips_live_sessions_and_deletes_clean_and_obsolete_ones() {
     assert!(!crashed_rec.exists());
     assert!(RecoveryDir::new(&dir).scan().is_empty());
     live.close(true).unwrap();
+}
+
+#[test]
+fn recovery_file_with_a_damaged_newest_manifest_is_offered() {
+    let root = temp_dir("svc-damaged");
+    let dir = root.join("recovery");
+    let pool = pool();
+    let p = Progress::default();
+    let ex = SaveExtras::default();
+    let mut s = session(&dir, 0x5A);
+    // Commit 1: autosave; 2: saved to the main file (marked clean); 3: an
+    // edit autosaved, then the session crashes.
+    let saved = with_rev(doc(8, 4), 1);
+    s.autosave(&saved, &ex, saved.revision(), &pool, &p).unwrap();
+    s.save_main(&saved, &ex, &root.join("main.arty"), false, &SaveOptions::default(), &pool, &p).unwrap();
+    let edited = with_rev(saved.snapshot(), 2);
+    s.autosave(&edited, &ex, edited.revision(), &pool, &p).unwrap();
+    let rec = s.recovery_path().unwrap();
+    s.close(false).unwrap();
+    assert_eq!(arty_io::read_info(&rec).unwrap().commit_seq, 3);
+
+    // The disk loses a byte of the newest manifest; its commit survives.
+    let mut bytes = fs::read(&rec).unwrap();
+    let at = bytes.len() - COMMIT_RECORD_LEN;
+    let newest = Commit::decode_record(&bytes[at..], at as u64).unwrap();
+    let prev = newest.prev_commit_offset as usize;
+    let older = Commit::decode_record(&bytes[prev..prev + COMMIT_RECORD_LEN], prev as u64).unwrap();
+    bytes[newest.manifest_offset as usize + RECORD_HEADER_LEN + 10] ^= 0xFF;
+    fs::write(&rec, &bytes).unwrap();
+
+    let info = arty_io::read_info(&rec).unwrap();
+    assert_eq!((info.commit_seq, info.fell_back_from, info.saved_ms), (2, Some(3), older.unix_ms));
+    // Commit 2 says clean, yet the work after it is what was lost: offered.
+    let found = RecoveryDir::new(&dir).scan();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((&found[0].path, found[0].saved_ms, found[0].rev), (&rec, older.unix_ms, saved.revision()));
+
+    // Restore reaches the intact commit.
+    let o = LoadOptions { fallback_to_previous: true, ..LoadOptions::default() };
+    let l = arty_io::load(&rec, &o, &pool, &p).unwrap();
+    assert!(l.warnings.contains(&LoadWarning::FellBackToCommit { seq: 2 }));
+    assert_eq!(l.info.fell_back_from, Some(3));
+    assert_same_doc(&saved, &l.doc);
+}
+
+#[test]
+fn a_superseded_autosave_still_answers() {
+    let dir = temp_dir("svc-superseded");
+    let io = spawn(&dir);
+    let go = pause(&io);
+    let d = with_rev(doc(3, 4), 2);
+    let dropped = autosave(&io, &d);
+    let saved = save(&io, &d, &dir.join("s.arty"));
+    drop(go);
+    let events = settle(&io);
+    // The app tracks its autosave in flight by ticket.
+    let [IoEvent::Failed { ticket: t1, op: "autosave", error: IoError::Cancelled }, IoEvent::Saved { ticket: t2, .. }] =
+        events.as_slice()
+    else {
+        panic!("expected Failed(Cancelled) then Saved")
+    };
+    assert_eq!((*t1, *t2), (dropped, saved));
+    io.shutdown();
+}
+
+#[test]
+fn restored_file_is_deleted_after_the_first_save() {
+    let root = temp_dir("svc-restore-save");
+    let dir = root.join("recovery");
+    let pool = pool();
+    let p = Progress::default();
+    let mut old = session(&dir, 0x78);
+    let d = with_rev(doc(4, 6), 3);
+    old.autosave(&d, &SaveExtras::default(), d.revision(), &pool, &p).unwrap();
+    let old_rec = old.recovery_path().unwrap();
+    old.close(false).unwrap();
+
+    let io = spawn(&root);
+    let entry = RecoveryDir::new(&dir).scan().pop().unwrap();
+    io.send(Request::Restore { entry });
+    let events = settle(&io);
+    let [IoEvent::Loaded { loaded, .. }] = events.as_slice() else { panic!("expected Loaded") };
+    assert!(old_rec.exists());
+    save(&io, &loaded.doc, &root.join("restored.arty"));
+    assert!(matches!(settle(&io).as_slice(), [IoEvent::Saved { .. }]));
+    assert!(!old_rec.exists(), "the main file holds the restored state");
+    // A crash now offers nothing again.
+    drop(io);
+    assert!(RecoveryDir::new(&dir).scan().is_empty());
 }
 
 #[test]

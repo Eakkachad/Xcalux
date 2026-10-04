@@ -72,7 +72,7 @@ fn shared_and_equal_tiles_are_stored_once() {
         *Arc::get_mut(&mut t).unwrap() = *noise;
         t
     };
-    let b = doc.add_raster_layer();
+    let b = doc.add_raster_layer().unwrap();
     {
         let (g, _) = doc.paint_target(a).unwrap();
         g.insert(TileCoord::new(0, 0), noise.clone());
@@ -173,8 +173,8 @@ fn long_names_are_truncated_at_a_char_boundary() {
 fn present_but_empty_tiles_and_folders_survive() {
     let pool = pool();
     let mut doc = Document::new(100, 100, 72);
-    let f = doc.add_folder();
-    let inner = doc.add_raster_layer();
+    let f = doc.add_folder().unwrap();
+    let inner = doc.add_raster_layer().unwrap();
     assert!(doc.move_layer(inner, Some(f), 0));
     doc.set_folder_expanded(f, false);
     let (g, _) = doc.paint_target(inner).unwrap();
