@@ -32,7 +32,7 @@ fn doc(seed: u64, n: i32) -> Document {
 }
 
 fn spawn(dir: &Path) -> IoService {
-    let cfg = IoConfig { threads: 2, recovery_dir: dir.join("recovery"), load: LoadOptions::default() };
+    let cfg = IoConfig { threads: 2, recovery_dir: dir.join("recovery"), load: LoadOptions::default(), recover: LoadOptions::default() };
     IoService::spawn(cfg, || {}).unwrap()
 }
 
