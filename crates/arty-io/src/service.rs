@@ -520,15 +520,10 @@ mod sys {
             return fallback();
         }
 
-        let mut buf = vec![0u8; len as usize];
-        // SAFETY: `buf` has `len` bytes and is writable.
-        let ok = unsafe {
-            GetLogicalProcessorInformationEx(
-                RelationProcessorCore,
-                buf.as_mut_ptr().cast(),
-                &mut len,
-            )
-        };
+        // u64 storage keeps every record 8-aligned, as the struct reads below need.
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+        // SAFETY: `buf` has at least `len` writable bytes.
+        let ok = unsafe { GetLogicalProcessorInformationEx(RelationProcessorCore, buf.as_mut_ptr().cast(), &mut len) };
         if ok == 0 {
             return fallback();
         }
@@ -551,9 +546,9 @@ mod sys {
 
         while offset + min_header_size <= len_usize {
             // SAFETY: offset + min_header_size <= len_usize and record header is within bounds.
-            let info = unsafe { &*buf.as_ptr().add(offset).cast::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>() };
+            let info = unsafe { &*buf.as_ptr().cast::<u8>().add(offset).cast::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>() };
             let record_size = info.Size as usize;
-            if record_size < min_header_size || offset + record_size > len_usize {
+            if record_size < min_header_size || offset + record_size > len_usize || !record_size.is_multiple_of(8) {
                 break;
             }
 
