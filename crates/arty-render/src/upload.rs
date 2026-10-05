@@ -319,7 +319,9 @@ impl CanvasSync {
                 let _ = device.poll(wgpu::PollType::Poll);
             }
         }
-        if self.staging.capacity() > 1 << 20 {
+        // Keep a stroke-sized buffer (~190 tiles) so drawing does not reallocate
+        // every frame; drop the large one a page-wide upload left behind.
+        if self.staging.capacity() > 4 << 20 {
             self.staging = Vec::new();
         }
         Some(SyncStats { tiles: self.slots.len(), millis: start.elapsed().as_secs_f32() * 1000.0 })

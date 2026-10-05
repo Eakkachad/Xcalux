@@ -9,6 +9,10 @@ license.workspace = true
 name = "arty"
 path = "src/main.rs"
 
+[features]
+# Live/peak heap bytes in ARTY_BENCH output (plans/bench/B020).
+heap-stats = []
+
 [dependencies]
 arty-brush.workspace = true
 arty-core.workspace = true
