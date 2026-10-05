@@ -3,12 +3,20 @@
 use arty_core::{BlendMode, Document, TILE_SIZE, TileCoord, fix15};
 use arty_render::gpu::UploadRect;
 use arty_render::upload::{
+
     CHAIN_BYTES, RowJob, Worker, row_jobs, run_jobs_fresh, run_jobs_reused, run_jobs_seq,
     with_thread_worker,
 };
 
 #[global_allocator]
 static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
+
+/// `peak_bytes_during` counts the whole process, so the tests of this binary
+/// run one at a time (cargo runs them on parallel threads).
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn build_test_doc(tiles_x: u32, tiles_y: u32) -> Document {
     let mut doc = Document::new(tiles_x * TILE_SIZE as u32, tiles_y * TILE_SIZE as u32, 350);
@@ -46,6 +54,7 @@ fn make_jobs<'a>(r: &UploadRect, buf: &'a mut [u8]) -> Vec<RowJob<'a>> {
 
 #[test]
 fn worker_run_is_allocation_free_when_warm() {
+    let _serial = serial();
     let doc = build_test_doc(16, 1);
     let r = UploadRect { layer: 0, x: 0, y: 0, w: 16, h: 1 };
     let mut buf_warm = vec![0u8; 16 * CHAIN_BYTES];
@@ -70,6 +79,7 @@ fn worker_run_is_allocation_free_when_warm() {
 
 #[test]
 fn thread_local_worker_is_allocation_free_when_warm() {
+    let _serial = serial();
     let doc = build_test_doc(16, 2);
     let r = UploadRect { layer: 0, x: 0, y: 0, w: 16, h: 2 };
     let mut buf_warm = vec![0u8; 32 * CHAIN_BYTES];
@@ -97,6 +107,7 @@ fn thread_local_worker_is_allocation_free_when_warm() {
 
 #[test]
 fn run_jobs_seq_is_allocation_free_when_warm() {
+    let _serial = serial();
     let doc = build_test_doc(16, 4);
     let r = UploadRect { layer: 0, x: 0, y: 0, w: 16, h: 4 };
     let mut buf_warm = vec![0u8; 64 * CHAIN_BYTES];
@@ -115,6 +126,7 @@ fn run_jobs_seq_is_allocation_free_when_warm() {
 
 #[test]
 fn parallel_worker_in_single_thread_pool_is_allocation_free_when_warm() {
+    let _serial = serial();
     let doc = build_test_doc(16, 16);
     let r = UploadRect { layer: 0, x: 0, y: 0, w: 16, h: 16 };
     let mut buf_warm = vec![0u8; 256 * CHAIN_BYTES];
@@ -136,6 +148,7 @@ fn parallel_worker_in_single_thread_pool_is_allocation_free_when_warm() {
 
 #[test]
 fn multithreaded_upload_prep_steady_state_heap_growth_is_zero() {
+    let _serial = serial();
     let doc = build_test_doc(16, 16);
     let r = UploadRect { layer: 0, x: 0, y: 0, w: 16, h: 16 };
     let mut buf_warm = vec![0u8; 256 * CHAIN_BYTES];
@@ -168,6 +181,7 @@ fn multithreaded_upload_prep_steady_state_heap_growth_is_zero() {
 
 #[test]
 fn pre_e5_fresh_worker_allocates_heap() {
+    let _serial = serial();
     // Sanity check proving that pre-E5 fresh worker path indeed allocates,
     // ensuring the CountingAllocator is active and tests are sensitive.
     let doc = build_test_doc(4, 1);
