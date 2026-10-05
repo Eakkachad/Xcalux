@@ -31,6 +31,17 @@ use crate::{FileKind, Progress};
 /// Identifies one request; events about it carry the same ticket.
 pub type Ticket = u64;
 
+/// Installed physical memory, when the OS reports it.
+pub fn physical_memory() -> Option<u64> {
+    sys::physical_memory()
+}
+
+/// Run the calling thread below normal priority, so background work (io,
+/// freeing undo steps) does not preempt the UI thread.
+pub fn lower_thread_priority() {
+    sys::lower_thread_priority()
+}
+
 pub struct IoConfig {
     /// Threads of the io pool.
     pub threads: usize,
@@ -49,7 +60,7 @@ impl IoConfig {
     pub fn new(recovery_dir: PathBuf) -> Self {
         let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 7));
         let mut load = LoadOptions::default();
-        if let Some(ram) = sys::physical_memory() {
+        if let Some(ram) = physical_memory() {
             load.limits.max_decoded_bytes = load.limits.max_decoded_bytes.min(ram / 4 * 3);
         }
         Self { threads, recovery_dir, load }

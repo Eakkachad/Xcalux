@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::Document;
 use crate::geom::TileRect;
-use crate::history::Edit;
+use crate::history::{ARC_COUNTS, Edit, table_bytes};
 use crate::layer::LayerId;
 use crate::tile::{TILE_SIZE, TileCoord, TileRef, is_tile_empty};
 
@@ -134,6 +134,23 @@ impl Selection {
     /// True when both share one tile map (neither written since a clone).
     pub fn shares_storage(&self, other: &Selection) -> bool {
         Arc::ptr_eq(&self.tiles, &other.tiles)
+    }
+
+    /// The stored tile at `c` (the shared [`full_mask`] for a full one).
+    pub(crate) fn tile_ref(&self, c: TileCoord) -> Option<&MaskRef> {
+        self.tiles.get(&c)
+    }
+
+    /// Identity of the tile map: equal exactly when [`Self::shares_storage`].
+    pub(crate) fn map_ptr(&self) -> usize {
+        Arc::as_ptr(&self.tiles) as usize
+    }
+
+    /// Heap bytes of the tile map itself (not the masks).
+    pub(crate) fn map_bytes(&self) -> usize {
+        table_bytes(self.tiles.capacity(), size_of::<(TileCoord, MaskRef)>())
+            + ARC_COUNTS
+            + size_of::<AHashMap<TileCoord, MaskRef>>()
     }
 
     /// Mask bytes held by this selection: partial tiles only, since every

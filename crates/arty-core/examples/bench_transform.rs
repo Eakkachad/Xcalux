@@ -204,7 +204,7 @@ fn main() {
             println!("| full-page layer (12 825 tiles): {label}, {when} | {t:.1} ms |");
             // Put the page back for the next case.
             let mut h = arty_core::History::default();
-            h.push(edit.unwrap());
+            h.push(edit.unwrap(), &doc);
             h.undo(&mut doc);
             doc.dirty_mut().drain_into(&mut Vec::new());
         }

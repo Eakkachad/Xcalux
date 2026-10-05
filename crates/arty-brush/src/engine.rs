@@ -284,7 +284,7 @@ impl StrokeEngine {
         if self.layer.take().is_some()
             && let Some(edit) = self.recorder.finish() {
                 let mut h = arty_core::History::new(1);
-                h.push(edit);
+                h.push(edit, doc);
                 h.undo(doc);
             }
     }

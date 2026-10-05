@@ -474,11 +474,11 @@ fn fr09_dirty_marking_keeps_caches_fresh() {
 
     let a = Frame::build(shape(vec![rect(10.0, 10.0, 200.0, 180.0)], 6.0, GREEN), 320, 256);
     let old = doc.set_frame(folder, Some(a.clone())).unwrap();
-    h.push(Edit::Frame { layer: folder, frame: old });
+    h.push(Edit::Frame { layer: folder, frame: old }, &doc);
     assert_cache_fresh(&mut doc, &mut cache, "add");
     let b = Frame::build(shape(vec![rect(40.5, 30.0, 260.0, 200.0)], 3.0, BLACK), 320, 256);
     let old = doc.set_frame(folder, Some(b)).unwrap();
-    h.push(Edit::Frame { layer: folder, frame: old });
+    h.push(Edit::Frame { layer: folder, frame: old }, &doc);
     assert_cache_fresh(&mut doc, &mut cache, "edit");
     for step in 0..2 {
         h.undo(&mut doc);
@@ -489,7 +489,7 @@ fn fr09_dirty_marking_keeps_caches_fresh() {
         assert_cache_fresh(&mut doc, &mut cache, &format!("redo {step}"));
     }
     let old = doc.set_frame(folder, None).unwrap();
-    h.push(Edit::Frame { layer: folder, frame: old });
+    h.push(Edit::Frame { layer: folder, frame: old }, &doc);
     assert_cache_fresh(&mut doc, &mut cache, "remove");
     h.undo(&mut doc);
     assert_cache_fresh(&mut doc, &mut cache, "undo remove");
@@ -510,7 +510,7 @@ fn fr09_dirty_marking_keeps_caches_fresh() {
     let shape_now = doc.frame(folder).unwrap().shape().clone();
     let (cut, _) = shape_now.cut([0.0, 100.0], [320.0, 120.0], 12.0, 8.0).unwrap();
     let old = doc.set_frame(folder, Some(Frame::build(cut, 320, 256))).unwrap();
-    h.push(Edit::Frame { layer: folder, frame: old });
+    h.push(Edit::Frame { layer: folder, frame: old }, &doc);
     assert_cache_fresh(&mut doc, &mut cache, "cut");
     h.undo(&mut doc);
     assert_cache_fresh(&mut doc, &mut cache, "undo cut");
@@ -535,7 +535,7 @@ fn fr10_history() {
     let rev = doc.revision();
     let old = doc.set_frame(folder, Some(b.clone())).unwrap();
     assert!(doc.revision() > rev, "set_frame bumps the revision");
-    h.push(Edit::Frame { layer: folder, frame: old });
+    h.push(Edit::Frame { layer: folder, frame: old }, &doc);
     h.undo(&mut doc);
     assert!(Arc::ptr_eq(doc.frame(folder).unwrap(), &a));
     h.redo(&mut doc);
@@ -552,7 +552,7 @@ fn fr10_history() {
     let old = doc.set_page_setup(Some(page)).unwrap();
     assert!(doc.revision() > rev, "set_page_setup bumps the revision");
     assert!(doc.set_page_setup(Some(page)).is_none(), "no change");
-    h.push(Edit::Page(old));
+    h.push(Edit::Page(old), &doc);
     h.undo(&mut doc);
     assert_eq!(doc.page_setup(), None);
     h.redo(&mut doc);

@@ -53,7 +53,7 @@ pub use manifest::{AppSection, LayerExt};
 pub use readat::ReadAt;
 pub use reader::{FileInfo, LoadOptions, Loaded, load, load_from, read_info};
 pub use recovery::{RecoveryDir, RecoveryEntry};
-pub use service::{IoConfig, IoEvent, IoService, Request, Ticket};
+pub use service::{IoConfig, IoEvent, IoService, Request, Ticket, lower_thread_priority, physical_memory};
 pub use sink::Sink;
 pub use writer::{CommitMeta, Compaction, FileWriter, SaveExtras, SaveOptions, SaveStats, Session, SessionId, Verify};
 

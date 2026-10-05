@@ -802,6 +802,19 @@ impl Frame {
         self.raster.masks.len() * std::mem::size_of::<MaskTile>()
     }
 
+    /// Heap bytes this frame holds: itself, the tile tables, the masks and
+    /// the panels (the undo budget's cost of an old frame).
+    pub fn heap_bytes(&self) -> usize {
+        let r = &self.raster;
+        let panels = &self.shape.panels;
+        size_of::<Frame>()
+            + (r.content.len() + r.border.len()) * size_of::<u32>()
+            + r.masks.capacity() * size_of::<Box<MaskTile>>()
+            + r.masks.len() * size_of::<MaskTile>()
+            + panels.capacity() * size_of::<Panel>()
+            + panels.iter().map(|p| p.pts.capacity() * size_of::<Pt>()).sum::<usize>()
+    }
+
     /// A frame whose content is Full on `full` tiles and Outside elsewhere
     /// (tests of dirty marking and history).
     #[cfg(test)]

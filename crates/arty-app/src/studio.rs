@@ -645,7 +645,7 @@ impl Studio {
             if let Edit::Pixels { layer, .. } = &edit {
                 self.epochs.pixels_changed(*layer);
             }
-            self.history.push(edit);
+            self.history.push(edit, &self.doc);
             if !self.preset().eraser {
                 self.remember_color();
             }
@@ -701,7 +701,7 @@ impl Studio {
     pub fn record_edit(&mut self, edit: Edit) {
         let mut touched = Vec::new();
         edit.touched(&mut |t| touched.push(t));
-        self.history.push(edit);
+        self.history.push(edit, &self.doc);
         self.history_applied(&touched);
     }
 
@@ -741,7 +741,7 @@ impl Studio {
         self.commit_transform();
         let snap = self.doc.snapshot_structure();
         if f(&mut self.doc) {
-            self.history.push(Edit::Structure(Box::new(snap)));
+            self.history.push(Edit::Structure(Box::new(snap)), &self.doc);
             self.epochs.structure_changed();
         }
     }
@@ -779,7 +779,7 @@ impl Studio {
             return;
         }
         self.doc.clear_layer(id);
-        self.history.push(Edit::Pixels { layer: id, tiles });
+        self.history.push(Edit::Pixels { layer: id, tiles }, &self.doc);
         self.epochs.pixels_changed(id);
     }
 
@@ -813,6 +813,29 @@ impl Studio {
         self.fit_pending = true;
         self.doc_epoch += 1;
     }
+}
+
+/// Frees dropped undo steps on a background thread ("arty-undo-free"); drops inline if
+/// the thread cannot start or has gone. The thread runs below normal priority: at normal
+/// priority, woken by a push, it preempted the pushing thread for milliseconds on 4 cores
+/// (plans/bench/B012).
+pub fn undo_release() -> Box<dyn FnMut(Edit) + Send> {
+    let (tx, rx) = std::sync::mpsc::channel::<Edit>();
+    let ok = std::thread::Builder::new()
+        .name("arty-undo-free".into())
+        .spawn(move || {
+            arty_io::lower_thread_priority();
+            for e in rx {
+                drop(e);
+            }
+        })
+        .is_ok();
+    // A failed send hands the Edit back inside the error, which drops it here.
+    Box::new(move |e| {
+        if ok {
+            let _ = tx.send(e);
+        }
+    })
 }
 
 /// In-memory `eframe::Storage`, so tests go through eframe's real RON encoding.
@@ -902,6 +925,34 @@ mod tests {
         s.set_main_hsv([0.6, 0.8, 0.9]);
         s.set_main_color([0.0; 3]);
         assert!((s.color.hsv[0] - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn big_clears_trim_under_small_budget() {
+        let mut s = Studio::new(Document::new(256, 256, 72));
+        let id = s.doc.active();
+        let layer = 16 * arty_core::TILE_BYTES;
+        s.history.set_budget(layer * 5 / 2);
+        let value = |s: &Studio| {
+            let grid = s.doc.layer(id).unwrap().raster().unwrap();
+            (grid.len(), grid.get(TileCoord::new(3, 3)).map(|t| t[5][5]))
+        };
+        for v in 1..=3 {
+            let (grid, _) = s.doc.paint_target(id).unwrap();
+            for c in (0..16).map(|i| TileCoord::new(i % 4, i / 4)) {
+                grid.get_mut_or_create(c)[5][5] = [v; 4];
+            }
+            s.clear_active_layer();
+        }
+        assert_eq!(s.history.undo_len(), 2, "the oldest clear was dropped for the budget");
+        assert_eq!(s.history.usage().trimmed, 1);
+        s.undo();
+        s.undo();
+        assert!(!s.history.can_undo());
+        assert_eq!(value(&s), (16, Some([2; 4])), "back to before the oldest kept clear");
+
+        s.new_document(64, 64, 72);
+        assert_eq!(s.history.budget(), layer * 5 / 2, "a new document keeps the budget");
     }
 
     #[test]

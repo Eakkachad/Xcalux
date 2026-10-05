@@ -91,3 +91,28 @@ fn frame_composite_is_allocation_free() {
     });
     assert_eq!(n, 0, "frame compositing allocated {n} times");
 }
+
+#[test]
+fn history_push_is_allocation_free_when_warm() {
+    use arty_core::{Edit, History, tile::new_tile};
+    let mut doc = Document::new(512, 512, 350);
+    for i in 0..15 {
+        let id = if i == 0 { doc.active() } else { doc.add_raster_layer().unwrap() };
+        let (grid, _) = doc.paint_target(id).unwrap();
+        for c in 0..16 {
+            grid.get_mut_or_create(TileCoord::new(c % 8, c / 8))[0][0] = [i + 1; 4];
+        }
+    }
+    let layer = doc.active();
+    // 20 tiles the document does not hold, so every one is a candidate.
+    let edit = || Edit::Pixels { layer, tiles: (0..20).map(|x| (TileCoord::new(x, 4), Some(new_tile()))).collect() };
+    // Under budget (no scan), and over it (the document scan on every push).
+    for mut h in [History::new(4), History::with_budget(4, 1)] {
+        for _ in 0..6 {
+            h.push(edit(), &doc);
+        }
+        let prebuilt = edit();
+        let n = arty_testkit::count_allocs(|| h.push(prebuilt, &doc));
+        assert_eq!(n, 0, "History::push allocated {n} times (budget {})", h.budget());
+    }
+}

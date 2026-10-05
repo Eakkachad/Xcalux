@@ -471,7 +471,7 @@ fn fl12_one_undo_step_restores_the_tiles() {
     assert!(doc.revision() != rev);
     assert_eq!(get(&doc, id, 100, 100), RED);
     let mut h = History::default();
-    h.push(edit);
+    h.push(edit, &doc);
     h.undo(&mut doc);
     let grid = doc.layer(id).unwrap().raster().unwrap();
     assert_eq!(grid.len(), before.len(), "created tiles are removed");

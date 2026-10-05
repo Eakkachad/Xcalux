@@ -1216,15 +1216,15 @@ mod tests {
         });
 
         // History apply paths: pixels, props and structure, both directions.
-        h.push(Edit::Pixels { layer: base, tiles: vec![(TileCoord::new(3, 3), None)] });
+        h.push(Edit::Pixels { layer: base, tiles: vec![(TileCoord::new(3, 3), None)] }, &doc);
         let before = doc.layer(base).unwrap().props.clone();
         let mut changed = before.clone();
         changed.visible = false;
         doc.set_props(base, changed);
-        h.push(Edit::Props { layer: base, props: before });
+        h.push(Edit::Props { layer: base, props: before }, &doc);
         let snap = doc.snapshot_structure();
         doc.add_raster_layer().unwrap();
-        h.push(Edit::Structure(Box::new(snap)));
+        h.push(Edit::Structure(Box::new(snap)), &doc);
         step(&mut doc, "setup", content, &mut |_| ());
         for what in ["undo structure", "undo props", "undo pixels"] {
             step(&mut doc, what, content, &mut |d| {
