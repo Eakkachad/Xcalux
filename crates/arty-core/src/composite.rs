@@ -13,6 +13,7 @@
 use crate::blend::{BlendMode, blend_tile, blend_tile_atop, lerp_tile};
 use crate::document::Document;
 use crate::fix15::{self, ONE, ONE_U16};
+use crate::frame::{Cov, copy_unmasked, mask_into, mask_tile, mask_toward, mostly_full, over_color};
 use crate::layer::{Layer, LayerContent, LayerId};
 use crate::tile::{TileCoord, TilePixels, clear_tile, fill_tile, new_tile_box};
 
@@ -88,8 +89,12 @@ impl Document {
             && layer.props.opacity > 0.0
             && match &layer.content {
                 LayerContent::Raster(g) => g.get(c).is_some(),
-                LayerContent::Folder { children, .. } => {
+                LayerContent::Folder { children, frame: None, .. } => {
                     children.iter().any(|id| self.contributes(&self.layers[id], c))
+                }
+                LayerContent::Folder { children, frame: Some(f), .. } => {
+                    (f.content(c) != Cov::None && children.iter().any(|id| self.contributes(&self.layers[id], c)))
+                        || f.border(c) != Cov::None
                 }
             }
     }
@@ -100,6 +105,56 @@ impl Document {
             LayerContent::Raster(grid) => {
                 if let Some(t) = grid.get(c) {
                     blend_tile(dst, t, op, layer.props.blend);
+                }
+            }
+            LayerContent::Folder { children, frame: Some(f), .. } => {
+                let (cov, line) = (f.content(c), f.border(c));
+                if op <= 0.0 || (cov == Cov::None && line == Cov::None) {
+                    return;
+                }
+                let pass_through = layer.props.blend == BlendMode::PassThrough;
+                let (tmp, rest) = scratch.split_first_mut().expect("scratch depth");
+                let has_children = cov != Cov::None && !children.is_empty();
+                if pass_through && op >= 1.0 {
+                    // Straight into `dst`; a partial tile keeps the backdrop
+                    // where the mask is not full, or (mostly outside the
+                    // panels) composites aside and blends in only inside.
+                    if has_children {
+                        if let Cov::Partial(m) = cov {
+                            if mostly_full(m) {
+                                copy_unmasked(tmp, dst, m);
+                                self.composite_stack(children, c, dst, rest);
+                                mask_toward(dst, tmp, m);
+                            } else {
+                                **tmp = *dst;
+                                self.composite_stack(children, c, tmp, rest);
+                                mask_into(dst, tmp, m);
+                            }
+                        } else {
+                            self.composite_stack(children, c, dst, rest);
+                        }
+                    }
+                    over_color(dst, f.shape().border.color, line);
+                    return;
+                }
+                if pass_through {
+                    **tmp = *dst;
+                } else {
+                    clear_tile(tmp);
+                }
+                if has_children {
+                    self.composite_stack(children, c, tmp, rest);
+                    if let Cov::Partial(m) = cov {
+                        if pass_through { mask_toward(tmp, dst, m) } else { mask_tile(tmp, m) }
+                    }
+                }
+                over_color(tmp, f.shape().border.color, line);
+                if !pass_through {
+                    blend_tile(dst, tmp, op, layer.props.blend);
+                } else if op >= 1.0 {
+                    *dst = **tmp;
+                } else {
+                    lerp_tile(dst, tmp, op);
                 }
             }
             LayerContent::Folder { children, .. } => {
@@ -136,6 +191,22 @@ impl Document {
                 }
                 None => false,
             },
+            // Clips to a frame folder show inside its panels and border.
+            LayerContent::Folder { children, frame: Some(f), .. } => {
+                let (cov, line) = (f.content(c), f.border(c));
+                if cov == Cov::None && line == Cov::None {
+                    return false;
+                }
+                clear_tile(out);
+                if cov != Cov::None {
+                    self.composite_stack(children, c, out, scratch);
+                    if let Cov::Partial(m) = cov {
+                        mask_tile(out, m);
+                    }
+                }
+                over_color(out, f.shape().border.color, line);
+                true
+            }
             LayerContent::Folder { children, .. } => {
                 clear_tile(out);
                 self.composite_stack(children, c, out, scratch);
@@ -167,7 +238,9 @@ impl Document {
                         blend_tile_atop(group, t, clip.props.opacity, clip.props.blend);
                     }
                 }
-                LayerContent::Folder { children, .. } if clip.props.blend == BlendMode::PassThrough => {
+                // A frame folder clip renders isolated (its mask needs a
+                // group of its own).
+                LayerContent::Folder { children, frame: None, .. } if clip.props.blend == BlendMode::PassThrough => {
                     let op = clip.props.opacity;
                     if children.is_empty() || op <= 0.0 {
                         continue;
@@ -187,8 +260,9 @@ impl Document {
                 }
                 LayerContent::Folder { .. } => {
                     let (tmp, rest2) = rest.split_first_mut().expect("scratch depth");
-                    self.render_isolated(clip, c, tmp, rest2);
-                    blend_tile_atop(group, tmp, clip.props.opacity, clip.props.blend);
+                    if self.render_isolated(clip, c, tmp, rest2) {
+                        blend_tile_atop(group, tmp, clip.props.opacity, clip.props.blend);
+                    }
                 }
             }
         }
@@ -449,6 +523,43 @@ mod tests {
         for (x, tile) in cache.iter().enumerate() {
             assert_eq!(**tile, *render(doc, x as i32), "stale tile {x}");
         }
+    }
+
+    #[test]
+    fn fr07_contributes_truth_table() {
+        use crate::frame::{BorderStyle, Frame, FrameShape, Panel};
+        use crate::geom::RectF;
+        // Page of 4×1 tiles; the panel fills tile 1 and borders tile 0.
+        let mut doc = Document::new(256, 64, 72);
+        let folder = doc.add_folder().unwrap();
+        let inner = doc.add_raster_layer().unwrap();
+        doc.move_layer(inner, Some(folder), 0);
+        let at = |x| TileCoord::new(x, 0);
+        let contributes = |doc: &Document| -> [bool; 4] {
+            let l = doc.layer(folder).unwrap();
+            [0, 1, 2, 3].map(|x| doc.contributes(l, at(x)))
+        };
+        fill(&mut doc, inner, 1, BLUE);
+        fill(&mut doc, inner, 3, BLUE);
+        assert_eq!(contributes(&doc), [false, true, false, true], "plain folder: where children have pixels");
+
+        let panel = Panel::rect(RectF { x: 60.0, y: 0.0, w: 70.0, h: 64.0 }).unwrap();
+        let shape =
+            |width| FrameShape { panels: vec![panel.clone()], border: BorderStyle { width, color: [0, 0, 0, O] } };
+        doc.set_frame(folder, Some(Frame::build(shape(0.0), 256, 64)));
+        // Tile 0 has content but no child pixels, tile 3 child pixels but no content.
+        assert_eq!(contributes(&doc), [false, true, false, false]);
+        doc.set_frame(folder, Some(Frame::build(shape(8.0), 256, 64)));
+        assert_eq!(contributes(&doc), [true, true, true, false], "the border alone contributes");
+        doc.paint_target(inner).unwrap().0.clear();
+        assert_eq!(contributes(&doc), [true, true, true, false], "even with no children");
+        edit(&mut doc, folder, |p| p.opacity = 0.0);
+        assert_eq!(contributes(&doc), [false; 4]);
+        edit(&mut doc, folder, |p| {
+            p.opacity = 1.0;
+            p.visible = false;
+        });
+        assert_eq!(contributes(&doc), [false; 4]);
     }
 
     #[test]
