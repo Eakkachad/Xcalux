@@ -74,12 +74,17 @@ pub struct IoConfig {
     pub threads: usize,
     pub recovery_dir: PathBuf,
     pub load: LoadOptions,
+    /// Options for restoring a recovery file; a higher pixel budget than `load`.
+    pub recover: LoadOptions,
 }
 
 impl IoConfig {
     /// Half the usable physical cores (at most 7) as io threads, respecting process affinity,
     /// unless overridden by `ARTY_IO_THREADS`. The pixel budget for loads is half of physical
-    /// memory (at most 16 GiB), leaving the rest for the GPU page, undo and the OS.
+    /// memory (at most 16 GiB), leaving the rest for the GPU page, undo and the OS. Opening a
+    /// file whose pixels exceed it is refused (`IoError::LimitExceeded`), even one this machine
+    /// saved. Crash recovery gets 75% (the old open budget), so autosaved work that fit in
+    /// memory when it was written still comes back.
     ///
     /// Sizing by physical cores avoids stealing frame time from painting during background
     /// saves: plans/bench/B002_io.md T9 measured +6.0 ms frame p99 with 19 threads vs +0.6 ms
@@ -87,14 +92,16 @@ impl IoConfig {
     pub fn new(recovery_dir: PathBuf) -> Self {
         let threads = io_threads_override().unwrap_or_else(|| default_io_threads(usable_cpus().physical));
         let mut load = LoadOptions::default();
-        load.limits.max_decoded_bytes = decoded_budget(load.limits.max_decoded_bytes, physical_memory());
-        Self { threads, recovery_dir, load }
+        let (mut recover, ram) = (load.clone(), physical_memory());
+        load.limits.max_decoded_bytes = decoded_budget(load.limits.max_decoded_bytes, ram, 50);
+        recover.limits.max_decoded_bytes = decoded_budget(recover.limits.max_decoded_bytes, ram, 75);
+        Self { threads, recovery_dir, load, recover }
     }
 }
 
-/// Decoded-pixel budget for loads: `max`, capped at half of `ram` when known.
-fn decoded_budget(max: u64, ram: Option<u64>) -> u64 {
-    ram.map_or(max, |r| max.min(r / 2))
+/// Decoded-pixel budget for loads: `max`, capped at `percent` of `ram` when known.
+fn decoded_budget(max: u64, ram: Option<u64>, percent: u64) -> u64 {
+    ram.map_or(max, |r| max.min(r * percent / 100))
 }
 
 pub enum Request {
@@ -191,6 +198,7 @@ impl IoService {
             session: new_session(&dir),
             dir,
             load: cfg.load,
+            recover: cfg.recover,
             restored: None,
         };
         let thread = std::thread::Builder::new()
@@ -280,6 +288,7 @@ struct Worker {
     pool: ThreadPool,
     dir: RecoveryDir,
     load: LoadOptions,
+    recover: LoadOptions,
     session: Session,
     /// The recovery file the document was restored from, with its lock;
     /// deleted after the first autosave or save.
@@ -406,7 +415,7 @@ impl Worker {
                     Ok(lock) => lock,
                     Err(e) => return self.failed(ticket, "restore", e),
                 };
-                let o = LoadOptions { fallback_to_previous: true, ..self.load.clone() };
+                let o = LoadOptions { fallback_to_previous: true, ..self.recover.clone() };
                 let r = if p.is_cancelled() { Err(IoError::Cancelled) } else { load(&entry.path, &o, &self.pool, p) };
                 match r {
                     Ok(mut loaded) => {
@@ -690,10 +699,17 @@ mod sys_tests {
     fn load_budget_is_half_of_ram() {
         let max = LoadOptions::default().limits.max_decoded_bytes;
         assert_eq!(max, 16 << 30);
-        assert_eq!(decoded_budget(max, Some(4 << 30)), 2 << 30);
-        assert_eq!(decoded_budget(max, Some(16 << 30)), 8 << 30);
-        assert_eq!(decoded_budget(max, Some(64 << 30)), max);
-        assert_eq!(decoded_budget(max, None), max);
+        assert_eq!(decoded_budget(max, Some(4 << 30), 50), 2 << 30);
+        assert_eq!(decoded_budget(max, Some(16 << 30), 50), 8 << 30);
+        assert_eq!(decoded_budget(max, Some(64 << 30), 50), max);
+        assert_eq!(decoded_budget(max, None, 50), max);
+        // Full B4 600 dpi layers (12,825 tiles each) on 8 GiB: recovery keeps the old 75%.
+        let ram = 8u64 << 30;
+        let layers = |budget: u64| budget / (95 * 135 * 32 * 1024);
+        assert_eq!(layers(decoded_budget(max, Some(ram), 50)), 10);
+        assert_eq!(layers(decoded_budget(max, Some(ram), 75)), 15);
+        let cfg = IoConfig::new(PathBuf::new());
+        assert!(cfg.recover.limits.max_decoded_bytes >= cfg.load.limits.max_decoded_bytes);
     }
 
     #[test]

@@ -975,7 +975,7 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("arty-app-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            let cfg = IoConfig { threads: 2, recovery_dir: dir.join("recovery"), load: LoadOptions::default() };
+            let cfg = IoConfig { threads: 2, recovery_dir: dir.join("recovery"), load: LoadOptions::default(), recover: LoadOptions::default() };
             let io = IoService::spawn(cfg, || {});
             let studio = Studio::new(Document::new(256, 256, 72));
             let answers = Rc::new(RefCell::new(Answers::default()));
