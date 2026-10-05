@@ -417,13 +417,17 @@ impl Studio {
         self.select_tool(self.pen_tools[end as usize]);
     }
 
-    /// Forget which pen end is in use (eraser-end switching or the native pen
-    /// is off): the current tool counts as the tip's, so turning switching back
-    /// on never files it under the eraser end. Bookkeeping only; the tool stays.
+    /// Stop tracking pen ends (eraser-end switching or the native pen is
+    /// off): the pen counts as its tip again. When the eraser end was in use,
+    /// its tool is filed under the eraser end and the tip's tool comes back,
+    /// so turning switching back on never loses or swaps either end's tool.
     pub fn reset_pen_end(&mut self) {
-        if !self.engine.is_stroking() {
-            self.pen_end = PenEnd::Tip;
+        if self.engine.is_stroking() || self.pen_end == PenEnd::Tip {
+            return;
         }
+        self.pen_tools[PenEnd::Eraser as usize] = self.tool;
+        self.pen_end = PenEnd::Tip;
+        self.select_tool(self.pen_tools[PenEnd::Tip as usize]);
     }
 
     pub fn preset(&self) -> &BrushPreset {

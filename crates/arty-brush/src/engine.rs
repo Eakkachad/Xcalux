@@ -243,8 +243,11 @@ impl StrokeEngine {
         // speck: the pressure ramps from 0 over the taper length, which the
         // skid never covers. A tapered stroke that never leaves its own dot is
         // a tap: put the stroke's tiles back and leave the dot below instead.
+        // The path length must be short too, so a deliberate scribble in
+        // place (building up coverage) is kept.
         let (tin, tout, _) = self.shape;
-        if self.painted && p > 0.0 && (tin > 0.0 || tout > 0.0) && self.extent < self.tap_extent() {
+        let te = self.tap_extent();
+        if self.painted && p > 0.0 && (tin > 0.0 || tout > 0.0) && self.extent < te && self.arc < 2.0 * te {
             if let Some(id) = self.layer
                 && let Some((grid, dirty)) = doc.paint_target(id)
             {

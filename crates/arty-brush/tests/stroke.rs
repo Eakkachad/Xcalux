@@ -699,3 +699,34 @@ fn preview_shows_taper() {
     let ink = |v: &[u8]| v.chunks(4).map(|p| p[3] as u32).sum::<u32>();
     assert!(ink(&a) > 0 && ink(&a) < ink(&b), "tapered preview should hold less ink: {} vs {}", ink(&a), ink(&b));
 }
+
+/// A scribble that stays within a tap's reach of its start but travels a
+/// long path (building up coverage in place) is a stroke, not a tap: it
+/// must not collapse into the single touch-down dot.
+#[test]
+fn scribble_in_place_is_not_a_tap() {
+    let mut p = shaped("G-Pen", 40.0, 80.0, 0);
+    p.size = 60.0;
+    p.opacity = 0.3;
+    let run = |scribble: bool| {
+        let mut doc = Document::new(256, 256, 350);
+        let mut engine = StrokeEngine::new();
+        engine.configure(&p, [0.0; 3]);
+        engine.begin(&mut doc, sample(128.0, 128.0, 0.8, 0.0)).unwrap();
+        let n = if scribble { 120 } else { 2 };
+        for i in 1..=n {
+            let a = i as f32 * 0.3;
+            let (dx, dy) = if scribble { (4.0 * a.cos() - 4.0, 4.0 * a.sin()) } else { (0.0, 0.0) };
+            engine.feed(&mut doc, sample(128.0 + dx, 128.0 + dy, 0.8, i as f64 * 0.005));
+        }
+        engine.feed(&mut doc, sample(128.0, 128.0, 0.0, (n + 1) as f64 * 0.005));
+        engine.end(&mut doc);
+        // Total ink (alpha) on the layer.
+        doc.active_layer().raster().unwrap().iter().flat_map(|(_, t)| t.as_flattened().iter().map(|p| p[3] as u64)).sum::<u64>()
+    };
+    let dot = run(false);
+    assert!(dot > 0);
+    let scribble = run(true);
+    // 30% dabs looping in place build up far more ink than one dot.
+    assert!(scribble > dot * 2, "the scribble collapsed into the tap dot ({scribble} vs {dot})");
+}

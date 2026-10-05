@@ -955,11 +955,13 @@ mod tests {
         hover(&mut h, PenEnd::Eraser);
         assert_eq!((h.studio.tool, h.studio.pen_end()), (pen, PenEnd::Tip));
 
-        // Turning switching (or the native pen) off while flipped forgets the
-        // end: a tool picked meanwhile is the tip's, and turning it back on
-        // neither files it under the eraser end nor swaps tools.
+        // Turning switching (or the native pen) off while flipped returns the
+        // pen to its tip tool and files the eraser end's tool; a tool picked
+        // meanwhile is the tip's, and turning it back on neither loses nor
+        // swaps either end's tool.
         let (eraser, pencil) = (Tool::Brush(BrushGroup::Eraser), Tool::Brush(BrushGroup::Pencil));
         for native in [false, true] {
+            // Off and on again with no tool change in between.
             let mut h = Harness::with_pen();
             let set = |h: &mut Harness, on: bool| {
                 if native {
@@ -969,10 +971,22 @@ mod tests {
                 }
             };
             hover(&mut h, PenEnd::Eraser);
+            set(&mut h, false);
+            hover(&mut h, PenEnd::Eraser);
+            assert_eq!((h.studio.tool, h.studio.pen_end()), (pen, PenEnd::Tip), "native {native}");
+            set(&mut h, true);
+            hover(&mut h, PenEnd::Tip);
+            assert_eq!(h.studio.tool, pen, "native {native}: the tip keeps its tool");
+            hover(&mut h, PenEnd::Eraser);
+            assert_eq!(h.studio.tool, eraser, "native {native}: the eraser end keeps its tool");
+
+            // Off, pick a tool, on again.
+            let mut h = Harness::with_pen();
+            hover(&mut h, PenEnd::Eraser);
             assert_eq!(h.studio.tool, eraser);
             set(&mut h, false);
             hover(&mut h, PenEnd::Tip);
-            assert_eq!((h.studio.tool, h.studio.pen_end()), (eraser, PenEnd::Tip), "native {native}");
+            assert_eq!((h.studio.tool, h.studio.pen_end()), (pen, PenEnd::Tip), "native {native}");
             commands::execute(Command::SelectTool(pencil), &mut h.studio, &mut h.shell);
             set(&mut h, true);
             hover(&mut h, PenEnd::Tip);
