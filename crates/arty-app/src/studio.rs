@@ -246,6 +246,12 @@ impl DisplaySync {
         egui_wgpu::SurfaceConfig { present_mode, desired_maximum_frame_latency: Some(latency) }
     }
 
+    /// The mode whose surface config is `cfg` (what the painter was started
+    /// with), if any. Fast vsync without Mailbox support reads as Low latency.
+    pub fn from_surface_config(cfg: egui_wgpu::SurfaceConfig, fast_vsync_ok: bool) -> Option<DisplaySync> {
+        DisplaySync::ALL.into_iter().find(|s| s.surface_config(fast_vsync_ok) == cfg)
+    }
+
     /// The `display_sync` value inside eframe's saved state (`app.ron`, where our
     /// settings are an escaped RON string), read before eframe opens the window.
     pub fn from_saved(app_ron: &str) -> Option<DisplaySync> {
@@ -409,6 +415,15 @@ impl Studio {
         self.pen_tools[self.pen_end as usize] = self.tool;
         self.pen_end = end;
         self.select_tool(self.pen_tools[end as usize]);
+    }
+
+    /// Forget which pen end is in use (eraser-end switching or the native pen
+    /// is off): the current tool counts as the tip's, so turning switching back
+    /// on never files it under the eraser end. Bookkeeping only; the tool stays.
+    pub fn reset_pen_end(&mut self) {
+        if !self.engine.is_stroking() {
+            self.pen_end = PenEnd::Tip;
+        }
     }
 
     pub fn preset(&self) -> &BrushPreset {

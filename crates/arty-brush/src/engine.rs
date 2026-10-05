@@ -73,6 +73,9 @@ pub struct StrokeEngine {
     /// Arc length painted so far (document px) and the previous sample.
     arc: f32,
     prev: Option<ShapeSample>,
+    /// First painted sample and the farthest any later one got from it (px).
+    origin: ShapeSample,
+    extent: f32,
     corrected: Vec<ShapeSample>,
     scratch: Vec<[f32; 2]>,
     clip: TileClip,
@@ -116,6 +119,8 @@ impl StrokeEngine {
             log_overflow: false,
             arc: 0.0,
             prev: None,
+            origin: ShapeSample::default(),
+            extent: 0.0,
             corrected: Vec::new(),
             scratch: Vec::new(),
             clip: TileClip::default(),
@@ -197,6 +202,7 @@ impl StrokeEngine {
         self.log_overflow = false;
         self.arc = 0.0;
         self.prev = None;
+        self.extent = 0.0;
         self.stats = DabStats::default();
         self.reshape = Reshape::Skipped;
         self.stabilizer.reset();
@@ -232,11 +238,30 @@ impl StrokeEngine {
         }
         self.painted |= self.with_surface(doc, false, |brush, state, surface| brush.finish_stroke(state, surface))
             == Some(true);
+        let p = self.peak_pressure;
+        // With a taper, a tap whose pen skids a little paints only a faint
+        // speck: the pressure ramps from 0 over the taper length, which the
+        // skid never covers. A tapered stroke that never leaves its own dot is
+        // a tap: put the stroke's tiles back and leave the dot below instead.
+        let (tin, tout, _) = self.shape;
+        if self.painted && p > 0.0 && (tin > 0.0 || tout > 0.0) && self.extent < self.tap_extent() {
+            if let Some(id) = self.layer
+                && let Some((grid, dirty)) = doc.paint_target(id)
+            {
+                self.recorder.restore(grid, dirty, |_| true);
+            }
+            self.state = self.state0.clone();
+            self.painted = false;
+            // Seed the fresh brush state at the touch-down point (no dab).
+            let o = self.origin;
+            self.with_surface(doc, false, |brush, state, surface| {
+                brush.stroke_to(state, surface, o.x, o.y, p, o.tilt_x, o.tilt_y, 0.004)
+            });
+        }
         // A tap never crosses a dab spacing, so hokusai has drawn nothing;
         // SAI and CSP leave a dot. Mark one whole dab as due: hokusai then
         // draws it in place (zero step) at the entry pressure. The touch
         // lift-off sample has pressure 0, so use the stroke's peak instead.
-        let p = self.peak_pressure;
         let was_tap = !self.painted && p > 0.0;
         if was_tap {
             self.with_surface(doc, false, |brush, state, surface| {
@@ -259,6 +284,14 @@ impl StrokeEngine {
                 h.push(edit);
                 h.undo(doc);
             }
+    }
+
+    /// How far (document px) a tapered stroke may get from its first point
+    /// and still count as a tap: half the largest dab radius or one screen
+    /// px, whichever is more, but never a whole taper length.
+    fn tap_extent(&self) -> f32 {
+        let (tin, tout, _) = self.shape;
+        (0.5 * self.max_radius).max(1.0 / self.view_zoom).min(tin.max(tout))
     }
 
     /// Apply exit taper / post correction to the finished stroke.
@@ -409,9 +442,11 @@ impl StrokeEngine {
                 self.log_overflow = true;
             }
         }
-        if let Some(p) = self.prev {
-            self.arc += seg_len(&p, &ss);
+        match self.prev {
+            Some(p) => self.arc += seg_len(&p, &ss),
+            None => self.origin = ss,
         }
+        self.extent = self.extent.max(seg_len(&self.origin, &ss));
         self.prev = Some(ss);
         let k = taper(self.arc, None, self.shape.0, self.shape.1);
         self.painted |= self.stroke(doc, &ss, ss.pressure * k, false);

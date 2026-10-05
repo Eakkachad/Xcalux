@@ -150,10 +150,14 @@ fn pressure_curve(b: &mut hokusai::Brush, s: BrushSetting, base: f32, f: impl Fn
 
 impl BrushPreset {
     /// Upper bound of any dab's radius (px): the full-pressure radius
-    /// `to_hokusai` sets, grown by the largest size jitter hokusai's
-    /// Gaussian (sum of 4 uniforms, ≤ √12 σ) can draw, plus the optical floor.
+    /// `to_hokusai` sets (after its optical floor), grown by the largest size
+    /// jitter hokusai's Gaussian (sum of 4 uniforms, ≤ √12 σ) can draw, plus
+    /// a margin for the anti-aliasing bake (≤ 0.5 px).
     pub(crate) fn max_dab_radius(&self) -> f32 {
-        let r_base = (self.size.clamp(MIN_BRUSH_SIZE, MAX_BRUSH_SIZE) * 0.5).max(0.2);
+        let hardness = self.hardness.clamp(0.02, 1.0);
+        let r_base = (self.size.clamp(MIN_BRUSH_SIZE, MAX_BRUSH_SIZE) * 0.5)
+            .max(0.2)
+            .max(MIN_OPTICAL_RADIUS / (0.5 + 0.5 * hardness));
         r_base * (3.4642 * self.jitter.clamp(0.0, 1.0) * 0.4).exp() + 1.5
     }
 
@@ -389,5 +393,49 @@ mod tests {
         assert_eq!(shaped, ["Inking Pen"]);
         let g = names.iter().position(|n| n == "G-Pen").unwrap();
         assert_eq!(names[g + 1], "Inking Pen");
+    }
+
+    /// Largest radius among the dabs a brush draws (paints nothing).
+    struct MaxDab {
+        discard: Box<arty_core::TilePixels>,
+        max: f32,
+    }
+
+    impl hokusai::TiledSurface for MaxDab {
+        fn tile_request_start(&mut self, _tx: i32, _ty: i32) -> &mut hokusai::TilePixels {
+            &mut self.discard
+        }
+
+        fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+
+        fn draw_dab(&mut self, dab: &hokusai::Dab) -> bool {
+            self.max = self.max.max(dab.radius);
+            false
+        }
+    }
+
+    /// `max_dab_radius` bounds every dab, including thin brushes the optical
+    /// floor widens (the Tail replay's clip relies on it).
+    #[test]
+    fn max_dab_radius_bounds_every_dab() {
+        for size in [0.5, 1.0, 3.0, 40.0] {
+            for hardness in [0.0, 0.5, 0.92, 1.0] {
+                for jitter in [0.0, 0.5, 1.0] {
+                    for min_size in [0.05, 1.0] {
+                        let p = BrushPreset { size, hardness, jitter, min_size, ..Default::default() };
+                        let brush = p.to_hokusai([0.0; 3]);
+                        let mut state = hokusai::BrushState::default();
+                        let mut surface = MaxDab { discard: arty_core::tile::new_tile_box(), max: 0.0 };
+                        for i in 0..400 {
+                            let t = i as f32;
+                            let pressure = 0.5 + 0.5 * (t * 0.05).sin();
+                            brush.stroke_to(&mut state, &mut surface, 20.0 + t, 60.0 + 10.0 * (t * 0.03).sin(), pressure, 0.0, 0.0, 0.005);
+                        }
+                        assert!(surface.max > 0.0, "{p:?} drew nothing");
+                        assert!(surface.max <= p.max_dab_radius(), "{size} {hardness} {jitter} {min_size}: dab {} > bound {}", surface.max, p.max_dab_radius());
+                    }
+                }
+            }
+        }
     }
 }

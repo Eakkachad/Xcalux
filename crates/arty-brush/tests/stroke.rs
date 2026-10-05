@@ -596,6 +596,57 @@ fn reshape_skips_when_nothing_changes() {
     assert!(peak_alpha(&doc, 50, 50) > 5000, "click should leave a dot");
 }
 
+/// S19, skidding: a tap whose pen drifts a little between down and up still
+/// leaves its dot with the Inking Pen (entry taper, exit taper, correction,
+/// stabilizer at its default), instead of a faint tapered speck.
+#[test]
+fn skidding_tap_with_taper_leaves_a_dot() {
+    let mut reference = None;
+    for drift in [0.0f32, 0.3, 1.0, 2.0] {
+        for zoom in [1.0, 0.5] {
+            let mut doc = Document::new(256, 256, 350);
+            let mut engine = StrokeEngine::new();
+            engine.configure(&preset("Inking Pen"), [0.0; 3]);
+            engine.set_view_zoom(zoom);
+            engine.begin(&mut doc, sample(100.0, 100.0, 0.3, 0.0)).unwrap();
+            engine.feed(&mut doc, sample(100.0 + drift * 0.5, 100.0, 0.8, 0.01));
+            engine.feed(&mut doc, sample(100.0 + drift, 100.0 + drift * 0.3, 0.6, 0.02));
+            engine.feed(&mut doc, sample(100.0 + drift, 100.0 + drift * 0.3, 0.0, 0.03));
+            let edit = engine.end(&mut doc);
+            assert!(edit.is_some(), "drift {drift}: a tap is an undoable edit");
+            assert_eq!(engine.last_reshape(), Reshape::Skipped, "drift {drift}");
+            let peak = peak_alpha(&doc, 100, 100);
+            assert!(peak > 20000, "drift {drift} zoom {zoom}: the tap left a speck ({peak})");
+            assert_eq!(alpha_at(&doc, 100, 110), 0);
+            assert_eq!(alpha_at(&doc, 110, 100), 0);
+            // The same dot wherever the pen skidded to: drawn at touch-down.
+            let tiles: Vec<_> = doc.active_layer().raster().unwrap().iter().map(|(c, t)| (c, **t)).collect();
+            match &reference {
+                None => reference = Some(tiles),
+                Some(r) => assert!(*r == tiles, "drift {drift} zoom {zoom}: a different dot"),
+            }
+            // One undo step removes it.
+            let mut history = History::new(8);
+            history.push(edit.unwrap());
+            history.undo(&mut doc);
+            assert!(doc.active_layer().raster().unwrap().is_empty(), "drift {drift}");
+        }
+    }
+
+    // A real (short) stroke longer than the dot keeps its taper.
+    let mut doc = Document::new(256, 256, 350);
+    let mut engine = StrokeEngine::new();
+    engine.configure(&preset("Inking Pen"), [0.0; 3]);
+    engine.begin(&mut doc, sample(100.0, 100.0, 0.8, 0.0)).unwrap();
+    for i in 1..=10 {
+        engine.feed(&mut doc, sample(100.0 + i as f32 * 2.0, 100.0, 0.8, i as f64 * 0.01));
+    }
+    engine.feed(&mut doc, sample(120.0, 100.0, 0.0, 0.11));
+    engine.end(&mut doc);
+    assert_ne!(engine.last_reshape(), Reshape::Skipped);
+    assert!(peak_alpha(&doc, 100, 100) < 20000, "a 20 px stroke became a tap");
+}
+
 #[test]
 fn huge_brush_degrades() {
     // A 2000 px brush: each dab covers ~4 M px, so repainting the stroke

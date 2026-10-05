@@ -109,13 +109,17 @@ impl CanvasPane {
                 self.pen_meter.update(&self.pen_buf, arty_pen::now_secs(), q.dropped(), studio.input.native_pen);
         }
         // Eraser end (CSP): decided before the tool is computed, never mid-stroke.
-        if studio.input.eraser_end_switch
-            && self.stroke.is_none()
-            && let Some(end) =
-                self.pen_buf.iter().find(|s| s.phase == PenPhase::Down).or(self.pen_buf.last()).map(|s| s.end)
-            && end != studio.pen_end()
-        {
-            commands::execute(Command::PenEnd(end), studio, shell);
+        if studio.input.eraser_end_switch && studio.input.native_pen {
+            if self.stroke.is_none()
+                && let Some(end) =
+                    self.pen_buf.iter().find(|s| s.phase == PenPhase::Down).or(self.pen_buf.last()).map(|s| s.end)
+                && end != studio.pen_end()
+            {
+                commands::execute(Command::PenEnd(end), studio, shell);
+            }
+        } else {
+            // Ends are not tracked while switching is off: the current tool is the tip's.
+            studio.reset_pen_end();
         }
 
         let tool = self.effective_tool(ui, studio.tool);
@@ -167,6 +171,12 @@ impl CanvasPane {
         let (now, frame_dt) = ui.input(|i| (i.time, i.stable_dt as f64));
         let to_doc = |view: &View, p: Pos2| view.screen_to_doc(origin).apply([p.x * ppp, p.y * ppp]);
         let hovered = response.hovered();
+        // egui un-hovers every widget for a frame that releases and presses
+        // again, which is what one pen contact's Up and the next one's Down in
+        // the same frame look like. A pen contact may still start when the
+        // canvas is under the pointer, uncovered, and nothing else is dragged.
+        let pen_hovered = hovered
+            || (response.contains_pointer() && ui.ctx().dragged_id().is_none_or(|id| id == response.id));
         shell.cursor_doc = response.hover_pos().map(|p| to_doc(&studio.view, p));
 
         self.events.clear();
@@ -199,12 +209,23 @@ impl CanvasPane {
                 let [tilt_x, tilt_y] = arty_pen::view_tilt([m.a, m.b, m.c, m.d], s.tilt);
                 let smp = InputSample { x, y, pressure, tilt_x, tilt_y, time: s.time };
                 let owner = self.stroke == Some(StrokeSrc::Pen(s.pointer));
+                // The pen was flipped between two contacts of this frame (the
+                // check in `ui` only sees the frame's first): switch before this
+                // contact starts, then start it only if that end's tool paints.
+                if s.phase == PenPhase::Down
+                    && self.stroke.is_none()
+                    && studio.input.eraser_end_switch
+                    && s.end != studio.pen_end()
+                {
+                    commands::execute(Command::PenEnd(s.end), studio, shell);
+                }
                 match s.phase {
                     PenPhase::Down
                         if self.stroke.is_none()
                             && self.nav.is_none()
                             && rect.contains(pts)
-                            && hovered
+                            && pen_hovered
+                            && matches!(self.effective_tool(ui, studio.tool), Tool::Brush(_))
                             && studio.begin_stroke(smp) =>
                     {
                         self.stroke = Some(StrokeSrc::Pen(s.pointer));
@@ -274,9 +295,7 @@ impl CanvasPane {
             }
             // Likewise when egui saw the pen lift but the native queue did not.
             if let Some(StrokeSrc::Pen(p)) = self.stroke
-                && self.events.iter().any(|e| {
-                    matches!(e, Event::Touch { id, phase: TouchPhase::End | TouchPhase::Cancel, .. } if id.0 == u64::from(p))
-                })
+                && touch_lifted(&self.events, TouchId(u64::from(p)))
             {
                 studio.end_stroke();
                 self.stroke = None;
@@ -464,6 +483,30 @@ fn angle_from(center: Pos2, p: Pos2) -> f32 {
 /// reported that pointer this frame or owns the stroke in progress.
 fn pen_owns(pen_buf: &[PenSample], stroke: Option<StrokeSrc>, id: TouchId) -> bool {
     pen_buf.iter().any(|s| u64::from(s.pointer) == id.0) || matches!(stroke, Some(StrokeSrc::Pen(p)) if u64::from(p) == id.0)
+}
+
+/// Whether this frame's egui events end contact `id` for good: an
+/// `End`/`Cancel` that no later `Start` of the same id follows.
+///
+/// Windows keeps a pen's pointer id across contacts, so a frame can hold the
+/// previous contact's `End` before the `Start` of the stroke now in progress.
+/// That `End` mirrors a native `Up` the queue already applied; only an end
+/// after the last start can be one the native queue missed. (A native
+/// `Up`/`Cancel`/`Leave` after the stroke's own `Down` would have ended it, so
+/// a pen stroke still running here never had one.)
+fn touch_lifted(events: &[Event], id: TouchId) -> bool {
+    events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::Touch { id: i, phase, .. } if *i == id => match phase {
+                TouchPhase::End | TouchPhase::Cancel => Some(true),
+                TouchPhase::Start => Some(false),
+                TouchPhase::Move => None,
+            },
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 /// Number of events in a frame that become brush samples, so sample times
@@ -911,6 +954,69 @@ mod tests {
         h.studio.input.eraser_end_switch = false;
         hover(&mut h, PenEnd::Eraser);
         assert_eq!((h.studio.tool, h.studio.pen_end()), (pen, PenEnd::Tip));
+
+        // Turning switching (or the native pen) off while flipped forgets the
+        // end: a tool picked meanwhile is the tip's, and turning it back on
+        // neither files it under the eraser end nor swaps tools.
+        let (eraser, pencil) = (Tool::Brush(BrushGroup::Eraser), Tool::Brush(BrushGroup::Pencil));
+        for native in [false, true] {
+            let mut h = Harness::with_pen();
+            let set = |h: &mut Harness, on: bool| {
+                if native {
+                    h.studio.input.native_pen = on;
+                } else {
+                    h.studio.input.eraser_end_switch = on;
+                }
+            };
+            hover(&mut h, PenEnd::Eraser);
+            assert_eq!(h.studio.tool, eraser);
+            set(&mut h, false);
+            hover(&mut h, PenEnd::Tip);
+            assert_eq!((h.studio.tool, h.studio.pen_end()), (eraser, PenEnd::Tip), "native {native}");
+            commands::execute(Command::SelectTool(pencil), &mut h.studio, &mut h.shell);
+            set(&mut h, true);
+            hover(&mut h, PenEnd::Tip);
+            assert_eq!((h.studio.tool, h.studio.pen_end()), (pencil, PenEnd::Tip), "native {native}");
+            hover(&mut h, PenEnd::Eraser);
+            assert_eq!(h.studio.tool, eraser, "native {native}: the eraser end keeps its own tool");
+            hover(&mut h, PenEnd::Tip);
+            assert_eq!(h.studio.tool, pencil, "native {native}");
+        }
+    }
+
+    /// A frame long enough to hold a tip contact's end, the flip and the
+    /// eraser end's touch-down starts the second contact with the eraser
+    /// end's tool (the per-frame check only sees the frame's first contact).
+    #[test]
+    fn eraser_flip_between_contacts_of_one_frame() {
+        let mut h = Harness::with_pen();
+        let line = pen_line(&mut h, [100.0, 200.0], [400.0, 200.0], 20, 1.0, 1.0);
+        h.pen_frame(&line, mirrored(&line));
+        let inked = h.alpha(250, 200);
+        assert!(inked > 20000);
+
+        let a = [h.pen(PenPhase::Down, [100.0, 100.0], 1.0), h.pen(PenPhase::Move, [140.0, 100.0], 1.0)];
+        h.pen_frame(&a, mirrored(&a));
+        assert!(h.studio.engine.is_stroking());
+        let e = |h: &mut Harness, phase, at| PenSample { end: PenEnd::Eraser, ..h.pen(phase, at, 1.0) };
+        let b = [
+            h.pen(PenPhase::Move, [160.0, 100.0], 1.0),
+            h.pen(PenPhase::Up, [160.0, 100.0], 1.0),
+            e(&mut h, PenPhase::Hover, [250.0, 150.0]),
+            e(&mut h, PenPhase::Down, [250.0, 170.0]),
+            e(&mut h, PenPhase::Move, [250.0, 210.0]),
+            e(&mut h, PenPhase::Move, [250.0, 260.0]),
+        ];
+        h.pen_frame(&b, mirrored(&b));
+        assert_eq!(h.studio.tool, Tool::Brush(BrushGroup::Eraser));
+        assert!(h.studio.preset().eraser);
+        assert!(h.studio.engine.is_stroking());
+        let c = [e(&mut h, PenPhase::Up, [250.0, 260.0])];
+        h.pen_frame(&c, mirrored(&c));
+        assert!(!h.studio.engine.is_stroking());
+        assert_eq!(h.studio.history.undo_len(), 3);
+        assert!(h.alpha(250, 200) < inked / 4, "the eraser end did not erase: {}", h.alpha(250, 200));
+        assert_eq!(h.alpha(250, 240), 0, "the eraser end laid down ink");
     }
 
     /// P24
@@ -932,6 +1038,78 @@ mod tests {
         h.pen_frame(&s, mirrored(&s));
         h.frame(vec![touch(9, TouchPhase::End, pos2(10.0, 10.0))]);
         assert!(h.studio.engine.is_stroking());
+
+        // One frame holds the end of a contact and the start of the next with
+        // the same pointer id (Windows keeps it while the pen is in range):
+        // the earlier contact's Touch End must not end the new stroke.
+        for hover in [false, true] {
+            let mut h = Harness::with_pen();
+            let a = [h.pen(PenPhase::Down, [100.0, 100.0], 1.0), h.pen(PenPhase::Move, [140.0, 110.0], 1.0)];
+            h.pen_frame(&a, mirrored(&a));
+            let mut b = vec![h.pen(PenPhase::Move, [160.0, 120.0], 1.0), h.pen(PenPhase::Up, [160.0, 120.0], 1.0)];
+            if hover {
+                b.push(h.pen(PenPhase::Hover, [180.0, 180.0], 0.0));
+            }
+            b.extend([h.pen(PenPhase::Down, [200.0, 200.0], 1.0), h.pen(PenPhase::Move, [220.0, 210.0], 1.0)]);
+            h.pen_frame(&b, mirrored(&b));
+            assert!(h.pane.stroke == Some(StrokeSrc::Pen(PEN)), "hover {hover}: the new stroke was ended");
+            assert!(h.studio.engine.is_stroking());
+            assert_eq!(h.studio.history.undo_len(), 1);
+            let c = [h.pen(PenPhase::Move, [300.0, 260.0], 1.0), h.pen(PenPhase::Up, [300.0, 260.0], 1.0)];
+            h.pen_frame(&c, mirrored(&c));
+            assert!(!h.studio.engine.is_stroking());
+            assert_eq!(h.studio.history.undo_len(), 2);
+            assert!(h.column_height(290) > 0, "hover {hover}: the rest of the second stroke was lost");
+        }
+
+        // A Down refused off the canvas (a panel tap), then a contact on it in one frame.
+        let mut h = Harness::with_pen();
+        let off = PenSample { pointer: PEN, phase: PenPhase::Down, pos: [450.0, 100.0], pressure: Some(1.0), time: 100.0, ..Default::default() };
+        h.pen_frame(&[off], mirrored(&[off]));
+        assert!(h.pane.stroke.is_none());
+        let b = [
+            PenSample { phase: PenPhase::Up, ..off },
+            h.pen(PenPhase::Down, [200.0, 200.0], 1.0),
+            h.pen(PenPhase::Move, [220.0, 210.0], 1.0),
+        ];
+        h.pen_frame(&b, mirrored(&b));
+        assert!(h.pane.stroke == Some(StrokeSrc::Pen(PEN)));
+        let c = [h.pen(PenPhase::Move, [300.0, 260.0], 1.0), h.pen(PenPhase::Up, [300.0, 260.0], 1.0)];
+        h.pen_frame(&c, mirrored(&c));
+        assert_eq!(h.studio.history.undo_len(), 1);
+        assert!(h.column_height(290) > 0);
+
+        // The new contact's own native Up is lost, the previous one's was not:
+        // its Touch End (after its Start) still ends it.
+        let mut h = Harness::with_pen();
+        let a = [h.pen(PenPhase::Down, [100.0, 100.0], 1.0)];
+        h.pen_frame(&a, mirrored(&a));
+        let b = [
+            h.pen(PenPhase::Move, [160.0, 120.0], 1.0),
+            h.pen(PenPhase::Up, [160.0, 120.0], 1.0),
+            h.pen(PenPhase::Down, [200.0, 200.0], 1.0),
+            h.pen(PenPhase::Move, [220.0, 210.0], 1.0),
+        ];
+        let mut events = mirrored(&b);
+        events.push(touch(u64::from(PEN), TouchPhase::End, pos2(b[3].pos[0], b[3].pos[1])));
+        h.pen_frame(&b, events);
+        assert!(h.pane.stroke.is_none());
+        assert!(!h.studio.engine.is_stroking());
+        assert_eq!(h.studio.history.undo_len(), 2);
+    }
+
+    #[test]
+    fn touch_lifted_honours_only_an_end_after_the_last_start() {
+        use TouchPhase::{Cancel, End, Move, Start};
+        let (id, p) = (TouchId(3), pos2(1.0, 1.0));
+        let ev = |phases: &[TouchPhase]| phases.iter().map(|&ph| touch(3, ph, p)).collect::<Vec<_>>();
+        assert!(touch_lifted(&ev(&[Start, Move, End]), id));
+        assert!(touch_lifted(&ev(&[Move, Cancel, Move]), id));
+        assert!(!touch_lifted(&ev(&[Move, End, Start, Move]), id));
+        assert!(touch_lifted(&ev(&[End, Start, Move, End]), id));
+        assert!(!touch_lifted(&ev(&[Move, Move]), id));
+        assert!(!touch_lifted(&[], id));
+        assert!(!touch_lifted(&[touch(4, End, p)], id), "another contact");
     }
 
     /// P25

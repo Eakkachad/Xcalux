@@ -46,6 +46,9 @@ pub struct ArtyApp {
     export_job: Option<Receiver<String>>,
     files: FileController,
     bench_pan: Option<BenchPan>,
+    /// Display sync the surface was started with. eframe 0.36 applies the
+    /// setting only at start-up (main.rs), so this is what is running.
+    running_sync: DisplaySync,
 }
 
 /// `ARTY_BENCH_PAN=<seconds>` (B005): spin the view without any input, report frame
@@ -58,13 +61,23 @@ struct BenchPan {
 }
 
 /// Status bar latency readout. `in→frame` is OS sample time to canvas processing only.
-fn latency_text(st: PenStats, frame_ms: f32, sync: DisplaySync) -> String {
+/// The frame figures belong to `running`; a different `selected` Display sync
+/// is named as what the next start gives (main.rs starts Fast vsync as Low latency).
+fn latency_text(st: PenStats, frame_ms: f32, running: DisplaySync, selected: DisplaySync) -> String {
     let pen = if st.native {
         format!("pen {:.0} Hz · in→frame {:.1} ms (max {:.1})", st.rate_hz, st.age_ms, st.age_max_ms)
     } else {
         "pen: system".to_owned()
     };
-    let mut s = format!("{pen} · frame {frame_ms:.1} ms · {}", sync.label());
+    let mut s = format!("{pen} · frame {frame_ms:.1} ms · {}", running.label());
+    if selected != running {
+        let next = DisplaySync::from_surface_config(selected.surface_config(false), false).unwrap_or(selected);
+        if next == running {
+            s.push_str(&format!(" ({} not applied)", selected.label()));
+        } else {
+            s.push_str(&format!(" ({} after restart)", next.label()));
+        }
+    }
     if st.dropped > 0 {
         s.push_str(&format!(" · dropped {}", st.dropped));
     }
@@ -103,6 +116,9 @@ impl ArtyApp {
                 studio.color.swatches = p.swatches;
             }
         }
+        // What main.rs started the surface with (the render state is created from it).
+        let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
+        let running_sync = DisplaySync::from_surface_config(started, studio.fast_vsync_ok).unwrap_or_default();
         if std::env::var_os("ARTY_DEMO").is_some() {
             crate::demo::paint_sample_strokes(&mut studio);
         }
@@ -127,6 +143,7 @@ impl ArtyApp {
                 .ok()
                 .and_then(|s| s.parse::<f64>().ok())
                 .map(|secs| BenchPan { secs, start: None, dts: Vec::with_capacity(4096) }),
+            running_sync,
         }
     }
 
@@ -144,12 +161,12 @@ impl ArtyApp {
             let mut dts = b.dts.split_off(b.dts.len().min(30));
             dts.sort_by(f32::total_cmp);
             let q = |f: f32| dts.get(((dts.len() as f32 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
-            let sync = self.studio.input.display_sync;
+            let sync = self.running_sync;
             eprintln!(
                 "ARTY_BENCH_PAN {:.0} s · {} ({:?}) · {} frames · frame ms p50 {:.2} p95 {:.2} max {:.2}",
                 b.secs,
                 sync.label(),
-                sync.surface_config(false),
+                sync.surface_config(self.studio.fast_vsync_ok),
                 dts.len(),
                 q(0.5),
                 q(0.95),
@@ -296,7 +313,8 @@ impl ArtyApp {
                 ui.separator();
                 if s.input.show_latency {
                     let frame_ms = ui.input(|i| i.stable_dt) * 1000.0;
-                    ui.label(weak(latency_text(self.canvas.pen_stats(), frame_ms, s.input.display_sync))).on_hover_text(
+                    let text = latency_text(self.canvas.pen_stats(), frame_ms, self.running_sync, s.input.display_sync);
+                    ui.label(weak(text)).on_hover_text(
                         "in→frame: age of the newest pen sample when the canvas used it (OS timestamp to frame). \
                          It does not include rendering, presenting or the display.",
                     );
@@ -529,15 +547,44 @@ mod tests {
 
     #[test]
     fn latency_text_formats() {
+        use DisplaySync::{FastVsync, LowLatency, Off, Smooth};
         let st = PenStats { native: true, rate_hz: 238.4, age_ms: 2.44, age_max_ms: 6.06, dropped: 0 };
         assert_eq!(
-            latency_text(st, 6.94, DisplaySync::LowLatency),
+            latency_text(st, 6.94, LowLatency, LowLatency),
             "pen 238 Hz · in→frame 2.4 ms (max 6.1) · frame 6.9 ms · Low latency"
         );
         assert_eq!(
-            latency_text(PenStats { dropped: 3, ..st }, 16.7, DisplaySync::Smooth),
+            latency_text(PenStats { dropped: 3, ..st }, 16.7, Smooth, Smooth),
             "pen 238 Hz · in→frame 2.4 ms (max 6.1) · frame 16.7 ms · Smooth · dropped 3"
         );
-        assert_eq!(latency_text(PenStats::default(), 8.33, DisplaySync::Off), "pen: system · frame 8.3 ms · Off");
+        assert_eq!(latency_text(PenStats::default(), 8.33, Off, Off), "pen: system · frame 8.3 ms · Off");
+        // The figures are the running mode's; a new selection waits for a restart.
+        assert_eq!(
+            latency_text(PenStats::default(), 16.7, LowLatency, Off),
+            "pen: system · frame 16.7 ms · Low latency (Off after restart)"
+        );
+        // Fast vsync always starts as Low latency.
+        assert_eq!(
+            latency_text(PenStats::default(), 16.7, LowLatency, FastVsync),
+            "pen: system · frame 16.7 ms · Low latency (Fast vsync not applied)"
+        );
+        assert_eq!(
+            latency_text(PenStats::default(), 16.7, Smooth, FastVsync),
+            "pen: system · frame 16.7 ms · Smooth (Low latency after restart)"
+        );
+    }
+
+    /// The overlay's running mode is read back from the start-up surface config.
+    #[test]
+    fn running_sync_from_start_up_config() {
+        for sync in DisplaySync::ALL {
+            // main.rs: the saved mode, never Mailbox.
+            let running = DisplaySync::from_surface_config(sync.surface_config(false), true);
+            let expect = if sync == DisplaySync::FastVsync { DisplaySync::LowLatency } else { sync };
+            assert_eq!(running, Some(expect), "{sync:?}");
+        }
+        let mailbox = DisplaySync::FastVsync.surface_config(true);
+        assert_eq!(DisplaySync::from_surface_config(mailbox, true), Some(DisplaySync::FastVsync));
+        assert_eq!(DisplaySync::from_surface_config(mailbox, false), None);
     }
 }

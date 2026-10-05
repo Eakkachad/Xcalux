@@ -18,7 +18,7 @@ pub(crate) const MAX_LOGGED_SAMPLES: usize = 1 << 16;
 pub(crate) const MAX_CORRECTED_SAMPLES: usize = 1 << 16;
 /// Largest stroke (Σ dab bounding-box px, as drawn live) given a Full replay,
 /// and the largest clipped (Tail) replay. Calibrated in
-/// `plans/bench/B004_stroke_replay.md`: ≤ 12.7 ns per px, so ≤ 100 ms.
+/// `plans/bench/B004_stroke_replay.md`: worst 12.95 ns per px, so ≤ 97 ms (≤ 100 ms).
 pub(crate) const MAX_FULL_REPLAY_PX: u64 = 7_500_000;
 /// Smoothing kernel width (half-width ≤ 128).
 const MAX_TAPS: usize = 257;

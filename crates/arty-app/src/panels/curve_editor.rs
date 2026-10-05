@@ -27,8 +27,10 @@ const LIVE_HOLD: f64 = 1.0;
 /// Per-widget interaction state, kept in egui temp memory.
 #[derive(Clone, Default)]
 struct EditorState {
-    /// Point being dragged, with the pointer position last applied to it.
-    drag: Option<(usize, Pos2)>,
+    /// Point being dragged: its index, the pointer's offset from it at the
+    /// press (so an off-centre grab does not jump) and the pointer position
+    /// last applied.
+    drag: Option<(usize, Vec2, Pos2)>,
     /// Point shown in the Input/Output fields.
     selected: Option<usize>,
     /// Last pen pressure seen and when (egui time).
@@ -94,18 +96,18 @@ pub fn ui(ui: &mut egui::Ui, curve: &mut PressureCurve) -> egui::Response {
     let pressed = resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed());
     if pressed && let Some(pos) = resp.interact_pointer_pos() {
         let hit = pick(curve, plot, pos).or_else(|| curve.insert_point(from_screen(plot, pos)).inspect(|_| changed = true));
-        st.drag = hit.map(|i| (i, pos));
+        st.drag = hit.map(|i| (i, pos - to_screen(plot, curve.points()[i]), pos));
         if hit.is_some() {
             st.selected = hit;
         }
     }
-    // Drag: move the grabbed point by as much as the pointer moved.
+    // Drag: the grabbed point follows the pointer (absolute, so travel past a
+    // limit is not lost: the point comes back when the pointer does).
     match (st.drag, resp.interact_pointer_pos()) {
-        (Some((i, last)), Some(pos)) if resp.is_pointer_button_down_on() => {
-            if pos != last && let Some(&p) = curve.points().get(i) {
-                let target = to_screen(plot, p) + (pos - last);
-                changed |= curve.set_point(i, from_screen(plot, target));
-                st.drag = Some((i, pos));
+        (Some((i, off, last)), Some(pos)) if resp.is_pointer_button_down_on() => {
+            if pos != last && i < curve.points().len() {
+                changed |= curve.set_point(i, from_screen(plot, pos - off));
+                st.drag = Some((i, off, pos));
             }
         }
         _ => st.drag = None,
@@ -168,7 +170,7 @@ pub fn ui(ui: &mut egui::Ui, curve: &mut PressureCurve) -> egui::Response {
         painter.circle_filled(to_screen(plot, [raw, curve.eval(raw)]), 3.5, accent);
     }
 
-    let active = st.drag.map(|(i, _)| i).or(hovered_point);
+    let active = st.drag.map(|(i, ..)| i).or(hovered_point);
     for (i, &p) in curve.points().iter().enumerate() {
         let c = to_screen(plot, p);
         let hot = active == Some(i) || st.selected == Some(i);
@@ -326,12 +328,18 @@ mod tests {
         }
 
         fn drag(&mut self, from: Pos2, to: Pos2) -> bool {
+            let path: Vec<Pos2> = (1..=4).map(|k| from + (to - from) * k as f32 / 4.0).collect();
+            self.drag_path(from, &path)
+        }
+
+        /// Press at `from`, move through `path` one frame per point, release at its end.
+        fn drag_path(&mut self, from: Pos2, path: &[Pos2]) -> bool {
             let mut changed = self.frame(vec![Event::PointerMoved(from)]);
             changed |= self.button(from, PointerButton::Primary, true);
-            for k in 1..=4 {
-                changed |= self.frame(vec![Event::PointerMoved(from + (to - from) * k as f32 / 4.0)]);
+            for &p in path {
+                changed |= self.frame(vec![Event::PointerMoved(p)]);
             }
-            changed |= self.button(to, PointerButton::Primary, false);
+            changed |= self.button(*path.last().unwrap_or(&from), PointerButton::Primary, false);
             changed
         }
     }
@@ -355,6 +363,40 @@ mod tests {
         let grab = h.at([0.6, 0.3]) + Vec2::new(4.0, 0.0);
         h.drag(grab, grab + Vec2::new(0.0, -h.plot.height() * 0.2));
         assert!(close(h.curve.points()[1], [0.6, 0.5]), "{:?}", h.curve);
+    }
+
+    /// Dragging past a limit and back returns the point under the pointer
+    /// (deltas measured from the clamped point used to lose the overshoot).
+    #[test]
+    fn drag_past_a_limit_and_back_keeps_the_grab() {
+        let mut h = Harness::new(PressureCurve::from_points(&[[0.0, 0.0], [0.5, 0.9], [1.0, 1.0]]));
+        let start = h.at([0.5, 0.9]) + Vec2::new(3.0, 2.0);
+        let off = start - h.at([0.5, 0.9]);
+        // Up 100 px past the top of the plot, then back down to the start.
+        let up = start + Vec2::new(0.0, -100.0);
+        h.frame(vec![Event::PointerMoved(start)]);
+        h.button(start, PointerButton::Primary, true);
+        for k in 1..=5 {
+            h.frame(vec![Event::PointerMoved(start.lerp(up, k as f32 / 5.0))]);
+        }
+        assert!(close(h.curve.points()[1], [0.5, 1.0]), "clamped at the top: {:?}", h.curve);
+        for k in 1..=5 {
+            h.frame(vec![Event::PointerMoved(up.lerp(start, k as f32 / 5.0))]);
+        }
+        h.button(start, PointerButton::Primary, false);
+        assert!(close(h.curve.points()[1], [0.5, 0.9]), "{:?}", h.curve);
+        assert!((h.at(h.curve.points()[1]) + off - start).length() < 1e-3);
+
+        // Into a neighbour's MIN_GAP and back.
+        let mut h = Harness::new(three_points());
+        let start = h.at([0.5, 0.5]) + Vec2::new(-2.0, 3.0);
+        let off = start - h.at([0.5, 0.5]);
+        let right = start + Vec2::new(h.plot.width() * 0.8, 0.0);
+        let mut path: Vec<Pos2> = (1..=5).map(|k| start.lerp(right, k as f32 / 5.0)).collect();
+        path.extend((1..=5).map(|k| right.lerp(start, k as f32 / 5.0)));
+        h.drag_path(start, &path);
+        assert!(close(h.curve.points()[1], [0.5, 0.5]), "{:?}", h.curve);
+        assert!((h.at(h.curve.points()[1]) + off - start).length() < 1e-3);
     }
 
     #[test]
