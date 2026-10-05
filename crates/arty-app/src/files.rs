@@ -1063,6 +1063,24 @@ mod tests {
         r.settle(800.0);
     }
 
+    /// M3 §10.2 test 6: a transform session's preview is never autosaved.
+    #[test]
+    fn m3_autosave_waits_for_a_transform_session() {
+        let mut r = Rig::new("autosave-transform");
+        r.paint();
+        assert!(r.studio.begin_transform(false));
+        let p = r.studio.transform.as_ref().unwrap().session.params();
+        r.studio.transform.as_mut().unwrap().request(arty_core::transform::XfParams { t: [3.0, 0.0], ..p });
+        for now in [100.0, 400.0, 1000.0] {
+            r.frame(FrameInput { now, focused: false, ..Default::default() });
+            assert!(r.fc.autosave.is_none(), "at {now} s, focus lost");
+        }
+        r.studio.commit_transform();
+        r.at(1000.0);
+        assert!(r.fc.autosave.is_some(), "due once the session ends");
+        r.settle(1000.0);
+    }
+
     #[test]
     fn save_without_a_path_or_of_a_lossy_document_is_save_as() {
         let mut r = Rig::new("save-as");

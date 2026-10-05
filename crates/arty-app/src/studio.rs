@@ -702,8 +702,6 @@ impl Studio {
 
     /// Replace the selection as one undo step. Refused while stroking; a
     /// transform session is committed first. No step when nothing changes.
-    // SEL-UI, FILL (wand) and TRANSFORM select through this.
-    #[allow(dead_code)]
     pub fn set_selection(&mut self, s: Selection) {
         if self.engine.is_stroking() {
             return;
@@ -718,8 +716,6 @@ impl Studio {
     }
 
     /// Replace the page setup as one undo step when it changes.
-    // FRAMES: the Page Setup dialog applies through this.
-    #[allow(dead_code)]
     pub fn set_page_setup(&mut self, s: Option<PageSetup>) {
         if let Some(old) = self.doc.set_page_setup(s) {
             self.record_edit(Edit::Page(old));

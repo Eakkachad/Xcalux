@@ -61,12 +61,9 @@ pub enum Command {
     InvertSelection,
     /// Open the Grow / Shrink / Feather modal.
     SelectionDialog(SelModify),
-    // SEL-UI: built by the Grow / Shrink / Feather modal.
-    #[allow(dead_code)]
+    /// Built by the Grow / Shrink / Feather modal.
     GrowSelection { px: u16 },
-    #[allow(dead_code)]
     ShrinkSelection { px: u16 },
-    #[allow(dead_code)]
     FeatherSelection { px: u16 },
     FillSelection,
     ToggleReferenceLayer,

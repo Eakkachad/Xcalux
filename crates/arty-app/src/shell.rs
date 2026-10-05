@@ -64,12 +64,8 @@ pub struct Shell {
     /// The Export PNG dialog is open (it picks the crop).
     pub export_dialog: bool,
     /// The Page Setup dialog is open.
-    // FRAMES: set by the PageSetup command, read by the dialog.
-    #[allow(dead_code)]
     pub page_setup_open: bool,
     /// The Grow / Shrink / Feather dialog is open.
-    // SEL-UI: set by SelectionDialog, read by the dialog.
-    #[allow(dead_code)]
     pub sel_dialog: Option<SelModify>,
     /// Page setup of the manuscript preset picked in the New dialog,
     /// applied to the new document.

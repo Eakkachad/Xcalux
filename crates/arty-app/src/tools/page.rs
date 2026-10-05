@@ -40,11 +40,6 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
     }
 }
 
-// FRAMES: page setup has no tool of its own; this is for a page section in
-// a tool's properties if one is wanted.
-#[allow(dead_code)]
-pub fn property_ui(_ui: &mut egui::Ui, _studio: &mut Studio, _shell: &mut Shell) {}
-
 fn corners(r: RectF) -> [Pt; 4] {
     [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]]
 }

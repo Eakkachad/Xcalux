@@ -119,6 +119,10 @@ pub struct CanvasPane {
 impl CanvasPane {
     pub fn new(render: Option<egui_wgpu::RenderState>, pen: Option<Rc<PenQueue>>) -> Self {
         let gpu = render.as_ref().map(|r| CanvasGpu::new(&r.device, r.target_format));
+        let mut tools = ToolStates::default();
+        if let Some(r) = &render {
+            tools.select.attach_gpu(r);
+        }
         Self {
             gpu,
             render,
@@ -131,7 +135,7 @@ impl CanvasPane {
             pen_buf: Vec::with_capacity(PEN_BUF_CAP),
             pen_meter: PenMeter::new(),
             pen_stats: PenStats::default(),
-            tools: ToolStates::default(),
+            tools,
             slot: None,
             tool_down: false,
             last_press: None,

@@ -228,8 +228,7 @@ pub struct SelectTool {
 impl SelectTool {
     /// Draw the ants on the GPU: installs their pipeline in `render`'s
     /// callback resources. Without it the egui painter draws them.
-    // Integration: `CanvasPane::new` calls this with its render state.
-    #[allow(dead_code)]
+    /// `CanvasPane::new` calls this with its render state.
     pub fn attach_gpu(&mut self, render: &egui_wgpu::RenderState) {
         ants::AntsGpu::install(render);
         self.ants.gpu = true;
@@ -748,10 +747,11 @@ fn ants_mesh(
 pub fn dialogs(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
     let Some(kind) = shell.sel_dialog else { return };
     let o = &mut studio.opts.select;
+    // The largest values the core applies, so the field shows what is done.
     let (title, px, max) = match kind {
-        SelModify::Grow => ("Grow Selection", &mut o.grow_px, 1000),
-        SelModify::Shrink => ("Shrink Selection", &mut o.shrink_px, 1000),
-        SelModify::Feather => ("Feather Selection", &mut o.feather_px, 250),
+        SelModify::Grow => ("Grow Selection", &mut o.grow_px, morph::MAX_RADIUS),
+        SelModify::Shrink => ("Shrink Selection", &mut o.shrink_px, morph::MAX_RADIUS),
+        SelModify::Feather => ("Feather Selection", &mut o.feather_px, morph::MAX_SIGMA),
     };
     let modal = egui::Modal::new(egui::Id::new("sel-modify")).show(ctx, |ui| {
         ui.set_width(260.0);
@@ -797,13 +797,6 @@ mod tests {
 
     const ORIGIN: [f32; 2] = [400.0, 300.0];
     const ID: Affine2 = Affine2 { a: 1.0, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: 0.0 };
-
-    /// SEL-CORE's operations (`all`, `combine`, rasterizing, morphology)
-    /// are in; before it merges they are stubs, and the checks that need
-    /// their results are skipped.
-    fn sel_core_ready() -> bool {
-        !Selection::all(64, 64).is_empty()
-    }
 
     fn setup(tool: Tool) -> (Studio, Shell, SelectTool) {
         let mut studio = Studio::new(Document::new(256, 192, 72));
@@ -917,9 +910,6 @@ mod tests {
         studio.undo();
         assert!(studio.doc.selection().shares_storage(&a), "undo restores the selection");
 
-        if !sel_core_ready() {
-            return;
-        }
         for cmd in [Command::SelectAll, Command::InvertSelection] {
             let before = studio.doc.selection().clone();
             let steps = studio.history.undo_len();
@@ -1044,10 +1034,8 @@ mod tests {
             let want = morph::grow(&sel, 3, shape, 256, 192);
             execute(Command::GrowSelection { px: 3 }, &mut studio, &mut shell);
             assert!(same(studio.doc.selection(), &want), "{shape:?}");
-            if sel_core_ready() {
-                assert_eq!(studio.history.undo_len(), steps + 1, "one step");
-                studio.undo();
-            }
+            assert_eq!(studio.history.undo_len(), steps + 1, "one step");
+            studio.undo();
             assert!(studio.doc.selection().shares_storage(&sel));
         }
         execute(Command::FeatherSelection { px: 2 }, &mut studio, &mut shell);

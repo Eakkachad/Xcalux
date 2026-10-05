@@ -31,6 +31,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
             Tool::Frame(_) => tools::frame::property_ui(ui, studio, shell),
             Tool::Brush(_) => {}
         }
+        frame_border(ui, studio, shell);
         super::pen_settings::ui(ui, studio);
         return;
     }
@@ -113,8 +114,18 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
         *studio.preset_mut() = p;
     }
 
+    frame_border(ui, studio, shell);
     ui.add_space(6.0);
     super::pen_settings::ui(ui, studio);
+}
+
+/// The active layer's border settings when it is a frame folder (the frame
+/// tools show them with their own options).
+fn frame_border(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
+    let id = studio.doc.active();
+    if !matches!(studio.tool, Tool::Frame(_)) && studio.doc.frame(id).is_some() {
+        tools::frame::border_ui(ui, studio, shell, id);
+    }
 }
 
 pub(super) fn percent(v: &mut f32) -> Slider<'_> {

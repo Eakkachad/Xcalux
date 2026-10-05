@@ -801,7 +801,6 @@ fn finish_style_drag(ui: &egui::Ui, studio: &mut Studio, id: LayerId) {
 /// Tool Property for the frame tools.
 pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     let mode = mode(studio);
-    let dpi = studio.doc.dpi();
     let mut o = studio.opts.frame.clone();
     ui.label(match mode {
         Some(FrameMode::Rect) => "Drag to add a panel. Shift: square, Alt: from the centre.",
@@ -847,6 +846,14 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
         ui.weak("The active layer is not in a frame border folder.");
         return;
     };
+    border_ui(ui, studio, shell, id);
+}
+
+/// The FRAME BORDER section of frame folder `id`: border on/off, width and
+/// colour. The frame tools show it for the active layer's frame folder;
+/// other tools show it while the active layer is a frame folder.
+pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: LayerId) {
+    let dpi = studio.doc.dpi();
     let Some(frame) = studio.doc.frame(id).cloned() else { return };
     ui.add_space(6.0);
     section(ui, "FRAME BORDER");
