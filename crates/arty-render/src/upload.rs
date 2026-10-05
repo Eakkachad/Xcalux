@@ -7,6 +7,7 @@
 //! page costs about `chunks × MIP_LEVELS` of them instead of
 //! `tiles × MIP_LEVELS`.
 
+use std::cell::RefCell;
 use std::time::Instant;
 
 use arty_core::{CompositeScratch, Document, TILE_SIZE, TileCoord, TilePixels, fix15, tile::new_tile_box};
@@ -16,12 +17,12 @@ use rayon::prelude::*;
 use crate::gpu::{CanvasGpu, MIP_LEVELS, UploadRect};
 
 /// RGBA8 bytes of one tile at mip `k`.
-const fn level_bytes(k: usize) -> usize {
+pub const fn level_bytes(k: usize) -> usize {
     (TILE_SIZE >> k) * (TILE_SIZE >> k) * 4
 }
 
 /// RGBA8 bytes of one tile's whole mip chain.
-const CHAIN_BYTES: usize = {
+pub const CHAIN_BYTES: usize = {
     let mut sum = 0;
     let mut k = 0;
     while k < MIP_LEVELS as usize {
@@ -35,7 +36,7 @@ const CHAIN_BYTES: usize = {
 /// batches, each submitted before the next is built, so neither this buffer
 /// nor wgpu's pending staging grows with the page. A full chunk (the
 /// largest rect) is ~5.6 MiB.
-const BATCH_BYTES: usize = 32 << 20;
+pub const BATCH_BYTES: usize = 32 << 20;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SyncStats {
@@ -53,24 +54,34 @@ pub struct CanvasSync {
     staging: Vec<u8>,
 }
 
-struct Worker {
+pub struct Worker {
     tile: Box<TilePixels>,
     scratch: CompositeScratch,
     /// RGBA8 mip chain, level k is (64 >> k)² pixels.
     levels: Vec<Vec<u8>>,
 }
 
+thread_local! {
+    static WORKER: RefCell<Worker> = RefCell::new(Worker::new());
+}
+
 /// One tile row of an [`UploadRect`]: `bands[k]` is that row's slice of the
 /// rect's mip `k` image (`64 >> k` image rows).
-struct RowJob<'a> {
-    x: u32,
-    y: u32,
-    w: u32,
-    bands: [&'a mut [u8]; MIP_LEVELS as usize],
+pub struct RowJob<'a> {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub bands: [&'a mut [u8]; MIP_LEVELS as usize],
+}
+
+impl Default for Worker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Worker {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             tile: new_tile_box(),
             scratch: CompositeScratch::new(),
@@ -104,7 +115,7 @@ impl Worker {
     }
 
     /// Composite the tiles of `job` and write their mips into its bands.
-    fn run(&mut self, doc: &Document, mut job: RowJob) {
+    pub fn run(&mut self, doc: &Document, mut job: RowJob<'_>) {
         for i in 0..job.w as usize {
             let c = TileCoord::new((job.x as usize + i) as i32, job.y as i32);
             doc.composite_tile(c, &mut self.tile, &mut self.scratch);
@@ -114,6 +125,32 @@ impl Worker {
             }
         }
     }
+}
+
+/// Access the current thread's persistent upload worker.
+pub fn with_thread_worker<R>(f: impl FnOnce(&mut Worker) -> R) -> R {
+    WORKER.with_borrow_mut(f)
+}
+
+/// Composite the tiles of `jobs` in parallel using persistent thread-local workers.
+pub fn run_jobs_reused<'a>(doc: &Document, jobs: impl IntoParallelIterator<Item = RowJob<'a>>) {
+    jobs.into_par_iter().for_each(|job| {
+        WORKER.with_borrow_mut(|w| w.run(doc, job));
+    });
+}
+
+/// Composite the tiles of `jobs` sequentially using the calling thread's worker.
+pub fn run_jobs_seq<'a>(doc: &Document, jobs: impl IntoIterator<Item = RowJob<'a>>) {
+    WORKER.with_borrow_mut(|w| {
+        for job in jobs {
+            w.run(doc, job);
+        }
+    });
+}
+
+/// Composite the tiles of `jobs` in parallel, initializing a fresh worker per split (pre-E5 baseline).
+pub fn run_jobs_fresh<'a>(doc: &Document, jobs: impl IntoParallelIterator<Item = RowJob<'a>>) {
+    jobs.into_par_iter().for_each_init(Worker::new, |w, job| w.run(doc, job));
 }
 
 /// Copy an `n × n` RGBA8 tile into column `i` of a band `w` tiles wide.
@@ -129,7 +166,7 @@ fn scatter_tile(band: &mut [u8], w: usize, i: usize, n: usize, tile: &[u8]) {
 /// exactly those tiles: horizontal runs within a tile row, each merged into
 /// the rect above when that rect spans the same columns and ends on the
 /// previous row. A full chunk becomes one rect.
-fn plan_rects(slots: &[(u32, u32, u32)], out: &mut Vec<UploadRect>) {
+pub fn plan_rects(slots: &[(u32, u32, u32)], out: &mut Vec<UploadRect>) {
     out.clear();
     // Rects ending on the previous / current row (indices into `out`).
     let mut above: Vec<usize> = Vec::new();
@@ -170,7 +207,7 @@ fn plan_rects(slots: &[(u32, u32, u32)], out: &mut Vec<UploadRect>) {
 
 /// Split `buf` into the mip images of `r` (mip `k` is `r.w·r.h` tiles of
 /// `level_bytes(k)`), then each image into per-tile-row bands.
-fn row_jobs<'a>(r: &UploadRect, mut buf: &'a mut [u8], jobs: &mut Vec<RowJob<'a>>) {
+pub fn row_jobs<'a>(r: &UploadRect, mut buf: &'a mut [u8], jobs: &mut Vec<RowJob<'a>>) {
     let tiles = (r.w * r.h) as usize;
     let mut bands = std::array::from_fn::<_, { MIP_LEVELS as usize }, _>(|k| {
         let (img, rest) = std::mem::take(&mut buf).split_at_mut(tiles * level_bytes(k));
@@ -184,6 +221,32 @@ fn row_jobs<'a>(r: &UploadRect, mut buf: &'a mut [u8], jobs: &mut Vec<RowJob<'a>
 }
 
 impl CanvasSync {
+    /// Recomposites dirty tiles and builds their mips in parallel into `staging`.
+    pub fn prepare_staging(staging: &mut Vec<u8>, doc: &Document, batch: &[UploadRect]) {
+        let bytes: usize = batch.iter().map(|r| (r.w * r.h) as usize * CHAIN_BYTES).sum();
+        staging.resize(bytes, 0);
+
+        let total_rows: usize = batch.iter().map(|r| r.h as usize).sum();
+        let mut jobs = Vec::with_capacity(total_rows);
+        let mut buf = &mut staging[..];
+        for r in batch {
+            let (mine, tail) = buf.split_at_mut((r.w * r.h) as usize * CHAIN_BYTES);
+            buf = tail;
+            row_jobs(r, mine, &mut jobs);
+        }
+        run_jobs_reused(doc, jobs);
+    }
+
+    /// Recomposites dirty tiles and builds their mips in parallel into staging.
+    pub fn prepare_batch(&mut self, doc: &Document, batch: &[UploadRect]) {
+        Self::prepare_staging(&mut self.staging, doc, batch);
+    }
+
+    /// Read access to the staging buffer of the most recently prepared batch.
+    pub fn staging(&self) -> &[u8] {
+        &self.staging
+    }
+
     /// Push every dirty tile to the GPU. Cheap when nothing changed.
     pub fn sync(
         &mut self,
@@ -232,16 +295,8 @@ impl CanvasSync {
             }
             let (batch, rest) = rects.split_at(n);
             rects = rest;
-            self.staging.resize(bytes, 0);
 
-            let mut jobs = Vec::new();
-            let mut buf = &mut self.staging[..];
-            for r in batch {
-                let (mine, tail) = buf.split_at_mut((r.w * r.h) as usize * CHAIN_BYTES);
-                buf = tail;
-                row_jobs(r, mine, &mut jobs);
-            }
-            jobs.into_par_iter().for_each_init(Worker::new, |w, job| w.run(doc, job));
+            Self::prepare_staging(&mut self.staging, doc, batch);
 
             let mut buf = &self.staging[..];
             for r in batch {
