@@ -165,13 +165,16 @@ pub fn export_png(doc: &Document, crop: ExportCrop) -> Option<Receiver<String>> 
     };
     let dpi = doc.dpi();
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
-        let msg = match write_png(&path, w, h, dpi, &data) {
-            Ok(()) => format!("Exported {}", path.display()),
-            Err(e) => format!("Export failed: {e}"),
-        };
-        let _ = tx.send(msg);
-    });
+    let _ = std::thread::Builder::new()
+        .name("arty-export".into())
+        .stack_size(512 * 1024)
+        .spawn(move || {
+            let msg = match write_png(&path, w, h, dpi, &data) {
+                Ok(()) => format!("Exported {}", path.display()),
+                Err(e) => format!("Export failed: {e}"),
+            };
+            let _ = tx.send(msg);
+        });
     Some(rx)
 }
 

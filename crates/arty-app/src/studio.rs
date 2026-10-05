@@ -856,6 +856,7 @@ fn spawn_undo_free(
     let (tx, rx) = std::sync::mpsc::channel::<Edit>();
     let thread = std::thread::Builder::new()
         .name("arty-undo-free".into())
+        .stack_size(256 * 1024)
         .spawn(move || {
             arty_io::lower_thread_priority();
             for e in rx {

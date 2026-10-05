@@ -16,8 +16,10 @@ mod studio;
 mod theme;
 mod tools;
 
-// `files` tests check that an idle frame does not allocate.
-#[cfg(test)]
+// `files` tests check that an idle frame does not allocate; `--features heap-stats`
+// adds live/peak heap bytes to the ARTY_BENCH lines (bench.rs; 0 without it).
+// Off in normal builds: the counters cost atomics on every allocation.
+#[cfg(any(test, feature = "heap-stats"))]
 #[global_allocator]
 static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 

@@ -59,6 +59,7 @@ pub struct ArtyApp {
     gpu_backend: crate::gpu_setup::GpuBackend,
     first_frame_seen: bool,
     gpu_marker_cleared: bool,
+    demo_pending: bool,
 }
 
 /// Status bar latency readout. `in→frame` is OS sample time to canvas processing only.
@@ -130,9 +131,7 @@ impl ArtyApp {
         // What main.rs started the surface with (the render state is created from it).
         let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
         let running_sync = DisplaySync::from_surface_config(started, studio.fast_vsync_ok).unwrap_or_default();
-        if std::env::var_os("ARTY_DEMO").is_some() {
-            crate::demo::paint_sample_strokes(&mut studio);
-        }
+        let demo_pending = std::env::var_os("ARTY_DEMO").is_some();
 
         let ctx = cc.egui_ctx.clone();
         let mut io_config = IoConfig::new(RecoveryDir::default_path());
@@ -174,6 +173,7 @@ impl ArtyApp {
             gpu_backend,
             first_frame_seen: false,
             gpu_marker_cleared: false,
+            demo_pending,
         }
     }
 
@@ -451,7 +451,7 @@ impl ArtyApp {
             if let Ok(msg) = rx.try_recv() {
                 self.shell.toast = Some((msg, now + 4.0));
                 self.export_job = None;
-            } else {
+            } else if ctx.input(|i| i.focused) {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
@@ -468,7 +468,9 @@ impl ArtyApp {
                             ui.label(RichText::new(msg.as_str()).color(Color32::from_rgb(240, 240, 240)));
                         });
                     });
-                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                if ctx.input(|i| i.focused) {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                }
             }
         }
     }
@@ -480,6 +482,13 @@ impl eframe::App for ArtyApp {
         if !self.first_frame_seen {
             self.first_frame_seen = true;
             log::debug!("ArtyApp::ui frame 1 executed");
+            if self.bench_run {
+                bench::report_stat("first_frame");
+            }
+            if self.demo_pending {
+                self.demo_pending = false;
+                crate::demo::paint_sample_strokes(&mut self.studio);
+            }
         } else if !self.gpu_marker_cleared {
             self.gpu_marker_cleared = true;
             log::debug!("ArtyApp::ui frame 2: clearing marker and saving last working backend");
