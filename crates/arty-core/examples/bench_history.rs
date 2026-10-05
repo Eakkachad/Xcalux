@@ -15,7 +15,12 @@
 //!    that frees on another thread (as the app does);
 //! 6. re-costing a stack of about a 4 GB-tier budget (2 A4 whole-layer and
 //!    198 stroke steps of distinct tiles, all costed without the scan)
-//!    before a trim.
+//!    before a trim;
+//! 7. re-costing a stack of 99 layer moves, each followed by a stroke that
+//!    makes the document copy a layer's map, so the snapshots hold 99
+//!    drifted maps of tiles the document still holds.
+//!
+//! `bench_history recost` runs only 6 and 7.
 //!
 //! Documents: 15 full A4 layers; 10 B4 600 layers at 40% coverage. Layers
 //! the step does not come from share one tile each (their maps are full
@@ -256,9 +261,54 @@ fn recost_case() {
     }
 }
 
+/// A 20-tile stroke push that re-costs 99 pairs of "shift the bottom layer
+/// up (structure step), then a 20-tile stroke on the next layer" before
+/// trimming. Each stroke copies its layer's map on write, so the snapshots
+/// end up holding 99 distinct drifted maps, whole layers of tiles the
+/// document still holds; history holds only the strokes' old tiles.
+fn drifted_recost_case(name: &str, size: (u32, u32, u32), layers: usize, coverage: u32) {
+    let base = page(size, layers, coverage);
+    let in_doc = doc_tiles(&base);
+    let ids: Vec<LayerId> = base.root().to_vec();
+    let at20: Vec<TileCoord> = (0..20).map(|x| TileCoord::new(x, 0)).collect();
+    let stroke = |doc: &mut Document, h: &mut History, id: LayerId| {
+        let (grid, _) = doc.paint_target(id).unwrap();
+        let tiles = at20.iter().map(|&c| (c, grid.replace(c, Some(new_tile())))).collect();
+        h.push(Edit::Pixels { layer: id, tiles }, doc);
+    };
+    let r = stats(7, || {
+        let mut doc = base.snapshot();
+        let mut h = History::with_budget(256, usize::MAX); // no step-limit drops
+        let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let k = kept.clone();
+        h.set_release(Box::new(move |e| k.lock().unwrap().push(e)));
+        for i in 0..99 {
+            let snap = doc.snapshot_structure();
+            let bottom = doc.root()[0];
+            assert!(doc.shift_layer(bottom, 1));
+            h.push(Edit::Structure(Box::new(snap)), &doc);
+            stroke(&mut doc, &mut h, ids[i % layers]);
+        }
+        h.set_budget(h.usage().undo_bytes);
+        let t = Instant::now();
+        stroke(&mut doc, &mut h, ids[99 % layers]);
+        let dt = us(t);
+        assert!(h.usage().trimmed > 0, "the push trims");
+        dt
+    });
+    row(&format!("{name}: stroke re-costing 99 moves + 99 strokes (99 drifted maps)"), 100 * 20, in_doc, r);
+}
+
 fn main() {
     println!("| case | tiles walked | doc tiles | median µs | min µs |");
     println!("|---|---:|---:|---:|---:|");
+    if std::env::args().any(|a| a == "recost") {
+        recost_case();
+        drifted_recost_case("A4 350, 15 layers", A4, 15, 100);
+        drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40);
+        drifted_recost_case("B4 600, 10 full layers", B4, 10, 100);
+        return;
+    }
     for (name, size, layers, coverage) in [("A4 350, 15 layers", A4, 15, 100), ("B4 600, 10 layers @40%", B4, 10, 40)] {
         let doc = page(size, layers, coverage);
         let layer = doc.active();
@@ -350,6 +400,9 @@ fn main() {
     });
     row("A4 36 layers: first undo of a whole-layer clear", whole.len(), in_doc, r);
     recost_case();
+    drifted_recost_case("A4 350, 15 layers", A4, 15, 100);
+    drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40);
+    drifted_recost_case("B4 600, 10 full layers", B4, 10, 100);
     let u = h.usage();
     println!();
     let mib = u.undo_bytes >> 20;

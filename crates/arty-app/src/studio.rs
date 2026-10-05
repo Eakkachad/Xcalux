@@ -720,8 +720,13 @@ impl Studio {
         self.record_edit(Edit::Selection(Box::new(old)));
     }
 
-    /// Replace the page setup as one undo step when it changes.
+    /// Replace the page setup as one undo step when it changes. Refused
+    /// while stroking; a transform session is committed first.
     pub fn set_page_setup(&mut self, s: Option<PageSetup>) {
+        if self.engine.is_stroking() || self.doc.page_setup() == s.as_ref() {
+            return;
+        }
+        self.commit_transform();
         if let Some(old) = self.doc.set_page_setup(s) {
             self.record_edit(Edit::Page(old));
         }
@@ -749,8 +754,14 @@ impl Studio {
     /// Change a layer's settings with undo. `coalesce` merges the change into
     /// the undo step of the gesture in progress (see `History::push_props`);
     /// callers mark the gesture's start and end with
-    /// `history.end_props_gesture()`.
+    /// `history.end_props_gesture()`. Refused while stroking; a transform
+    /// session is committed first (history only runs between steps). The
+    /// layer panel calls this every frame, so an unchanged `props` is a no-op.
     pub fn set_layer_props(&mut self, id: LayerId, props: LayerProps, coalesce: bool) {
+        if self.engine.is_stroking() || self.doc.layer(id).is_none_or(|l| l.props == props) {
+            return;
+        }
+        self.commit_transform();
         if let Some(before) = self.doc.set_props(id, props) {
             self.history.push_props(id, before, coalesce, &self.doc);
             self.epochs.props_changed();

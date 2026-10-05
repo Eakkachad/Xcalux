@@ -729,7 +729,7 @@ mod tests {
 
         // Every guard commits first: one step each, with the pixels moved.
         type Guard = fn(&mut Studio);
-        let guards: [(&str, Guard); 5] = [
+        let guards: [(&str, Guard); 7] = [
             ("select_tool", |s| s.select_tool(Tool::Hand)),
             ("edit_structure", |s| {
                 s.edit_structure(|d| d.add_raster_layer().is_some());
@@ -745,6 +745,15 @@ mod tests {
                 s.end_stroke();
             }),
             ("clear_active_layer", |s| s.clear_active_layer()),
+            ("set_layer_props", |s| {
+                let id = s.doc.active();
+                let p = arty_core::LayerProps { opacity: 0.5, ..s.doc.layer(id).unwrap().props.clone() };
+                s.set_layer_props(id, p, false);
+            }),
+            ("set_page_setup", |s| {
+                let trim = RectF { x: 8.0, y: 8.0, w: 200.0, h: 200.0 };
+                s.set_page_setup(Some(arty_core::PageSetup { trim, bleed: 4.0, safe: 4.0, inner: RectF::default(), unit: 0 }));
+            }),
         ];
         for (name, guard) in guards {
             let (mut s, mut shell, id) = studio();
@@ -763,6 +772,12 @@ mod tests {
             s.doc.set_active(id);
             assert_eq!((alpha(&s, 100, 50), alpha(&s, 31, 50)), (0, ONE_U16), "{name}: undo restores");
         }
+        // The layer panel sets the props every frame: unchanged ones keep the session.
+        let (mut s, mut shell, id) = studio();
+        run(Command::Transform, &mut s, &mut shell);
+        s.set_layer_props(id, s.doc.layer(id).unwrap().props.clone(), false);
+        assert!(s.transform.is_some() && !s.history.can_undo());
+        s.cancel_transform();
 
         // Flip and Rotate without a session start one.
         let (mut s, mut shell, _) = studio();

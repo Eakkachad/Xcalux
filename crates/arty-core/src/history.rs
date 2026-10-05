@@ -29,6 +29,16 @@
 //! newest holder: the op it left the document at, whose drop frees it. An
 //! overcount therefore never costs an undo step.
 //!
+//! The re-cost walks only the snapshot maps that were not document maps when
+//! their step was costed. A map that was one held only document tiles then;
+//! any that left the document since did so at a newer op, whose step holds it
+//! and is still on the stack (trims drop the oldest), so that step owns it.
+//!
+//! All of this needs the document on a step boundary at every history call:
+//! no stroke or transform preview in progress. Their old tiles are held
+//! outside both the document and history, and a re-cost would charge them to
+//! any snapshot that holds them.
+//!
 //! Known undercount: a [`TileGrid`] map that a structure snapshot shares with
 //! the document costs 0, and stays with the snapshot when the document later
 //! copies it on write. Each copy needs a later pixel step, so there are at
@@ -225,6 +235,10 @@ struct Step {
     tiles: usize,
     /// Costed with the document scan (or had no candidate tiles).
     exact: bool,
+    /// Snapshot maps that were not document maps when costed: the only ones
+    /// a re-cost walks (see the module docs). Empty, and unallocated, for
+    /// anything but a snapshot that deleted or rewrote layers.
+    walked: Box<[usize]>,
 }
 
 /// Sets reused by every costing; they keep their capacity.
@@ -238,6 +252,8 @@ struct Scratch {
     maps: AHashSet<usize>,
     /// Re-costing: each candidate tile and the index of its newest holder.
     owner: AHashMap<usize, usize>,
+    /// Snapshot maps the step being costed walked.
+    walked: Vec<usize>,
 }
 
 /// What history holds, for the UI (lowend_ux_plan D9).
@@ -278,6 +294,9 @@ pub struct History {
     always_scan: bool,
     #[cfg(test)]
     pushes: usize,
+    /// Document walks: scans and re-costs.
+    #[cfg(test)]
+    doc_walks: usize,
 }
 
 impl Default for History {
@@ -307,6 +326,8 @@ impl History {
             always_scan: false,
             #[cfg(test)]
             pushes: 0,
+            #[cfg(test)]
+            doc_walks: 0,
         }
     }
 
@@ -329,10 +350,14 @@ impl History {
     }
 
     /// Record an edit that has already been applied to the document. `doc`
-    /// is the document the edit was already applied to.
+    /// is the document the edit was already applied to, on a step boundary
+    /// (see the module docs).
     pub fn push(&mut self, edit: Edit, doc: &Document) {
         self.release_redo();
-        let step = self.step(edit, doc, self.undo_bytes);
+        // If the step could trim, an unscanned step makes push_step re-cost
+        // the stack, which scans the document itself: scan once.
+        let recosts = self.undo.iter().any(|s| !s.exact);
+        let step = self.step(edit, doc, self.undo_bytes, recosts);
         self.push_step(step, doc);
     }
 
@@ -348,7 +373,7 @@ impl History {
         }
         let bytes = size_of::<Step>() + before.name.capacity();
         let edit = Edit::Props { layer, props: before };
-        self.push_step(Step { edit, bytes, tiles: 0, exact: true }, doc);
+        self.push_step(Step { edit, bytes, tiles: 0, exact: true, walked: Box::default() }, doc);
         self.props_open = coalesce.then_some(layer);
     }
 
@@ -401,7 +426,7 @@ impl History {
         self.undo_bytes -= s.bytes;
         let touched = touches(&s.edit);
         let inv = s.edit.apply(doc);
-        let step = self.step(inv, doc, self.redo_bytes);
+        let step = self.step(inv, doc, self.redo_bytes, false);
         self.redo_bytes += step.bytes;
         self.redo.push(step);
         touched
@@ -414,7 +439,7 @@ impl History {
         self.redo_bytes -= s.bytes;
         let touched = touches(&s.edit);
         let inv = s.edit.apply(doc);
-        let step = self.step(inv, doc, self.undo_bytes);
+        let step = self.step(inv, doc, self.undo_bytes, false);
         self.undo_bytes += step.bytes;
         self.undo.push_back(step);
         touched
@@ -476,19 +501,28 @@ impl History {
     /// Cost `edit`: what dropping it would free, with `doc` the document
     /// after it. Tiles not at their own slot in the document are candidates;
     /// the document scan, which takes out those still anywhere in it, runs
-    /// only when the result could push `stack_bytes` over the budget.
-    fn step(&mut self, edit: Edit, doc: &Document, stack_bytes: usize) -> Step {
+    /// only when the result could push `stack_bytes` over the budget, and
+    /// not then when `recosts` (a re-cost will follow and scan instead).
+    fn step(&mut self, edit: Edit, doc: &Document, stack_bytes: usize, recosts: bool) -> Step {
         let s = &mut self.scratch;
         s.tiles.clear();
         s.blocks.clear();
-        let bytes = size_of::<Step>() + walk(&edit, doc, s);
+        s.walked.clear();
+        let mut bytes = size_of::<Step>() + walk(&edit, doc, s);
+        let walked: Box<[usize]> = s.walked.as_slice().into();
+        bytes += walked.len() * size_of::<usize>();
         let n = s.tiles.len();
-        let exact = n == 0 || self.scans_always() || stack_bytes + bytes + n * TILE_BYTES > self.budget;
+        let over = stack_bytes + bytes + n * TILE_BYTES > self.budget;
+        let exact = n == 0 || self.scans_always() || (over && !recosts);
         if n > 0 && exact {
             self.scratch.scan(doc);
+            #[cfg(test)]
+            {
+                self.doc_walks += 1;
+            }
         }
         let tiles = self.scratch.tiles.len();
-        Step { edit, bytes: bytes + tiles * TILE_BYTES, tiles, exact }
+        Step { edit, bytes: bytes + tiles * TILE_BYTES, tiles, exact, walked }
     }
 
     /// Re-cost the tiles of every undo step against `doc` in one pass,
@@ -496,13 +530,17 @@ impl History {
     /// docs). Runs only before a trim for the budget, while some step skipped
     /// the document scan.
     fn recost(&mut self, doc: &Document) {
+        #[cfg(test)]
+        {
+            self.doc_walks += 1;
+        }
         let s = &mut self.scratch;
         s.owner.clear();
         s.blocks.clear();
         s.maps.clear();
         s.maps.extend(doc.layers.values().filter_map(Layer::raster).map(TileGrid::map_ptr));
         for (i, step) in self.undo.iter().enumerate().rev() {
-            s.claim(&step.edit, doc, i);
+            s.claim(&step.edit, &step.walked, doc, i);
         }
         s.maps.clear();
         'grids: for g in doc.layers.values().filter_map(Layer::raster) {
@@ -561,9 +599,10 @@ impl Scratch {
     }
 
     /// Make step `i` the owner of each candidate tile of `edit` that no newer
-    /// step owns. `maps` holds the document's maps, and `blocks` the snapshot
-    /// maps a newer step already claimed (it owns all their tiles).
-    fn claim(&mut self, edit: &Edit, doc: &Document, i: usize) {
+    /// step owns. Only the snapshot maps in `walked` can hold any (see the
+    /// module docs). `maps` holds the document's maps, and `blocks` the
+    /// snapshot maps a newer step already claimed (it owns all their tiles).
+    fn claim(&mut self, edit: &Edit, walked: &[usize], doc: &Document, i: usize) {
         match edit {
             Edit::Pixels { layer, tiles } => {
                 let live = doc.layer(*layer).and_then(Layer::raster);
@@ -578,7 +617,8 @@ impl Scratch {
             Edit::Structure(snap) => {
                 for l in snap.layers.values() {
                     let Some(g) = l.raster() else { continue };
-                    if self.maps.contains(&g.map_ptr()) || !self.blocks.insert(g.map_ptr()) {
+                    let m = g.map_ptr();
+                    if !walked.contains(&m) || self.maps.contains(&m) || !self.blocks.insert(m) {
                         continue;
                     }
                     let live = doc.layer(l.id).and_then(Layer::raster);
@@ -591,7 +631,7 @@ impl Scratch {
             }
             Edit::Batch(edits) => {
                 for e in edits {
-                    self.claim(e, doc, i);
+                    self.claim(e, walked, doc, i);
                 }
             }
             Edit::Props { .. } | Edit::Selection(_) | Edit::Page(_) | Edit::Frame { .. } => {}
@@ -652,6 +692,7 @@ fn walk(edit: &Edit, doc: &Document, s: &mut Scratch) -> usize {
                         }
                         if s.blocks.insert(g.map_ptr()) {
                             bytes += g.map_bytes();
+                            s.walked.push(g.map_ptr());
                         }
                         let live = doc.layer(l.id).and_then(Layer::raster);
                         for (c, t) in g.iter() {
@@ -1284,6 +1325,53 @@ mod tests {
         clear(&mut doc, &mut h, a);
         assert_eq!((h.undo_len(), h.usage().trimmed), (2, 3));
         assert_eq!(h.usage().undo_bytes, h.undo.iter().map(|s| s.bytes).sum::<usize>());
+    }
+
+    #[test]
+    fn recost_walks_only_maps_outside_the_document() {
+        let mut doc = Document::new(256, 256, 72);
+        let a = doc.active();
+        paint(&mut doc, a, row(16), 1);
+        let b = doc.add_raster_layer().unwrap();
+        paint(&mut doc, b, row(16), 2);
+        let mut h = History::default();
+        let mut rec = PixelRecorder::default();
+        doc.set_active(a);
+        // A move keeps every map in the document; the stroke then copies
+        // a's on write, so the move's snapshot holds a drifted map of a.
+        assert!(structure(&mut doc, &mut h, |d| d.shift_layer(b, -1)));
+        h.push(stroke(&mut doc, &mut rec, 0, 9).unwrap(), &doc);
+        assert!(structure(&mut doc, &mut h, |d| d.delete_layer(b)));
+        clear(&mut doc, &mut h, a);
+        let walked: Vec<usize> = h.undo.iter().map(|s| s.walked.len()).collect();
+        assert_eq!(walked, [0, 0, 1, 0], "only the deleted layer's map was outside the document");
+
+        h.recost(&doc);
+        check_stacks(&h, &doc, true, "re-cost");
+        assert_eq!(h.undo.iter().map(|s| s.tiles).collect::<Vec<_>>(), [0, 1, 16, 16]);
+    }
+
+    #[test]
+    fn push_that_recosts_walks_the_document_once() {
+        let mut doc = Document::new(640, 64, 72);
+        let mut h = History::default();
+        let mut rec = PixelRecorder::default();
+        for v in 1..=3 {
+            h.push(stroke(&mut doc, &mut rec, 0, v).unwrap(), &doc);
+        }
+        assert_eq!(h.doc_walks, 0, "under budget the scan is skipped");
+        h.set_budget(h.usage().undo_bytes);
+        h.push(stroke(&mut doc, &mut rec, 0, 4).unwrap(), &doc);
+        let trimmed = h.usage().trimmed;
+        assert_eq!(h.doc_walks, 1, "the re-cost scans; the step does not");
+        assert!(trimmed > 0);
+        check_stacks(&h, &doc, true, "after the trim");
+        // Every step exact now: the next push at budget scans by itself.
+        h.set_budget(h.usage().undo_bytes);
+        h.push(stroke(&mut doc, &mut rec, 0, 5).unwrap(), &doc);
+        assert!(h.undo.iter().all(|s| s.exact));
+        assert_eq!(h.doc_walks, 2);
+        assert!(h.usage().trimmed > trimmed);
     }
 
     #[test]
