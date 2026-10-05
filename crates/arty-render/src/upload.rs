@@ -135,7 +135,12 @@ pub fn with_thread_worker<R>(f: impl FnOnce(&mut Worker) -> R) -> R {
 /// Composite the tiles of `jobs` in parallel using persistent thread-local workers.
 pub fn run_jobs_reused<'a>(doc: &Document, jobs: impl IntoParallelIterator<Item = RowJob<'a>>) {
     jobs.into_par_iter().for_each(|job| {
-        WORKER.with_borrow_mut(|w| w.run(doc, job));
+        // A nested rayon call inside `run` could steal another job onto this
+        // thread while its worker is borrowed; that job gets a fresh worker.
+        WORKER.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut w) => w.run(doc, job),
+            Err(_) => Worker::new().run(doc, job),
+        });
     });
 }
 
