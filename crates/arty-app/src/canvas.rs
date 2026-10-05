@@ -78,7 +78,6 @@ impl CanvasPane {
         }
     }
 
-    #[allow(dead_code)] // TRACK CURVE: status bar overlay
     pub fn pen_stats(&self) -> PenStats {
         self.pen_stats
     }
@@ -493,7 +492,8 @@ fn sample_count(events: &[Event], has_touch: bool, mouse_stroking: bool, pen_own
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
-    use arty_brush::BrushGroup;
+    use arty_brush::pressure::PressureCurve;
+    use arty_brush::{BrushGroup, Reshape};
     use arty_core::{Document, TileCoord, tile::TilePixels};
     use arty_pen::PenEnd;
     use egui::{Key, Modifiers, RawInput, pos2};
@@ -827,7 +827,10 @@ mod tests {
         assert!(h.studio.engine.is_stroking(), "the Touch path did not start the stroke");
         h.pen_frame(&far[2..], vec![touch(id, TouchPhase::Move, b), touch(id, TouchPhase::End, b)]);
         assert!(!h.studio.engine.is_stroking());
-        assert_eq!(h.painted(), [TileCoord::from_pixel(110, 100)]);
+        // Ink stays on the Touch line (row 1); the native line is tiles 6..7.
+        let painted = h.painted();
+        assert!(painted.contains(&TileCoord::from_pixel(110, 100)));
+        assert!(painted.iter().all(|c| c.y == 1 && c.x <= 2), "the disabled queue painted: {painted:?}");
         assert!(h.pane.pen_buf.is_empty());
         assert!(!h.pane.pen_stats().native);
 
@@ -949,5 +952,53 @@ mod tests {
             h.studio.undo();
             assert!(h.painted().is_empty(), "{last:?}: one undo removes the whole stroke");
         }
+    }
+
+    /// M1 integration: native pen pressure goes through the user curve, then
+    /// the engine's live entry taper and pen-up exit taper (Tail replay), and
+    /// the shaped stroke is one undo step. Mouse pressure skips the curve.
+    #[test]
+    fn pen_stroke_composes_curve_and_taper() {
+        let run = |curve: PressureCurve, taper: f32| {
+            let mut h = Harness::with_pen();
+            h.studio.input.pressure_curve = curve;
+            let p = h.studio.preset_mut();
+            p.stabilizer = 0;
+            p.taper_in = taper;
+            p.taper_out = taper;
+            let line = pen_line(&mut h, [100.0, 250.0], [400.0, 250.0], 60, 0.5, 0.5);
+            h.pen_frame(&line, mirrored(&line));
+            assert!(!h.studio.engine.is_stroking());
+            h
+        };
+        let boost = PressureCurve::from_points(&[[0.0, 0.0], [0.5, 1.0], [1.0, 1.0]]);
+        let linear = run(PressureCurve::linear(), 0.0);
+        let curved = run(boost, 0.0);
+        let mid = curved.column_height(250);
+        assert!(mid > linear.column_height(250) + 1, "curve did not reach the engine: {mid}");
+        assert_eq!(curved.studio.engine.last_reshape(), Reshape::Skipped);
+
+        let mut tapered = run(boost, 80.0);
+        assert!(matches!(tapered.studio.engine.last_reshape(), Reshape::Tail { .. }));
+        assert!(tapered.column_height(250).abs_diff(mid) <= 1, "taper changed the middle");
+        let (start, end) = (tapered.column_height(110), tapered.column_height(390));
+        assert!(start < mid && end < mid, "no taper: {start} / {mid} / {end}");
+        assert!(end < curved.column_height(390), "exit taper missing at pen-up");
+        assert_eq!(tapered.studio.history.undo_len(), 1);
+        tapered.studio.undo();
+        assert!(tapered.painted().is_empty(), "one undo removes the whole shaped stroke");
+
+        // A curve that zeroes pen pressure leaves (almost) no pen ink, but the
+        // mouse still paints at `mouse_pressure`.
+        let zero = PressureCurve::from_points(&[[0.0, 0.0], [1.0, 0.0]]);
+        let pen_ink = run(zero, 0.0).ink();
+        let mut h = Harness::with_pen();
+        h.studio.input.pressure_curve = zero;
+        let (a, b) = (h.screen([100.0, 250.0]), h.screen([400.0, 250.0]));
+        h.frame(vec![Event::PointerMoved(a)]);
+        h.frame(vec![primary(a, true, Modifiers::NONE)]);
+        h.frame(vec![Event::PointerMoved(b)]);
+        h.frame(vec![primary(b, false, Modifiers::NONE)]);
+        assert!(pen_ink * 20 < h.ink(), "pen {pen_ink} vs mouse {}", h.ink());
     }
 }
