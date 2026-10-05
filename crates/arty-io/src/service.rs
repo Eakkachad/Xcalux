@@ -42,6 +42,33 @@ pub fn lower_thread_priority() {
     sys::lower_thread_priority()
 }
 
+/// Physical cores and logical CPUs usable by this process, respecting affinity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsableCpus {
+    pub physical: usize,
+    pub logical: usize,
+}
+
+/// Thread count for the I/O pool given usable physical cores (physical / 2, clamped to 1..=7).
+pub fn default_io_threads(usable_physical_cores: usize) -> usize {
+    (usable_physical_cores / 2).clamp(1, 7)
+}
+
+/// Thread count for the Rayon global pool given usable logical CPUs (clamped to 1..=16).
+pub fn default_rayon_threads(usable_logical_cpus: usize) -> usize {
+    usable_logical_cpus.clamp(1, 16)
+}
+
+/// Pure sizing logic for both thread pools given usable CPU counts.
+pub fn compute_pool_sizes(cpus: UsableCpus) -> (usize, usize) {
+    (default_io_threads(cpus.physical), default_rayon_threads(cpus.logical))
+}
+
+/// Number of physical cores and logical CPUs usable by this process (respecting affinity).
+pub fn usable_cpus() -> UsableCpus {
+    sys::usable_cpus()
+}
+
 pub struct IoConfig {
     /// Threads of the io pool.
     pub threads: usize,
@@ -50,15 +77,15 @@ pub struct IoConfig {
 }
 
 impl IoConfig {
-    /// Half the logical cores (at most 7) as io threads, and a pixel budget
-    /// for loads of 75% of physical memory (at most 16 GiB).
+    /// Half the usable physical cores (at most 7) as io threads, respecting process affinity,
+    /// unless overridden by `ARTY_IO_THREADS`. The pixel budget for loads is 75% of physical
+    /// memory (at most 16 GiB).
     ///
-    /// More io threads steal frame time from painting during background
-    /// saves: plans/bench/B002_io.md T9 measured +6.0 ms frame p99 with 19
-    /// threads vs +0.6 ms with 7, while a full B4 600 dpi save still takes
-    /// only 1.1 s.
+    /// Sizing by physical cores avoids stealing frame time from painting during background
+    /// saves: plans/bench/B002_io.md T9 measured +6.0 ms frame p99 with 19 threads vs +0.6 ms
+    /// with 7, while a full B4 600 dpi save still takes only 1.1 s.
     pub fn new(recovery_dir: PathBuf) -> Self {
-        let threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 7));
+        let threads = io_threads_override().unwrap_or_else(|| default_io_threads(usable_cpus().physical));
         let mut load = LoadOptions::default();
         if let Some(ram) = physical_memory() {
             load.limits.max_decoded_bytes = load.limits.max_decoded_bytes.min(ram / 4 * 3);
@@ -429,6 +456,21 @@ fn parse_ram_mb(s: &str) -> Option<u64> {
     s.trim().parse::<u64>().ok().filter(|mb| (256..=1 << 20).contains(mb)).map(|mb| mb << 20)
 }
 
+/// `ARTY_IO_THREADS=<n>` (bench runs, plans/bench/B013): io pool thread count override.
+fn io_threads_override() -> Option<usize> {
+    let s = std::env::var("ARTY_IO_THREADS").ok()?;
+    let v = parse_io_threads(&s);
+    if v.is_none() {
+        log::warn!("ARTY_IO_THREADS: ignoring invalid value {s:?}");
+    }
+    v
+}
+
+/// Thread count, 1..=64.
+fn parse_io_threads(s: &str) -> Option<usize> {
+    s.trim().parse::<usize>().ok().filter(|v| (1..=64).contains(v))
+}
+
 /// The OS calls behind the io pool's priority and the load budget.
 #[cfg(windows)]
 #[allow(unsafe_code)]
@@ -437,15 +479,111 @@ mod sys {
         JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JobObjectExtendedLimitInformation, QueryInformationJobObject,
     };
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
+    use windows_sys::Win32::System::SystemInformation::{
+        GlobalMemoryStatusEx, MEMORYSTATUSEX, GetLogicalProcessorInformationEx, RelationProcessorCore,
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, GROUP_AFFINITY,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetCurrentThread, GetProcessAffinityMask, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+    };
 
+    /// Lowers thread priority to below-normal so background IO and memory trimming do
+    /// not preempt UI rendering.
+    ///
+    /// Note on `THREAD_MODE_BACKGROUND_BEGIN`: Windows background processing mode lowers
+    /// both CPU priority (to 4/idle) and disk I/O priority to `VeryLow`, which throttles
+    /// and defers file operations indefinitely while foreground activity is continuous.
+    /// In ARTY, the UI thread paints at up to 240 Hz, which would starve background saves
+    /// and autosave recovery writes, risking data loss or stalling the app on shutdown.
+    /// Therefore, we use `THREAD_PRIORITY_BELOW_NORMAL` without background I/O mode.
     pub fn lower_thread_priority() {
         // SAFETY: GetCurrentThread returns a pseudo handle that is always
         // valid for the calling thread; SetThreadPriority only reads it.
         let ok = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };
         if ok == 0 {
             log::debug!("could not lower the io thread priority");
+        }
+    }
+
+    /// Usable physical cores and logical CPUs respecting process affinity.
+    pub fn usable_cpus() -> super::UsableCpus {
+        let fallback = || {
+            let logical = std::thread::available_parallelism().map_or(1, |n| n.get());
+            super::UsableCpus { physical: logical, logical }
+        };
+
+        let mut len = 0u32;
+        // First call to determine required buffer size.
+        // SAFETY: null buffer pointer returns 0 and sets `len`.
+        let _ = unsafe { GetLogicalProcessorInformationEx(RelationProcessorCore, std::ptr::null_mut(), &mut len) };
+        if len == 0 {
+            return fallback();
+        }
+
+        // u64 storage keeps every record 8-aligned, as the struct reads below need.
+        let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+        // SAFETY: `buf` has at least `len` writable bytes.
+        let ok = unsafe { GetLogicalProcessorInformationEx(RelationProcessorCore, buf.as_mut_ptr().cast(), &mut len) };
+        if ok == 0 {
+            return fallback();
+        }
+
+        let mut process_mask = 0usize;
+        let mut system_mask = 0usize;
+        // SAFETY: GetCurrentProcess returns a valid pseudo-handle for the current process.
+        let ok = unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process_mask, &mut system_mask) };
+        if ok == 0 || process_mask == 0 {
+            process_mask = if system_mask != 0 { system_mask } else { !0usize };
+        }
+
+        let mut usable_physical = 0usize;
+        let mut usable_logical = 0usize;
+
+        let mut offset = 0usize;
+        let len_usize = len as usize;
+        // Each record starts with Relationship (i32) and Size (u32) = 8 bytes.
+        let min_header_size = 8usize;
+
+        while offset + min_header_size <= len_usize {
+            // SAFETY: offset + min_header_size <= len_usize and record header is within bounds.
+            let info = unsafe { &*buf.as_ptr().cast::<u8>().add(offset).cast::<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>() };
+            let record_size = info.Size as usize;
+            if record_size < min_header_size || offset + record_size > len_usize || !record_size.is_multiple_of(8) {
+                break;
+            }
+
+            if info.Relationship == RelationProcessorCore {
+                // SAFETY: Relationship is RelationProcessorCore, so Processor union variant is active.
+                let proc = unsafe { &info.Anonymous.Processor };
+                let group_count = proc.GroupCount as usize;
+                // Offset of GroupMask is 32 (8 header + 24 struct prefix).
+                let min_needed = 32 + group_count * size_of::<GROUP_AFFINITY>();
+                if record_size >= min_needed && group_count > 0 {
+                    // SAFETY: record_size >= min_needed ensures all group_count GROUP_AFFINITY structs are within buf.
+                    let groups = unsafe { std::slice::from_raw_parts(proc.GroupMask.as_ptr(), group_count) };
+                    let mut core_has_usable = false;
+                    for group_aff in groups {
+                        if group_aff.Group == 0 {
+                            let usable_in_group = group_aff.Mask & process_mask;
+                            if usable_in_group != 0 {
+                                core_has_usable = true;
+                                usable_logical += usable_in_group.count_ones() as usize;
+                            }
+                        }
+                    }
+                    if core_has_usable {
+                        usable_physical += 1;
+                    }
+                }
+            }
+
+            offset += record_size;
+        }
+
+        if usable_physical == 0 || usable_logical == 0 {
+            fallback()
+        } else {
+            super::UsableCpus { physical: usable_physical, logical: usable_logical }
         }
     }
 
@@ -496,11 +634,45 @@ mod sys {
     pub fn physical_memory() -> Option<u64> {
         super::ram_override()
     }
+
+    pub fn usable_cpus() -> super::UsableCpus {
+        let logical = std::thread::available_parallelism().map_or(1, |n| n.get());
+        super::UsableCpus { physical: logical, logical }
+    }
 }
 
 #[cfg(test)]
-mod ram_tests {
+mod sys_tests {
     use super::*;
+
+    #[test]
+    fn pure_sizing_logic() {
+        // I/O pool: physical / 2, clamp(1, 7)
+        assert_eq!(default_io_threads(0), 1);
+        assert_eq!(default_io_threads(1), 1);
+        assert_eq!(default_io_threads(2), 1);
+        assert_eq!(default_io_threads(3), 1);
+        assert_eq!(default_io_threads(4), 2); // N100 (4 cores) gives 2
+        assert_eq!(default_io_threads(8), 4);
+        assert_eq!(default_io_threads(14), 7); // Dev box (14 cores) gives 7
+        assert_eq!(default_io_threads(16), 7); // Capped at 7
+        assert_eq!(default_io_threads(64), 7);
+
+        // Rayon global pool: logical, clamp(1, 16)
+        assert_eq!(default_rayon_threads(0), 1);
+        assert_eq!(default_rayon_threads(1), 1);
+        assert_eq!(default_rayon_threads(4), 4); // N100 or 4-core emu gives 4
+        assert_eq!(default_rayon_threads(8), 8);
+        assert_eq!(default_rayon_threads(16), 16);
+        assert_eq!(default_rayon_threads(20), 16); // Dev box (20 logical) capped at 16
+        assert_eq!(default_rayon_threads(64), 16);
+
+        let sizes = compute_pool_sizes(UsableCpus { physical: 4, logical: 4 });
+        assert_eq!(sizes, (2, 4));
+
+        let sizes = compute_pool_sizes(UsableCpus { physical: 14, logical: 20 });
+        assert_eq!(sizes, (7, 16));
+    }
 
     #[test]
     fn ram_override_parses_mib() {
@@ -512,10 +684,27 @@ mod ram_tests {
     }
 
     #[test]
+    fn io_threads_override_parses() {
+        assert_eq!(parse_io_threads("2"), Some(2));
+        assert_eq!(parse_io_threads(" 4 "), Some(4));
+        for bad in ["", "0", "65", "-1", "two"] {
+            assert_eq!(parse_io_threads(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
     fn physical_memory_is_plausible() {
         // Under a job memory cap (plans/bench/B013) this is the cap.
         if let Some(ram) = sys::physical_memory() {
             assert!(ram >= 256 << 20, "{ram}");
         }
+    }
+
+    #[test]
+    fn usable_cpus_is_plausible() {
+        let cpus = usable_cpus();
+        assert!(cpus.physical >= 1, "physical: {}", cpus.physical);
+        assert!(cpus.logical >= 1, "logical: {}", cpus.logical);
+        assert!(cpus.physical <= cpus.logical, "physical <= logical: {cpus:?}");
     }
 }

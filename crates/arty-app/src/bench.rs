@@ -27,7 +27,7 @@
 //!   size would, and report the size reached; the geometry is then not saved.
 //! - `ARTY_BENCH_ZOOM=<factor>`: egui zoom factor (UI scale on top of the OS scale).
 //! - `ARTY_IO_THREADS=<n>`: io pool size instead of `IoConfig::new`'s, which
-//!   counts the machine's CPUs, not the process affinity.
+//!   sizes from usable physical cores respecting process affinity.
 //! - `ARTY_RAM_MB=<MiB>`: the memory size budgets are sized from (arty-io
 //!   reads it), instead of the machine's.
 //!
@@ -169,6 +169,19 @@ pub fn zoom() -> Option<f32> {
 
 pub fn io_threads() -> Option<usize> {
     env("ARTY_IO_THREADS", parse_threads)
+}
+
+/// Reports thread pool sizes, CPU counts, and budgets on stderr for bench runs.
+pub fn report_threads(io_threads: usize, load_budget: u64, autosave_str: &str) {
+    let avail = std::thread::available_parallelism().map_or(0, |n| n.get());
+    let cpus = arty_io::usable_cpus();
+    eprintln!(
+        "ARTY_BENCH threads · available_parallelism {avail} · usable physical {} · usable logical {} · rayon {} · io {io_threads} · load budget {} MiB · autosave {autosave_str}",
+        cpus.physical,
+        cpus.logical,
+        rayon::current_num_threads(),
+        load_budget >> 20,
+    );
 }
 
 pub fn open_path() -> Option<PathBuf> {

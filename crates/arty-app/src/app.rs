@@ -152,13 +152,8 @@ impl ArtyApp {
         };
         let files = FileController::new(io, dialogs, &studio);
         if bench::active() {
-            eprintln!(
-                "ARTY_BENCH threads · available_parallelism {} · rayon {} · io {io_threads} · load budget {} MiB · autosave {}",
-                std::thread::available_parallelism().map_or(0, |n| n.get()),
-                rayon::current_num_threads(),
-                load_budget >> 20,
-                if autosave.enabled { format!("{} s", autosave.interval_secs) } else { "off".to_owned() }
-            );
+            let autosave_str = if autosave.enabled { format!("{} s", autosave.interval_secs) } else { "off".to_owned() };
+            bench::report_threads(io_threads, load_budget, &autosave_str);
         }
 
         Self {

@@ -37,7 +37,15 @@ fn cpu_now() -> u32 {
 }
 
 fn main() {
+    let cpus = arty_io::usable_cpus();
+    let mut builder = rayon::ThreadPoolBuilder::new().thread_name(|idx| format!("arty-rayon-{idx}"));
+    if std::env::var("RAYON_NUM_THREADS").ok().filter(|s| !s.trim().is_empty()).is_none() {
+        builder = builder.num_threads(arty_io::default_rayon_threads(cpus.logical));
+    }
+    let _ = builder.build_global();
+
     let io = arty_io::IoConfig::new(std::env::temp_dir());
+    println!("usable_cpus physical {} · logical {}", cpus.physical, cpus.logical);
     println!("available_parallelism {}", std::thread::available_parallelism().map_or(0, |n| n.get()));
     println!("rayon global pool {} threads (RAYON_NUM_THREADS={:?})", rayon::current_num_threads(), std::env::var("RAYON_NUM_THREADS").ok());
     println!("IoConfig::new io pool {} threads", io.threads);

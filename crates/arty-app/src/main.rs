@@ -22,6 +22,7 @@ static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    init_rayon();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ARTY")
@@ -39,6 +40,21 @@ fn main() -> eframe::Result<()> {
     match bench::exit_code() {
         0 => Ok(()),
         code => std::process::exit(code),
+    }
+}
+
+/// Configures Rayon's global thread pool at start-up:
+/// - Sized to logical CPUs usable by this process (affinity-aware), capped at 16,
+///   unless `RAYON_NUM_THREADS` is set (leaving Rayon's default handling).
+/// - Thread names set to "arty-rayon-N" so plans/bench/B006_threads.ps1 can count them.
+fn init_rayon() {
+    let mut builder = rayon::ThreadPoolBuilder::new().thread_name(|idx| format!("arty-rayon-{idx}"));
+    if std::env::var("RAYON_NUM_THREADS").ok().filter(|s| !s.trim().is_empty()).is_none() {
+        let logical = arty_io::usable_cpus().logical;
+        builder = builder.num_threads(arty_io::default_rayon_threads(logical));
+    }
+    if let Err(e) = builder.build_global() {
+        log::debug!("could not initialize rayon global thread pool: {e}");
     }
 }
 
