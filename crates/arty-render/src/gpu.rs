@@ -22,6 +22,26 @@ pub const TILES_PER_CHUNK: u32 = CHUNK / TILE_SIZE as u32;
 pub const MIP_LEVELS: u32 = TILE_SIZE.trailing_zeros() + 1;
 pub const MAX_PAGE_SIDE: u32 = 16384;
 
+/// Number of array layers to allocate for the page texture.
+///
+/// wgpu 30's GL backend (`wgpu-hal/src/gles/mod.rs:520-526`, `lib.rs:2219-2224`)
+/// infers the GL texture target from the descriptor because WebGPU provides no
+/// view dimension at texture creation: square 2D textures with 1 layer are
+/// assumed to be `TEXTURE_2D`, 6 layers `TEXTURE_CUBE_MAP`, and layer counts
+/// greater than 6 where `layers.is_multiple_of(6)` are assumed to be
+/// `TEXTURE_CUBE_MAP_ARRAY`. When viewed as `D2Array`, those targets log an
+/// error and fail to sample in shaders expecting `sampler2DArray`.
+///
+/// We pad the array layer count by 1 whenever `chunks == 1 || chunks.is_multiple_of(6)`
+/// so the target is always `TEXTURE_2D_ARRAY`. Chunk addressing (`chunk_slot`),
+/// upload rects, and the shader's chunk lookup (`fetch`) still use `chunks_x`
+/// and `chunks_y`; the extra layer remains unused.
+#[inline]
+pub fn page_texture_layers(chunks: u32) -> u32 {
+    let chunks = chunks.max(1);
+    if chunks == 1 || chunks.is_multiple_of(6) { chunks + 1 } else { chunks }
+}
+
 /// Where block `(x, y)` lands in a chunk array `chunks_x` chunks wide, with
 /// `side` blocks per chunk edge: `(layer, local x, local y)`. Used with tile
 /// units for uploads; `fetch` in canvas.wgsl applies the same math to
@@ -164,9 +184,10 @@ impl CanvasGpu {
         }
         let chunks_x = width.div_ceil(CHUNK);
         let chunks_y = height.div_ceil(CHUNK);
+        let layers = page_texture_layers(chunks_x * chunks_y);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("arty page"),
-            size: wgpu::Extent3d { width: CHUNK, height: CHUNK, depth_or_array_layers: chunks_x * chunks_y },
+            size: wgpu::Extent3d { width: CHUNK, height: CHUNK, depth_or_array_layers: layers },
             mip_level_count: MIP_LEVELS,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -365,5 +386,37 @@ mod tests {
             .expect("canvas.wgsl validates");
         let entries: Vec<_> = module.entry_points.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(entries, ["vs_main", "fs_main"]);
+    }
+
+    #[test]
+    fn page_texture_layers_avoids_gl_heuristics() {
+        let triggers_gl = |l: u32| l == 1 || l.is_multiple_of(6);
+        let max_layers = wgpu::Limits::default().max_texture_array_layers; // 256
+
+        for &c in &[1, 5, 6, 7, 12, 54] {
+            let l = page_texture_layers(c);
+            assert!(!triggers_gl(l), "count {c} -> {l} triggers GL heuristic");
+            assert!(l <= max_layers, "count {c} -> {l} exceeds limit {max_layers}");
+        }
+
+        assert_eq!(page_texture_layers(1), 2);
+        assert_eq!(page_texture_layers(5), 5);
+        assert_eq!(page_texture_layers(6), 7);
+        assert_eq!(page_texture_layers(7), 7);
+        assert_eq!(page_texture_layers(12), 13);
+        assert_eq!(page_texture_layers(54), 55);
+
+        // Max ARTY page (16384 x 16384 px = 16 x 16 = 256 chunks): 256 % 6 == 4 != 0.
+        let max_chunks = (MAX_PAGE_SIDE / CHUNK) * (MAX_PAGE_SIDE / CHUNK);
+        let max_l = page_texture_layers(max_chunks);
+        assert_eq!(max_l, 256);
+        assert!(!triggers_gl(max_l));
+        assert!(max_l <= max_layers);
+
+        // Edge count 2048 (hardware / desktop GL limit): 2048 % 6 == 2 != 0.
+        let l2048 = page_texture_layers(2048);
+        assert_eq!(l2048, 2048);
+        assert!(!triggers_gl(l2048));
+        assert!(l2048 <= 2048);
     }
 }

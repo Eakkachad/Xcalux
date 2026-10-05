@@ -181,4 +181,43 @@ mod tests {
             assert!(!p.0.contains("monochrome"));
         }
     }
+
+    #[test]
+    fn page_texture_layers_avoids_gl_heuristics_for_all_presets_and_edges() {
+        use arty_render::gpu::{CHUNK, MAX_PAGE_SIDE, page_texture_layers};
+        let triggers_gl_heuristic = |l: u32| l == 1 || l.is_multiple_of(6);
+        let max_default_layers = egui_wgpu::wgpu::Limits::default().max_texture_array_layers; // 256
+
+        for &(name, w, h, _dpi) in PAGE_PRESETS {
+            let cx = w.div_ceil(CHUNK);
+            let cy = h.div_ceil(CHUNK);
+            let chunks = cx * cy;
+            let layers = page_texture_layers(chunks);
+            assert!(
+                !triggers_gl_heuristic(layers),
+                "preset {name} ({chunks} chunks -> {layers} layers) triggers GL heuristic"
+            );
+            assert!(
+                layers <= max_default_layers,
+                "preset {name} layers {layers} exceeds default limit {max_default_layers}"
+            );
+        }
+
+        for &c in &[1, 5, 6, 7, 12, 54] {
+            let l = page_texture_layers(c);
+            assert!(!triggers_gl_heuristic(l), "edge count {c} -> {l} triggers GL heuristic");
+            assert!(l <= max_default_layers, "edge count {c} -> {l} exceeds {max_default_layers}");
+        }
+
+        let max_chunks = (MAX_PAGE_SIDE / CHUNK) * (MAX_PAGE_SIDE / CHUNK);
+        let max_layers = page_texture_layers(max_chunks);
+        assert_eq!(max_layers, 256);
+        assert!(!triggers_gl_heuristic(max_layers));
+        assert!(max_layers <= max_default_layers);
+
+        let l2048 = page_texture_layers(2048);
+        assert_eq!(l2048, 2048);
+        assert!(!triggers_gl_heuristic(l2048));
+        assert!(l2048 <= 2048);
+    }
 }

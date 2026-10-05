@@ -27,6 +27,65 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     ready(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
 }
 
+fn gl_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::GL;
+    let instance = wgpu::Instance::new(desc);
+    let adapter = ready(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::None,
+        force_fallback_adapter: false,
+        compatible_surface: None,
+        apply_limit_buckets: false,
+    }))
+    .ok()?;
+    ready(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+}
+
+struct LogCapture {
+    records: std::sync::Mutex<Vec<(log::Level, String)>>,
+}
+
+impl log::Log for LogCapture {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, record: &log::Record) {
+        self.records.lock().unwrap().push((record.level(), record.args().to_string()));
+    }
+    fn flush(&self) {}
+}
+
+static LOGGER: LogCapture = LogCapture { records: std::sync::Mutex::new(Vec::new()) };
+
+#[test]
+#[ignore = "requires OpenGL hardware context on Windows"]
+fn gl_page_texture_creation_has_no_cubearray_warning() {
+    let _ = log::set_logger(&LOGGER);
+    log::set_max_level(log::LevelFilter::Debug);
+
+    let Some((device, _queue)) = gl_device() else {
+        return;
+    };
+    let mut gpu = CanvasGpu::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+
+    LOGGER.records.lock().unwrap().clear();
+
+    // Affected presets with chunk counts that are multiples of 6:
+    // A4 350 dpi (12 chunks), B5 350 dpi (12 chunks),
+    // Illustration 3000x4000 (12 chunks), B4 600 dpi (54 chunks).
+    for (w, h) in [(2894, 4093), (2508, 3541), (3000, 4000), (6071, 8598)] {
+        gpu.ensure_page(&device, w, h);
+    }
+
+    let logs = LOGGER.records.lock().unwrap().clone();
+    for (lvl, msg) in logs {
+        assert!(
+            !msg.contains("CubeArray") && !msg.contains("heuristics assumed that the view dimension"),
+            "unexpected GL target warning: [{lvl}] {msg}"
+        );
+    }
+}
+
 /// White-paper page whose active layer is opaque gray `f(x, y)` (fix15)
 /// over every page pixel.
 fn gray_doc(width: u32, height: u32, f: impl Fn(u32, u32) -> u16) -> Document {
@@ -166,5 +225,67 @@ fn batched_upload_matches_document() {
                 assert_eq!(px[(sy * 64 + sx) as usize], want, "doc ({x}, {y})");
             }
         }
+    }
+}
+
+#[test]
+#[ignore = "benchmark"]
+fn bench_layer_padding_creation_time() {
+    use crate::gpu::MIP_LEVELS;
+
+    let iterations = 30;
+
+    let run_bench = |name: &str, device: &wgpu::Device| {
+        let mut times_12 = Vec::with_capacity(iterations);
+        let mut times_13 = Vec::with_capacity(iterations);
+
+        for _ in 0..iterations {
+            let t0 = std::time::Instant::now();
+            let tex12 = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bench 12"),
+                size: wgpu::Extent3d { width: CHUNK, height: CHUNK, depth_or_array_layers: 12 },
+                mip_level_count: MIP_LEVELS,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            times_12.push(t0.elapsed());
+            drop(tex12);
+
+            let t1 = std::time::Instant::now();
+            let tex13 = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("bench 13"),
+                size: wgpu::Extent3d { width: CHUNK, height: CHUNK, depth_or_array_layers: 13 },
+                mip_level_count: MIP_LEVELS,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            times_13.push(t1.elapsed());
+            drop(tex13);
+        }
+
+        times_12.sort();
+        times_13.sort();
+
+        let med_12 = times_12[iterations / 2];
+        let min_12 = times_12[0];
+        let med_13 = times_13[iterations / 2];
+        let min_13 = times_13[0];
+
+        println!(
+            "{name} Texture creation A/B ({iterations} runs interleaved):\n  12 layers (unpadded): median {med_12:?}, min {min_12:?}\n  13 layers (padded):   median {med_13:?}, min {min_13:?}"
+        );
+    };
+
+    if let Some((device, _queue)) = device() {
+        run_bench("Default (Vulkan/DX12)", &device);
+    }
+    if let Some((gl_device, _queue)) = gl_device() {
+        run_bench("GL backend", &gl_device);
     }
 }
