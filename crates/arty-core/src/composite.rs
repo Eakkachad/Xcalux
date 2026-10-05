@@ -114,7 +114,7 @@ impl Document {
                 }
                 let pass_through = layer.props.blend == BlendMode::PassThrough;
                 let (tmp, rest) = scratch.split_first_mut().expect("scratch depth");
-                let has_children = cov != Cov::None && !children.is_empty();
+                let has_children = cov != Cov::None && children.iter().any(|id| self.contributes(&self.layers[id], c));
                 if pass_through && op >= 1.0 {
                     // Straight into `dst`; a partial tile keeps the backdrop
                     // where the mask is not full, or (mostly outside the

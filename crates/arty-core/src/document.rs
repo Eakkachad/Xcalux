@@ -705,8 +705,10 @@ impl Document {
             let keep = |s: &[LayerId], other: &[LayerId]| -> Vec<LayerId> {
                 s.iter().copied().filter(|id| other.contains(id)).collect()
             };
-            for id in reordered(&keep(s0, s1), &keep(s1, s0)) {
-                both(dirty, id);
+            let (k0, k1) = (keep(s0, s1), keep(s1, s0));
+            let moved = reordered(&k0, &k1);
+            if !mark_crossing([(old, s0, &k0), (new, s1, &k1)], &moved, dirty) {
+                moved.into_iter().for_each(|id| both(dirty, id));
             }
         }
     }
@@ -858,7 +860,10 @@ impl Document {
             return false;
         }
         let Some((old_parent, old_index)) = self.location(id) else { return false };
-        self.mark_placed_dirty(id);
+        let old = (old_parent == parent).then(|| siblings_of(&self.layers, &self.root, parent).to_vec());
+        if old.is_none() {
+            self.mark_placed_dirty(id);
+        }
         self.siblings_mut(old_parent).remove(old_index);
         let siblings = self.siblings_mut(parent);
         let mut at = index;
@@ -866,7 +871,16 @@ impl Document {
             at -= 1;
         }
         siblings.insert(at.min(siblings.len()), id);
-        self.mark_placed_dirty(id);
+        match old {
+            Some(s0) => {
+                let s1 = siblings_of(&self.layers, &self.root, parent);
+                if !mark_crossing([(&self.layers, &s0, &s0), (&self.layers, s1, s1)], &[id], &mut self.dirty) {
+                    mark_placed(&self.layers, &s0, old_index, &mut self.dirty);
+                    self.mark_placed_dirty(id);
+                }
+            }
+            None => self.mark_placed_dirty(id),
+        }
         self.bump();
         true
     }
@@ -1019,17 +1033,65 @@ fn clip_base(layers: &Layers, sibs: &[LayerId], index: usize) -> Option<LayerId>
 }
 
 fn mark_subtree(layers: &Layers, dirty: &mut DirtyRegion, id: LayerId) {
+    subtree_tiles(layers, id, &mut |c| dirty.mark(c));
+}
+
+/// Every tile where `id` may draw; elsewhere it composites as a no-op.
+fn subtree_tiles(layers: &Layers, id: LayerId, f: &mut impl FnMut(TileCoord)) {
     let Some(layer) = layers.get(&id) else { return };
     match &layer.content {
-        LayerContent::Raster(grid) => grid.coords().for_each(|c| dirty.mark(c)),
+        LayerContent::Raster(grid) => grid.coords().for_each(&mut *f),
         LayerContent::Folder { children, frame, .. } => {
             // A frame's border shows even where no child has pixels.
-            frame.iter().flat_map(|f| f.touched_tiles()).for_each(|c| dirty.mark(c));
+            frame.iter().flat_map(|x| x.touched_tiles()).for_each(&mut *f);
             for &c in children {
-                mark_subtree(layers, dirty, c);
+                subtree_tiles(layers, c, f);
             }
         }
     }
+}
+
+/// Invalidate what reordering `moved` among the same siblings changes: two
+/// layers' order matters only where both draw, so mark each moved layer's
+/// tiles that a sibling it crossed may draw in too. `trees` is (layers,
+/// siblings, surviving siblings) before and after. Marks nothing and
+/// returns false when a clip run is involved (or too many layers moved).
+fn mark_crossing(trees: [(&Layers, &[LayerId], &[LayerId]); 2], moved: &[LayerId], dirty: &mut DirtyRegion) -> bool {
+    if moved.len() > 8 {
+        return false;
+    }
+    let index = |s: &[LayerId]| -> AHashMap<LayerId, usize> { s.iter().enumerate().map(|(i, &id)| (id, i)).collect() };
+    let [(l0, s0, k0), (l1, s1, k1)] = trees;
+    let (i0, i1, p1) = (index(s0), index(s1), &index(k1));
+    let crossed = |m: LayerId| {
+        let (a, b) = (k0.iter().position(|&x| x == m).unwrap_or(0), p1[&m]);
+        k0.iter().enumerate().filter(move |&(i, y)| *y != m && (i < a) != (p1[y] < b)).map(|(_, &y)| y)
+    };
+    let clean = |id: LayerId| {
+        [(l0, s0, &i0), (l1, s1, &i1)].iter().all(|&(l, s, ix)| !is_clip(l, &id) && !clips_above(l, s, ix[&id]))
+    };
+    if !moved.iter().all(|&m| clean(m) && crossed(m).all(clean)) {
+        return false;
+    }
+    let mut near = AHashSet::default();
+    for &m in moved {
+        near.clear();
+        for y in crossed(m) {
+            for l in [l0, l1] {
+                subtree_tiles(l, y, &mut |c| {
+                    near.insert(c);
+                });
+            }
+        }
+        for l in [l0, l1] {
+            subtree_tiles(l, m, &mut |c| {
+                if near.contains(&c) {
+                    dirty.mark(c);
+                }
+            });
+        }
+    }
+    true
 }
 
 /// Whether gaining or losing clips changes how `id` renders outside the

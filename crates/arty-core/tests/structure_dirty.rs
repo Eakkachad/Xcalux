@@ -498,6 +498,10 @@ fn targeted_move_layer_marks_only_layer_tiles() {
     for &c in &coords {
         paint_tile(&mut doc, l2, c, [1500, 1500, 1500, 1500]);
     }
+    // Only where the crossed l1 draws too can the order matter.
+    paint_tile(&mut doc, l1, TileCoord::new(1, 1), [900, 900, 900, 1000]);
+    paint_tile(&mut doc, l1, TileCoord::new(3, 3), [900, 900, 900, 1000]);
+    paint_tile(&mut doc, l3, TileCoord::new(0, 0), [900, 900, 900, 1000]);
 
     let mut drained = Vec::new();
     doc.dirty_mut().drain_into(&mut drained);
@@ -507,12 +511,44 @@ fn targeted_move_layer_marks_only_layer_tiles() {
     drained.clear();
     let all = doc.dirty_mut().drain_into(&mut drained);
     assert!(!all, "move_layer marked all tiles");
-    assert_eq!(drained.len(), 3, "move_layer marked {} tiles instead of 3", drained.len());
-    for c in &coords {
-        assert!(drained.contains(c));
-    }
+    assert_eq!(drained, [TileCoord::new(1, 1)]);
+}
 
-    let _ = (l1, l3);
+/// Shifting a full-page layer past a 1-tile layer (and undo/redo) marks
+/// only the tile where both draw.
+#[test]
+fn targeted_shift_full_page_layer_marks_overlap_only() {
+    let mut doc = Document::new(640, 640, 72);
+    let mut rng = Rng(9);
+    let bg = doc.active();
+    for y in 0..10 {
+        for x in 0..10 {
+            paint_pattern(&mut doc, &mut rng, bg, TileCoord::new(x, y));
+        }
+    }
+    let top = doc.add_raster_layer().unwrap();
+    paint_pattern(&mut doc, &mut rng, top, TileCoord::new(4, 7));
+    let mut oracle = CompositeOracle::new(&doc);
+    doc.dirty_mut().drain_into(&mut Vec::new());
+    let mut history = History::default();
+    let snap = doc.snapshot_structure();
+    assert!(doc.shift_layer(bg, 1));
+    history.push(Edit::Structure(Box::new(snap)), &doc);
+    let mut drained = Vec::new();
+    for step in ["do", "undo", "redo"] {
+        match step {
+            "undo" => drop(history.undo(&mut doc)),
+            "redo" => drop(history.redo(&mut doc)),
+            _ => {}
+        }
+        drained.clear();
+        assert!(!doc.dirty_mut().drain_into(&mut drained), "{step}");
+        assert_eq!(drained, [TileCoord::new(4, 7)], "{step}");
+        for &c in &drained {
+            doc.dirty_mut().mark(c);
+        }
+        oracle.verify(&mut doc, step);
+    }
 }
 
 #[test]
@@ -688,8 +724,8 @@ fn targeted_move_into_empty_pass_through_clip_folder() {
     oracle.verify(&mut doc, "redo");
 }
 
-/// Structure undo/redo of a swap marks only one of the two layers' tiles
-/// (either order is a valid diff).
+/// Swapping two layers that never draw in the same tile (and its undo/redo)
+/// changes no pixels.
 #[test]
 fn targeted_structure_undo_move_marks_only_layer_tiles() {
     let mut doc = Document::new(256, 256, 72);
@@ -711,7 +747,7 @@ fn targeted_structure_undo_move_marks_only_layer_tiles() {
         }
         drained.clear();
         assert!(!doc.dirty_mut().drain_into(&mut drained), "{step}");
-        assert!(drained == [TileCoord::new(2, 2)] || drained == [TileCoord::new(0, 0)], "{step}: {drained:?}");
+        assert!(drained.is_empty(), "{step}: {drained:?}");
     }
 }
 
@@ -785,4 +821,36 @@ fn targeted_move_only_clip_off_pass_through_base() {
     oracle.verify(&mut doc, "undo");
     history.redo(&mut doc);
     oracle.verify(&mut doc, "redo");
+}
+
+/// An empty layer moved into (or out of) an empty pass-through frame folder
+/// changes no pixels: the folder's partial tiles must not depend on whether
+/// it has children, only on whether one draws there.
+#[test]
+fn targeted_move_into_empty_pass_through_frame_folder() {
+    let mut doc = Document::new(128, 64, 72);
+    let mut rng = Rng(7);
+    let base = doc.active();
+    for x in 0..2 {
+        paint_pattern(&mut doc, &mut rng, base, TileCoord::new(x, 0));
+    }
+    let folder = doc.add_folder().unwrap();
+    let f = make_test_frame(128, 64, vec![[[10.3, 5.7], [120.6, 12.2], [110.1, 58.4], [3.9, 50.8]]]);
+    doc.set_frame(folder, Some(f));
+    let l = doc.add_raster_layer().unwrap();
+    let mut oracle = CompositeOracle::new(&doc);
+    doc.dirty_mut().drain_into(&mut Vec::new());
+    let mut history = History::default();
+    let snap = doc.snapshot_structure();
+    assert!(doc.move_layer(l, Some(folder), 0));
+    history.push(Edit::Structure(Box::new(snap)), &doc);
+    oracle.verify(&mut doc, "move into frame folder");
+    history.undo(&mut doc);
+    oracle.verify(&mut doc, "undo");
+    history.redo(&mut doc);
+    oracle.verify(&mut doc, "redo");
+    let snap = doc.snapshot_structure();
+    assert!(doc.delete_layer(l));
+    history.push(Edit::Structure(Box::new(snap)), &doc);
+    oracle.verify(&mut doc, "delete last child");
 }
