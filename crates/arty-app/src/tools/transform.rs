@@ -733,7 +733,7 @@ mod tests {
 
         // Every guard commits first: one step each, with the pixels moved.
         type Guard = fn(&mut Studio);
-        let guards: [(&str, Guard); 6] = [
+        let guards: [(&str, Guard); 5] = [
             ("select_tool", |s| s.select_tool(Tool::Hand)),
             ("edit_structure", |s| {
                 s.edit_structure(|d| d.add_raster_layer().is_some());
@@ -749,10 +749,6 @@ mod tests {
                 s.end_stroke();
             }),
             ("clear_active_layer", |s| s.clear_active_layer()),
-            ("set_page_setup", |s| {
-                let trim = RectF { x: 8.0, y: 8.0, w: 200.0, h: 200.0 };
-                s.set_page_setup(Some(arty_core::PageSetup { trim, bleed: 4.0, safe: 4.0, inner: RectF::default(), unit: 0 }));
-            }),
         ];
         for (name, guard) in guards {
             let (mut s, mut shell, id) = studio();
@@ -786,6 +782,18 @@ mod tests {
         assert_eq!((alpha(&s, 100, 50), alpha(&s, 31, 50)), (0, ONE_U16));
         s.undo();
         assert_eq!(s.doc.layer(id).unwrap().props.opacity, 1.0);
+        // So does Page Setup's Apply (line the content up with new guides).
+        let (mut s, mut shell, _) = studio();
+        run(Command::Transform, &mut s, &mut shell);
+        shift(&mut s, 64.0);
+        let trim = RectF { x: 8.0, y: 8.0, w: 200.0, h: 200.0 };
+        s.set_page_setup(Some(arty_core::PageSetup { trim, bleed: 4.0, safe: 4.0, inner: RectF::default(), unit: 0 }));
+        assert!(s.transform.is_some() && s.history.undo_len() == 1 && s.doc.page_setup().is_some());
+        s.undo();
+        assert!(s.transform.is_none() && s.history.undo_len() == 1, "undo cancels the session");
+        assert_eq!((alpha(&s, 100, 50), alpha(&s, 31, 50)), (0, ONE_U16));
+        s.undo();
+        assert_eq!(s.doc.page_setup(), None);
 
         // Flip and Rotate without a session start one.
         let (mut s, mut shell, _) = studio();

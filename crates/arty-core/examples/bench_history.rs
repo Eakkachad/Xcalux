@@ -18,17 +18,22 @@
 //!    before a trim;
 //! 7. re-costing a stack of 99 layer moves, each followed by a stroke that
 //!    makes the document copy a layer's map, so the snapshots hold 99
-//!    drifted maps of tiles the document still holds.
+//!    drifted maps of tiles the document still holds;
+//! 8. the scan rows of 1 and 2 and the re-cost of 6 on documents of distinct
+//!    tiles, and re-costing 2 whole-layer steps plus 40 or 66 rounds of "add
+//!    a layer, stroke on it, merge it down" (about 1.4 GiB of RAM).
 //!
-//! `bench_history recost` runs only 6 and 7.
+//! `bench_history recost` runs only 6 and 7, `bench_history distinct` only 8.
 //!
-//! Documents: 15 full A4 layers; 10 B4 600 layers at 40% coverage. Layers
-//! the step does not come from share one tile each (their maps are full
-//! size, so the scan walks every coordinate) so the bench fits in RAM; the
-//! tiles of the step itself are distinct and absent from the document, the
-//! scan's worst case (it never stops early). "With the scan" sets the budget
-//! to the bytes already held, so the push must scan and then trims the
-//! oldest step into a stash (not freed inside the timing).
+//! Documents: 15 full A4 layers; 10 B4 600 layers at 40% coverage. Except in
+//! 8, layers the step does not come from share one tile each (their maps are
+//! full size, so the scan walks every coordinate) so the bench fits in RAM;
+//! that keeps every lookup of a layer in one hash bucket, so these rows
+//! understate a real document's walks (8 measures by how much). The tiles of
+//! the step itself are distinct and absent from the document, the scan's
+//! worst case (it never stops early). "With the scan" sets the budget to the
+//! bytes already held, so the push must scan and then trims the oldest step
+//! into a stash (not freed inside the timing).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -58,8 +63,9 @@ fn coords(doc: &Document, coverage: u32) -> Vec<TileCoord> {
 }
 
 /// `layers` raster layers, each covering `coverage`% of the page with one
-/// shared tile.
-fn page(size: (u32, u32, u32), layers: usize, coverage: u32) -> Document {
+/// shared tile, or with `distinct` tiles (zeroed, so their pages stay
+/// untouched: the walks key on the tile's address and never read it).
+fn page(size: (u32, u32, u32), layers: usize, coverage: u32, distinct: bool) -> Document {
     let mut doc = Document::new(size.0, size.1, size.2);
     let at = coords(&doc, coverage);
     for i in 0..layers {
@@ -67,7 +73,7 @@ fn page(size: (u32, u32, u32), layers: usize, coverage: u32) -> Document {
         let t = painted_tile(i as u16);
         let (grid, _) = doc.paint_target(id).unwrap();
         for &c in &at {
-            grid.insert(c, t.clone());
+            grid.insert(c, if distinct { new_tile() } else { t.clone() });
         }
     }
     doc
@@ -221,8 +227,8 @@ fn free_case(
 /// distinct tiles the document does not hold (no early stop), all pushed
 /// without the scan. "Warm": a third whole-layer step was re-costed and
 /// trimmed first, then one more stroke pushed without the scan.
-fn recost_case() {
-    let doc = page(A4, 15, 100);
+fn recost_case(distinct: bool) {
+    let doc = page(A4, 15, 100, distinct);
     let in_doc = doc_tiles(&doc);
     let layer = doc.active();
     let whole = coords(&doc, 100);
@@ -256,9 +262,63 @@ fn recost_case() {
             assert!(h.usage().trimmed > 0, "the push trims");
             dt
         });
-        let label = format!("A4 350, 15 layers: stroke re-costing 200 steps, {}", if warm { "warm" } else { "cold" });
+        let label = format!(
+            "A4 350, 15 layers{}: stroke re-costing 200 steps, {}",
+            if distinct { " of distinct tiles" } else { "" },
+            if warm { "warm" } else { "cold" }
+        );
         row(&label, walked, in_doc, r);
     }
+}
+
+/// A 20-tile stroke push that re-costs, then trims, a history of 2 whole-layer
+/// steps and `rounds` × "add a layer, a 20-tile stroke on it, merge it down"
+/// on A4 15 layers of distinct tiles. Each merge copies the lower layer's
+/// map on write, so its snapshot holds a whole old map of which only the 20
+/// merged tiles left the document.
+fn merge_recost_case(rounds: usize) {
+    let mut base = page(A4, 15, 100, true);
+    let lower = base.root()[7];
+    base.set_active(lower);
+    let in_doc = doc_tiles(&base);
+    let whole = coords(&base, 100);
+    let at20: Vec<TileCoord> = (0..20).map(|x| TileCoord::new(x, 0)).collect();
+    let stroke = |doc: &mut Document, id: LayerId| {
+        let (grid, _) = doc.paint_target(id).unwrap();
+        let tiles = at20.iter().map(|&c| (c, grid.replace(c, Some(painted_tile(c.x as u16))))).collect();
+        Edit::Pixels { layer: id, tiles }
+    };
+    let r = stats(7, || {
+        let mut doc = base.snapshot();
+        let mut h = History::with_budget(256, usize::MAX); // no step-limit drops
+        let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let k = kept.clone();
+        h.set_release(Box::new(move |e| k.lock().unwrap().push(e)));
+        for _ in 0..2 {
+            let fresh: Vec<TileRef> = (0..whole.len()).map(|_| new_tile()).collect();
+            h.push(pixels(lower, &whole, &fresh), &doc);
+        }
+        for _ in 0..rounds {
+            let snap = doc.snapshot_structure();
+            let id = doc.add_raster_layer().unwrap();
+            h.push(Edit::Structure(Box::new(snap)), &doc);
+            let e = stroke(&mut doc, id);
+            h.push(e, &doc);
+            let snap = doc.snapshot_structure();
+            assert!(doc.merge_down(id));
+            h.push(Edit::Structure(Box::new(snap)), &doc);
+            doc.set_active(lower);
+        }
+        h.set_budget(h.usage().undo_bytes);
+        let e = stroke(&mut doc, lower);
+        let t = Instant::now();
+        h.push(e, &doc);
+        let dt = us(t);
+        assert!(h.usage().trimmed > 0, "the push trims");
+        dt
+    });
+    let label = format!("A4 350, 15 layers of distinct tiles: stroke re-costing 2 whole-layer steps + {rounds} merges");
+    row(&label, 2 * whole.len() + rounds * 40 + 20, in_doc, r);
 }
 
 /// A 20-tile stroke push after 99 pairs of "shift the bottom layer up
@@ -270,7 +330,7 @@ fn recost_case() {
 /// maps (99 × layers) for tables the document has left. Only the push is
 /// timed: the stroke's own copy on write happens before.
 fn drifted_recost_case(name: &str, size: (u32, u32, u32), layers: usize, coverage: u32, trim: bool) {
-    let base = page(size, layers, coverage);
+    let base = page(size, layers, coverage, false);
     let in_doc = doc_tiles(&base);
     let ids: Vec<LayerId> = base.root().to_vec();
     let at20: Vec<TileCoord> = (0..20).map(|x| TileCoord::new(x, 0)).collect();
@@ -307,11 +367,36 @@ fn drifted_recost_case(name: &str, size: (u32, u32, u32), layers: usize, coverag
     row(&format!("{name}: stroke {what} 99 moves + 99 strokes (99 drifted maps)"), 100 * 20, in_doc, r);
 }
 
+/// The scan and re-cost rows on documents of distinct tiles, as a real
+/// document holds: the walks' lookups land in random buckets, not in one per
+/// layer.
+fn distinct_rows() {
+    for (name, size, layers, coverage) in [("A4 350, 15 layers", A4, 15, 100), ("B4 600, 10 layers @40%", B4, 10, 40)] {
+        let doc = page(size, layers, coverage, true);
+        let layer = doc.active();
+        let in_doc = doc_tiles(&doc);
+        let at20: Vec<TileCoord> = (0..20).map(|x| TileCoord::new(x, 0)).collect();
+        let t20: Vec<TileRef> = (0..20).map(|i| painted_tile(100 + i)).collect();
+        let label = format!("{name} of distinct tiles: 20-tile stroke, scan");
+        row(&label, 20, in_doc, push_case(&doc, layer, true, true, 31, || pixels(layer, &at20, &t20)));
+        let whole = coords(&doc, 100);
+        let unique: Vec<TileRef> = (0..whole.len()).map(|i| painted_tile(i as u16)).collect();
+        for warm in [true, false] {
+            let when = if warm { "warm" } else { "cold" };
+            let label = format!("{name} of distinct tiles: whole-layer step, scan, {when}");
+            row(&label, whole.len(), in_doc, push_case(&doc, layer, true, warm, 11, || pixels(layer, &whole, &unique)));
+        }
+    }
+    recost_case(true);
+    merge_recost_case(40);
+    merge_recost_case(66);
+}
+
 fn main() {
     println!("| case | tiles walked | doc tiles | median µs | min µs |");
     println!("|---|---:|---:|---:|---:|");
     if std::env::args().any(|a| a == "recost") {
-        recost_case();
+        recost_case(false);
         for trim in [true, false] {
             drifted_recost_case("A4 350, 15 layers", A4, 15, 100, trim);
             drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40, trim);
@@ -319,8 +404,12 @@ fn main() {
         }
         return;
     }
+    if std::env::args().any(|a| a == "distinct") {
+        distinct_rows();
+        return;
+    }
     for (name, size, layers, coverage) in [("A4 350, 15 layers", A4, 15, 100), ("B4 600, 10 layers @40%", B4, 10, 40)] {
-        let doc = page(size, layers, coverage);
+        let doc = page(size, layers, coverage, false);
         let layer = doc.active();
         let in_doc = doc_tiles(&doc);
         let at20: Vec<TileCoord> = (0..20).map(|x| TileCoord::new(x, 0)).collect();
@@ -350,7 +439,7 @@ fn main() {
     }
 
     // Structure snapshots and the first undo, on A4 with 35 layers.
-    let mut doc = page(A4, 35, 100);
+    let mut doc = page(A4, 35, 100, false);
     let in_doc = doc_tiles(&doc);
     let layer = doc.active();
     row(
@@ -409,13 +498,15 @@ fn main() {
         dt
     });
     row("A4 36 layers: first undo of a whole-layer clear", whole.len(), in_doc, r);
-    recost_case();
+    recost_case(false);
     for trim in [true, false] {
         drifted_recost_case("A4 350, 15 layers", A4, 15, 100, trim);
         drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40, trim);
         drifted_recost_case("B4 600, 10 full layers", B4, 10, 100, trim);
     }
     let u = h.usage();
+    drop((h, doc));
+    distinct_rows();
     println!();
     let mib = u.undo_bytes >> 20;
     println!("history after the runs: {} undo / {} redo steps, {mib} MiB undo", u.undo_steps, u.redo_steps);

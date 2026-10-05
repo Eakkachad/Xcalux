@@ -29,10 +29,13 @@
 //! newest holder: the op it left the document at, whose drop frees it. An
 //! overcount therefore never costs an undo step.
 //!
-//! The re-cost walks only the snapshot maps that were not document maps when
-//! their step was costed. A map that was one held only document tiles then;
-//! any that left the document since did so at a newer op, whose step holds it
-//! and is still on the stack (trims drop the oldest), so that step owns it.
+//! The re-cost claims only the snapshot tiles that were candidates when their
+//! step was costed (less those the scan found in the document, when it ran),
+//! from the maps that were not document maps then. Any other snapshot tile
+//! was in the document then; if it left since, it did so at a newer op, whose
+//! step holds it and is still on the stack (trims drop the oldest), so that
+//! step owns it. So a merge down's old lower-layer map costs a re-cost only
+//! the tiles the merge changed, not the whole layer.
 //!
 //! A [`TileGrid`] map that a structure snapshot shares with the document
 //! costs 0 when its step is costed, and stays with the snapshot when the
@@ -46,9 +49,11 @@
 //! All of this needs the document on a step boundary at every push: no
 //! stroke or transform preview in progress. Their old tiles are held outside
 //! both the document and history, and a re-cost would charge them to any
-//! snapshot that holds them. The exception is [`History::push_props`], which
-//! the layer panel may call mid-stroke or mid-transform: it holds no tiles and
-//! trims only for the step limit, leaving the budget to the next push.
+//! snapshot that holds them. The exceptions are [`History::push_props`] and
+//! [`History::push_page`], which the layer panel and the page setup dialog may
+//! call mid-stroke or mid-transform: their steps hold no tiles, maps or
+//! frames, and they trim only for the step limit, leaving the budget to the
+//! next push.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -240,10 +245,14 @@ struct Step {
     tiles: usize,
     /// Costed with the document scan (or had no candidate tiles).
     exact: bool,
-    /// Snapshot maps that were not document maps when costed: the only ones
-    /// a re-cost walks (see the module docs). Empty, and unallocated, for
+    /// Snapshot maps that were not document maps when costed; their tables
+    /// are this step's (see `charge_tables`). Empty, and unallocated, for
     /// anything but a snapshot that deleted or rewrote layers.
     walked: Box<[usize]>,
+    /// Candidate tiles of the `walked` maps when costed, less those the scan
+    /// found in the document: the only snapshot tiles a re-cost claims (see
+    /// the module docs). Empty, and unallocated, like `walked`.
+    held: Box<[usize]>,
     /// Snapshot maps that were document maps when costed, with their table
     /// bytes: charged while the document no longer holds them (see the
     /// module docs). Empty, and unallocated, for anything but a snapshot.
@@ -265,6 +274,8 @@ struct Scratch {
     owner: AHashMap<usize, usize>,
     /// Snapshot maps the step being costed walked.
     walked: Vec<usize>,
+    /// Candidate tiles of those maps.
+    held: Vec<usize>,
     /// Snapshot maps (and table bytes) the step being costed shares with the
     /// document.
     shared: Vec<(usize, usize)>,
@@ -385,16 +396,28 @@ impl History {
         if coalesce && self.props_open == Some(layer) {
             return; // keep the gesture's oldest "before" state
         }
-        let bytes = size_of::<Step>() + before.name.capacity();
-        let edit = Edit::Props { layer, props: before };
-        let (walked, shared) = (Box::default(), Box::default());
-        let step = Step { edit, bytes, tiles: 0, exact: true, walked, shared, tables: 0 };
-        self.push_step(step, None);
+        let bytes = before.name.capacity();
+        self.push_bare(Edit::Props { layer, props: before }, bytes);
         self.props_open = coalesce.then_some(layer);
     }
 
-    /// Push `step` and trim. `doc` is `None` for a props push, which may be
-    /// off a step boundary: it trims only for the step limit.
+    /// Record a page setup change; `old` is the setup to restore. May be
+    /// called off a step boundary, like [`History::push_props`].
+    pub fn push_page(&mut self, old: Option<PageSetup>) {
+        self.push_bare(Edit::Page(old), 0);
+    }
+
+    /// Push an edit that holds no tiles, maps or frames and costs `bytes`
+    /// besides its step, without the document.
+    fn push_bare(&mut self, edit: Edit, bytes: usize) {
+        let (walked, held, shared) = (Box::default(), Box::default(), Box::default());
+        let bytes = size_of::<Step>() + bytes;
+        let step = Step { edit, bytes, tiles: 0, exact: true, walked, held, shared, tables: 0 };
+        self.push_step(step, None);
+    }
+
+    /// Push `step` and trim. `doc` is `None` for a props or page push, which
+    /// may be off a step boundary: it trims only for the step limit.
     fn push_step(&mut self, step: Step, doc: Option<&Document>) {
         self.props_open = None;
         self.release_redo();
@@ -535,6 +558,7 @@ impl History {
         s.tiles.clear();
         s.blocks.clear();
         s.walked.clear();
+        s.held.clear();
         s.shared.clear();
         let mut bytes = size_of::<Step>() + walk(&edit, doc, s);
         let walked: Box<[usize]> = s.walked.as_slice().into();
@@ -543,15 +567,21 @@ impl History {
         let n = s.tiles.len();
         let over = stack_bytes + bytes + n * TILE_BYTES > self.budget;
         let exact = n == 0 || self.scans_always() || (over && !recosts);
+        let s = &mut self.scratch;
         if n > 0 && exact {
-            self.scratch.scan(doc);
+            s.scan(doc);
+            // One the document still holds is a newer step's if it ever
+            // leaves (see the module docs).
+            s.held.retain(|t| s.tiles.contains(t));
             #[cfg(test)]
             {
                 self.doc_walks += 1;
             }
         }
-        let tiles = self.scratch.tiles.len();
-        Step { edit, bytes: bytes + tiles * TILE_BYTES, tiles, exact, walked, shared, tables: 0 }
+        let held: Box<[usize]> = s.held.as_slice().into();
+        bytes += held.len() * size_of::<usize>();
+        let tiles = s.tiles.len();
+        Step { edit, bytes: bytes + tiles * TILE_BYTES, tiles, exact, walked, held, shared, tables: 0 }
     }
 
     /// Charge each `shared` table the document no longer holds to its newest
@@ -590,11 +620,11 @@ impl History {
         }
         let s = &mut self.scratch;
         s.owner.clear();
-        s.blocks.clear();
-        s.maps.clear();
-        s.maps.extend(doc.layers.values().filter_map(Layer::raster).map(TileGrid::map_ptr));
         for (i, step) in self.undo.iter().enumerate().rev() {
-            s.claim(&step.edit, &step.walked, doc, i);
+            s.claim(&step.edit, doc, i);
+            for &t in &step.held {
+                s.owner.entry(t).or_insert(i);
+            }
         }
         s.maps.clear();
         'grids: for g in doc.layers.values().filter_map(Layer::raster) {
@@ -652,11 +682,10 @@ impl Scratch {
         }
     }
 
-    /// Make step `i` the owner of each candidate tile of `edit` that no newer
-    /// step owns. Only the snapshot maps in `walked` can hold any (see the
-    /// module docs). `maps` holds the document's maps, and `blocks` the
-    /// snapshot maps a newer step already claimed (it owns all their tiles).
-    fn claim(&mut self, edit: &Edit, walked: &[usize], doc: &Document, i: usize) {
+    /// Make step `i` the owner of each candidate tile of the pixel edits in
+    /// `edit` that no newer step owns. Its snapshot tiles are claimed from
+    /// its `held`.
+    fn claim(&mut self, edit: &Edit, doc: &Document, i: usize) {
         match edit {
             Edit::Pixels { layer, tiles } => {
                 let live = doc.layer(*layer).and_then(Layer::raster);
@@ -668,27 +697,12 @@ impl Scratch {
                     }
                 }
             }
-            Edit::Structure(snap) => {
-                for l in snap.layers.values() {
-                    let Some(g) = l.raster() else { continue };
-                    let m = g.map_ptr();
-                    if !walked.contains(&m) || self.maps.contains(&m) || !self.blocks.insert(m) {
-                        continue;
-                    }
-                    let live = doc.layer(l.id).and_then(Layer::raster);
-                    for (c, t) in g.iter() {
-                        if !at_slot(live, c, t) {
-                            self.owner.entry(Arc::as_ptr(t) as usize).or_insert(i);
-                        }
-                    }
-                }
-            }
             Edit::Batch(edits) => {
                 for e in edits {
-                    self.claim(e, walked, doc, i);
+                    self.claim(e, doc, i);
                 }
             }
-            Edit::Props { .. } | Edit::Selection(_) | Edit::Page(_) | Edit::Frame { .. } => {}
+            Edit::Structure(_) | Edit::Props { .. } | Edit::Selection(_) | Edit::Page(_) | Edit::Frame { .. } => {}
         }
     }
 
@@ -753,7 +767,9 @@ fn walk(edit: &Edit, doc: &Document, s: &mut Scratch) -> usize {
                         }
                         let live = doc.layer(l.id).and_then(Layer::raster);
                         for (c, t) in g.iter() {
-                            s.candidate(live, c, t);
+                            if !at_slot(live, c, t) && s.tiles.insert(Arc::as_ptr(t) as usize) {
+                                s.held.push(Arc::as_ptr(t) as usize);
+                            }
                         }
                     }
                     LayerContent::Folder { children, frame, .. } => {
@@ -1420,10 +1436,37 @@ mod tests {
         clear(&mut doc, &mut h, a);
         let walked: Vec<usize> = h.undo.iter().map(|s| s.walked.len()).collect();
         assert_eq!(walked, [0, 0, 1, 0], "only the deleted layer's map was outside the document");
+        let held: Vec<usize> = h.undo.iter().map(|s| s.held.len()).collect();
+        assert_eq!(held, [0, 0, 16, 0], "the re-cost claims only the deleted layer's tiles");
 
         h.recost(&doc);
         check_stacks(&h, &doc, true, "re-cost");
         assert_eq!(h.undo.iter().map(|s| s.tiles).collect::<Vec<_>>(), [0, 1, 16, 16]);
+    }
+
+    #[test]
+    fn merge_down_holds_only_the_changed_tiles() {
+        for scan in [false, true] {
+            let mut doc = Document::new(640, 640, 72);
+            let lower = doc.active();
+            paint(&mut doc, lower, row(100), 1);
+            let upper = doc.add_raster_layer().unwrap();
+            paint(&mut doc, upper, row(4), 2);
+            let mut h = History::default();
+            if scan {
+                h.scan_always();
+            }
+            // The merge copies the lower map on write: the snapshot's copy is
+            // outside the document, but 96 of its 100 tiles are still at their
+            // slot and only the 4 the merge rewrote can be history's.
+            assert!(structure(&mut doc, &mut h, |d| d.merge_down(upper)));
+            let step = h.undo.back().unwrap();
+            assert_eq!((step.walked.len(), step.held.len()), (2, 8), "scan {scan}");
+            clear(&mut doc, &mut h, lower);
+            h.recost(&doc);
+            check_stacks(&h, &doc, true, "re-cost after the merge");
+            assert_eq!(h.undo.iter().map(|s| s.tiles).collect::<Vec<_>>(), [8, 100]);
+        }
     }
 
     #[test]
@@ -1446,18 +1489,74 @@ mod tests {
             Edit::Structure(snap) => snap.layers[&a].raster().unwrap().map_bytes(),
             _ => 0,
         };
-        let tables = |h: &History| h.undo.iter().map(|s| s.tables).collect::<Vec<_>>();
         let want: Vec<usize> = h.undo.iter().map(old_table).collect();
         assert!(want.len() == 3 && want.iter().all(|&t| t > 0));
         assert_eq!(tables(&h), want, "every old table of a, once");
         let bytes = |h: &History| h.undo.iter().map(|s| s.bytes).sum::<usize>();
         assert_eq!(h.usage().undo_bytes, bytes(&h));
+        check_tables(&h, &doc, "three moves");
 
         // Undoing the last move puts its map back in the document.
         h.undo(&mut doc);
         h.push(stroke(&mut doc, &mut rec, 1, 9).unwrap(), &doc);
         assert_eq!(tables(&h), [want[0], want[1], 0]);
         check_stacks(&h, &doc, false, "after undo");
+        check_tables(&h, &doc, "after undo");
+    }
+
+    fn tables(h: &History) -> Vec<usize> {
+        h.undo.iter().map(|s| s.tables).collect()
+    }
+
+    /// Two layers, `a` active and painted; `moves` moves of the other one,
+    /// each sharing a's map, then a stroke on a, which copies it on write.
+    fn moves_then_stroke(h: &mut History, moves: usize) -> Document {
+        let mut doc = Document::new(256, 256, 72);
+        let a = doc.active();
+        paint(&mut doc, a, row(16), 1);
+        let b = doc.add_raster_layer().unwrap();
+        doc.set_active(a);
+        for i in 0..moves {
+            assert!(structure(&mut doc, h, |d| d.shift_layer(b, if i % 2 == 0 { -1 } else { 1 })));
+        }
+        h.push(stroke(&mut doc, &mut PixelRecorder::default(), 0, 9).unwrap(), &doc);
+        doc
+    }
+
+    #[test]
+    fn shared_tables_are_charged_once() {
+        // Move a, then delete it: the delete walked a's map, so it is the
+        // delete's, and the move pays nothing for it.
+        let mut doc = Document::new(256, 256, 72);
+        let a = doc.active();
+        paint(&mut doc, a, row(16), 1);
+        let b = doc.add_raster_layer().unwrap();
+        let mut h = History::default();
+        assert!(structure(&mut doc, &mut h, |d| d.shift_layer(b, -1)));
+        assert!(structure(&mut doc, &mut h, |d| d.delete_layer(a)));
+        assert_eq!((tables(&h), h.undo[1].walked.len()), (vec![0, 0], 1));
+        check_tables(&h, &doc, "move, delete");
+
+        // Two moves share a's map; the stroke leaves it to them: charged
+        // once, to the newest.
+        let mut h = History::default();
+        let doc = moves_then_stroke(&mut h, 2);
+        let t = h.undo[1].tables;
+        assert!(t > 0);
+        assert_eq!(tables(&h), [0, t, 0]);
+        check_tables(&h, &doc, "two moves, stroke");
+
+        // The table charge alone takes the stack over the budget: that push
+        // trims.
+        let mut h = History::with_budget(200, usize::MAX);
+        h.scan_always();
+        moves_then_stroke(&mut h, 2);
+        let total = h.usage().undo_bytes;
+        let mut h = History::with_budget(200, total - 1);
+        h.scan_always();
+        moves_then_stroke(&mut h, 2);
+        assert_eq!((h.undo_len(), h.usage().trimmed, tables(&h)), (2, 1, vec![t, 0]));
+        assert!(h.usage().undo_bytes <= h.budget());
     }
 
     #[test]
@@ -1670,6 +1769,34 @@ mod tests {
         set.len()
     }
 
+    /// The raster maps of the snapshots in `e`, with their table bytes.
+    fn snapshot_maps(e: &Edit, out: &mut Vec<(usize, usize)>) {
+        match e {
+            Edit::Structure(s) => {
+                out.extend(s.layers.values().filter_map(Layer::raster).map(|g| (g.map_ptr(), g.map_bytes())));
+            }
+            Edit::Batch(v) => v.iter().for_each(|e| snapshot_maps(e, out)),
+            _ => {}
+        }
+    }
+
+    /// After a push: the undo steps charge each snapshot table that no
+    /// document layer holds exactly once, as `tables` or as a walked map.
+    fn check_tables(h: &History, doc: &Document, what: &str) {
+        let in_doc: AHashSet<usize> = doc.layers.values().filter_map(Layer::raster).map(TileGrid::map_ptr).collect();
+        let mut only: AHashMap<usize, usize> = AHashMap::new();
+        let mut charged = 0;
+        for s in &h.undo {
+            let mut maps = Vec::new();
+            snapshot_maps(&s.edit, &mut maps);
+            maps.sort_unstable();
+            maps.dedup();
+            charged += s.tables + maps.iter().filter(|(m, _)| s.walked.contains(m)).map(|&(_, b)| b).sum::<usize>();
+            only.extend(maps.into_iter().filter(|(m, _)| !in_doc.contains(m)));
+        }
+        assert_eq!(charged, only.values().sum::<usize>(), "{what}: charged tables == history-only tables");
+    }
+
     fn sorted(doc: &Document, folders: bool) -> Vec<LayerId> {
         let mut v: Vec<LayerId> = doc.layers.values().filter(|l| l.is_folder() == folders).map(|l| l.id).collect();
         v.sort_unstable();
@@ -1854,6 +1981,7 @@ mod tests {
                     if h.pushes != pushes {
                         pushes = h.pushes;
                         assert!(h.undo_bytes <= h.budget || h.undo_len() == 1, "{what}: over budget after a push");
+                        check_tables(&h, &doc, &what);
                     }
                 }
                 let trims = h.usage().trimmed > 0 || budget > MIB;

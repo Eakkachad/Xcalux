@@ -734,15 +734,12 @@ impl Studio {
         self.record_edit(Edit::Selection(Box::new(old)));
     }
 
-    /// Replace the page setup as one undo step when it changes. Refused
-    /// while stroking; a transform session is committed first.
+    /// Replace the page setup as one undo step when it changes. Keeps a
+    /// transform session open, as layer settings do (`History::push_page`
+    /// may run off a step boundary); undo cancels the session first.
     pub fn set_page_setup(&mut self, s: Option<PageSetup>) {
-        if self.engine.is_stroking() || self.doc.page_setup() == s.as_ref() {
-            return;
-        }
-        self.commit_transform();
         if let Some(old) = self.doc.set_page_setup(s) {
-            self.record_edit(Edit::Page(old));
+            self.history.push_page(old);
         }
     }
 
@@ -845,21 +842,24 @@ impl Studio {
 /// priority, woken by a push, it preempted the pushing thread for milliseconds on 4 cores
 /// (plans/bench/B012).
 pub fn undo_release() -> UndoRelease {
-    spawn_undo_free().0
+    spawn_undo_free(drop).0
 }
 
 /// The hook [`History::set_release`] takes.
 pub type UndoRelease = Box<dyn FnMut(Edit) + Send>;
 
 /// [`undo_release`] and its thread, which ends once the hook is dropped.
-fn spawn_undo_free() -> (UndoRelease, Option<std::thread::JoinHandle<()>>) {
+/// The thread hands each step to `free` (tests note where it ran).
+fn spawn_undo_free(
+    mut free: impl FnMut(Edit) + Send + 'static,
+) -> (UndoRelease, Option<std::thread::JoinHandle<()>>) {
     let (tx, rx) = std::sync::mpsc::channel::<Edit>();
     let thread = std::thread::Builder::new()
         .name("arty-undo-free".into())
         .spawn(move || {
             arty_io::lower_thread_priority();
             for e in rx {
-                drop(e);
+                free(e);
             }
         })
         .ok();
@@ -993,7 +993,13 @@ mod tests {
     #[test]
     fn undo_free_thread_frees_trimmed_steps_and_ends() {
         let mut s = Studio::new(Document::new(256, 256, 72));
-        let (release, thread) = spawn_undo_free();
+        // Where each step is freed: never inline on the pushing thread.
+        let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = threads.clone();
+        let (release, thread) = spawn_undo_free(move |e| {
+            seen.lock().unwrap().push(std::thread::current().name().map(str::to_owned));
+            drop(e);
+        });
         s.history.set_release(release);
         let thread = thread.expect("the thread starts");
         let id = s.doc.active();
@@ -1022,6 +1028,8 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(thread.is_finished(), "the thread ends with its History");
+        let on = Some("arty-undo-free".to_owned());
+        assert_eq!(*threads.lock().unwrap(), [on.clone(), on], "both trimmed steps were freed on the thread");
     }
 
     #[test]
