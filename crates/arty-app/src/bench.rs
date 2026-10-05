@@ -2,16 +2,24 @@
 //! B005, B013). None of them sends OS input: the stroke bench pushes samples
 //! into ARTY's own pen queue, where the Windows Ink hook puts real ones.
 //! Reports go to stderr, one line each, starting with the variable's name.
+//! A hook that cannot do its work prints `ARTY_BENCH_ERROR <what>` instead
+//! (a prefix no report line has), drops any changes and quits; the process
+//! then exits with code 2.
 //!
 //! - `ARTY_BENCH_PAN=<secs>` (B005): rotate the view 0.5° per frame (after
 //!   the open, if any), report frame intervals, then quit.
 //! - `ARTY_BENCH_OPEN=<file.arty>`: open the file at start-up through
 //!   File > Open (the file dialog answers with it once) and report when the
-//!   document is in.
+//!   document is in. Fails when a dialog other than the loading one comes
+//!   up first (recovery prompt, load error) or after 60 s.
 //! - `ARTY_BENCH_STROKE=<secs>`: after start-up (and the open, if any) draw a
 //!   looping path with a 240 Hz pen on the active layer, lifting the pen for
 //!   0.1 s every 2 s, report frame times and the frames that ended a stroke,
-//!   then quit without saving.
+//!   then quit without saving. Fails when a contact paints nothing (a dialog
+//!   over the canvas, a locked or hidden layer, no pen hook).
+//! - `ARTY_BENCH_PRESET=<name>`: the default preset the stroke bench paints
+//!   with (default "Inking Pen": exit taper and post correction, so each
+//!   pen-up replays the stroke), as shipped, whatever the profile holds.
 //! - `ARTY_BENCH_WINDOW=<W>x<H>`: resize the window's client area to W×H
 //!   physical px on the first frames (eframe restores the saved geometry
 //!   first) with its top-left at the primary monitor's (a capture shows
@@ -20,15 +28,21 @@
 //! - `ARTY_BENCH_ZOOM=<factor>`: egui zoom factor (UI scale on top of the OS scale).
 //! - `ARTY_IO_THREADS=<n>`: io pool size instead of `IoConfig::new`'s, which
 //!   counts the machine's CPUs, not the process affinity.
+//! - `ARTY_RAM_MB=<MiB>`: the memory size budgets are sized from (arty-io
+//!   reads it), instead of the machine's.
 //!
 //! While any of these is set nothing is saved to app.ron (window, egui
-//! memory, settings), so a bench run does not change the next start.
+//! memory, settings), so a bench run does not change the next start, and
+//! the input shaping (pressure curve) and autosave settings are the
+//! defaults, so runs on different profiles do the same work.
 
 use std::f64::consts::TAU;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
+use arty_brush::{BrushPreset, Reshape, default_presets};
 use arty_pen::{PenEnd, PenPhase, PenQueue, PenSample};
 
 use crate::files::{FileController, FileDialogs, NativeDialogs};
@@ -52,6 +66,18 @@ const WARMUP_FRAMES: u32 = 30;
 const MAX_PER_FRAME: u64 = 256;
 /// The path radius as a share of the window's smaller side.
 const RADIUS: f32 = 0.18;
+/// Longest wait for the bench file to load.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
+/// The stroke bench's preset when `ARTY_BENCH_PRESET` is not set.
+const DEFAULT_PRESET: &str = "Inking Pen";
+
+/// The process exit code once the window has closed (main.rs): 2 after a
+/// hook failed.
+static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
+
+pub fn exit_code() -> i32 {
+    EXIT_CODE.load(Ordering::Relaxed)
+}
 
 /// What a path sample does with the pen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +156,7 @@ fn env<T>(name: &str, parse: fn(&str) -> Option<T>) -> Option<T> {
 
 /// Any bench variable is set (see the module docs).
 pub fn active() -> bool {
-    std::env::vars_os().any(|(k, _)| k.to_str().is_some_and(|k| k.starts_with("ARTY_BENCH_") || k == "ARTY_IO_THREADS"))
+    std::env::vars_os().any(|(k, _)| k.to_str().is_some_and(|k| k.starts_with("ARTY_BENCH_") || k == "ARTY_IO_THREADS" || k == "ARTY_RAM_MB"))
 }
 
 pub fn window_size() -> Option<[f32; 2]> {
@@ -151,6 +177,12 @@ pub fn open_path() -> Option<PathBuf> {
 
 pub fn stroke_secs() -> Option<f64> {
     env("ARTY_BENCH_STROKE", parse_secs)
+}
+
+/// The shipped preset named `ARTY_BENCH_PRESET` (or [`DEFAULT_PRESET`]).
+fn stroke_preset() -> Result<BrushPreset, String> {
+    let name = std::env::var("ARTY_BENCH_PRESET").unwrap_or_else(|_| DEFAULT_PRESET.to_owned());
+    default_presets().into_iter().find(|p| p.name == name).ok_or_else(|| format!("STROKE: no default preset named {name:?}"))
 }
 
 /// p-quantile of sorted values (nearest rank), 0 when empty.
@@ -183,12 +215,14 @@ pub struct Open {
     /// `Studio::doc_epoch` before the load.
     epoch: u64,
     first_frame: Option<Instant>,
-    warned: bool,
 }
 
 pub struct Stroke {
     secs: f64,
     queue: Rc<PenQueue>,
+    /// Put in place of the profile's preset of that name when the stroke
+    /// bench starts.
+    preset: Option<BrushPreset>,
     frames: u32,
     /// `arty_pen::now_secs` of sample 0.
     t0: Option<f64>,
@@ -199,6 +233,17 @@ pub struct Stroke {
     /// This frame pushed a pen-up.
     up_now: bool,
     strokes: u32,
+    /// `Document::revision` before the current contact's pen-down, or
+    /// `None` when the previous contact ended in the same frame (its
+    /// stroke was not committed yet, so a change would prove nothing).
+    rev_down: Option<u64>,
+    /// `rev_down` of the contact this frame ended.
+    rev_up: Option<u64>,
+    /// Contacts seen to change the document.
+    painted: u32,
+    /// What each pen-up's `StrokeEngine::end` did: full replay, tail
+    /// replay, skipped, too long.
+    reshape: [u32; 4],
     /// Frame intervals and `ArtyApp::ui` times, ms.
     dts: Vec<f32>,
     ui_ms: Vec<f32>,
@@ -222,6 +267,8 @@ pub struct Bench {
     pan: Option<Pan>,
     pub open: Option<Open>,
     stroke: Option<Stroke>,
+    /// A hook cannot run; reported (and the app closed) after the next frame.
+    error: Option<String>,
 }
 
 impl Bench {
@@ -229,28 +276,38 @@ impl Bench {
     /// start-up document's; `queue` the native pen queue, if installed.
     pub fn from_env(doc_epoch: u64, queue: Option<&Rc<PenQueue>>) -> Option<Self> {
         let pan = env("ARTY_BENCH_PAN", parse_secs).map(|secs| Pan { secs, start: None, dts: Vec::with_capacity(4096) });
-        let open = open_path().map(|path| Open { path, epoch: doc_epoch, first_frame: None, warned: false });
-        let stroke = stroke_secs().map(|secs| {
-            // Without the Windows Ink hook the canvas reads no queue; this one is then unused.
-            let queue = queue.cloned().unwrap_or_else(|| Rc::new(PenQueue::new(1024)));
+        let open = open_path().map(|path| Open { path, epoch: doc_epoch, first_frame: None });
+        let mut error = None;
+        let stroke = stroke_secs().and_then(|secs| {
+            let preset = stroke_preset().map_err(|e| error = Some(e)).ok()?;
+            // Without the Windows Ink hook the canvas reads no queue.
+            let Some(queue) = queue.cloned() else {
+                error = Some("STROKE: the Windows Ink hook is not installed; nothing would paint".to_owned());
+                return None;
+            };
             let frames = (secs * 500.0) as usize + 64;
-            Stroke {
+            Some(Stroke {
                 secs,
                 queue,
+                preset: Some(preset),
                 frames: 0,
                 t0: None,
                 next: 0,
                 pos: None,
                 up_now: false,
                 strokes: 0,
+                rev_down: None,
+                rev_up: None,
+                painted: 0,
+                reshape: [0; 4],
                 dts: Vec::with_capacity(frames),
                 ui_ms: Vec::with_capacity(frames),
                 up_ms: Vec::with_capacity((secs / 2.0) as usize + 8),
-            }
+            })
         });
         let window = window_size().map(|px| Window { px, tries: 20, after: None });
-        (pan.is_some() || open.is_some() || stroke.is_some() || window.is_some())
-            .then(|| Bench { created: Instant::now(), window, pan, open, stroke })
+        (pan.is_some() || open.is_some() || stroke.is_some() || window.is_some() || error.is_some())
+            .then(|| Bench { created: Instant::now(), window, pan, open, stroke, error })
     }
 
     /// Before the frame: push this frame's pen samples, and move egui's
@@ -263,7 +320,7 @@ impl Bench {
             return;
         }
         if !studio.input.native_pen {
-            eprintln!("ARTY_BENCH_STROKE: native pen input is off in Settings; nothing to measure");
+            self.error = Some("STROKE: native pen input is off in Settings; nothing would paint".to_owned());
             self.stroke = None;
             return;
         }
@@ -281,9 +338,14 @@ impl Bench {
                 Contact::Up => PenPhase::Up,
                 Contact::Hover => PenPhase::Hover,
             };
-            if p.contact == Contact::Up {
-                s.up_now = true;
-                s.strokes += 1;
+            match p.contact {
+                Contact::Down => s.rev_down = (!s.up_now).then(|| studio.doc.revision()),
+                Contact::Up => {
+                    s.up_now = true;
+                    s.strokes += 1;
+                    s.rev_up = s.rev_down.take();
+                }
+                Contact::Move | Contact::Hover => {}
             }
             let time = t0 + k as f64 / STROKE_HZ;
             s.queue.push(PenSample { pointer: POINTER, phase, end: PenEnd::Tip, barrel: false, pos, pressure: Some(p.pressure), tilt: [0.0; 2], time });
@@ -355,10 +417,24 @@ impl Bench {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-        if let Some(s) = &mut self.stroke {
+        if let Some(s) = &mut self.stroke
+            && self.open.is_none()
+        {
+            // Not while the file loads: full-rate frames would slow the open.
             ctx.request_repaint();
             if s.t0.is_some() {
                 s.dts.push(dt * 1000.0);
+            }
+            // The first pen-down was pushed this frame; the canvas handles it after this.
+            if s.t0.is_some()
+                && let Some(p) = s.preset.take()
+            {
+                let i = studio.presets.iter().position(|q| q.name == p.name).unwrap_or_else(|| {
+                    studio.presets.push(p.clone());
+                    studio.presets.len() - 1
+                });
+                studio.select_preset(i);
+                *studio.preset_mut() = p;
             }
         }
     }
@@ -368,6 +444,10 @@ impl Bench {
     /// frame); the stroke bench records the frame, and reports and quits
     /// (dropping the strokes) once done.
     pub fn frame_done(&mut self, ctx: &egui::Context, ui: Duration, studio: &Studio, files: &mut FileController, sync: DisplaySync) {
+        if let Some(e) = self.error.take() {
+            self.fail(ctx, files, &e);
+            return;
+        }
         if let Some(o) = &mut self.open
             && let Some(first) = o.first_frame
         {
@@ -385,9 +465,14 @@ impl Bench {
                     d.pixel_bytes() as f64 / (1024.0 * 1024.0)
                 );
                 self.open = None;
-            } else if !o.warned && first.elapsed() > Duration::from_secs(60) {
-                eprintln!("ARTY_BENCH_OPEN {}: not loaded after 60 s (is a dialog open?)", o.path.display());
-                o.warned = true;
+            } else if files.has_modal() && !files.is_loading() {
+                let e = format!("OPEN {}: a dialog came up instead of the document (recovery prompt or load error)", o.path.display());
+                self.fail(ctx, files, &e);
+                return;
+            } else if first.elapsed() > OPEN_TIMEOUT {
+                let e = format!("OPEN {}: not loaded after {} s", o.path.display(), OPEN_TIMEOUT.as_secs());
+                self.fail(ctx, files, &e);
+                return;
             }
         }
         let Some(s) = &mut self.stroke else { return };
@@ -396,6 +481,25 @@ impl Bench {
         s.ui_ms.push(ms);
         if s.up_now {
             s.up_ms.push(ms);
+            // The canvas handled the pen-up during this frame.
+            if let Some(rev) = s.rev_up.take() {
+                if studio.doc.revision() == rev {
+                    let e = format!(
+                        "STROKE: contact {} painted nothing (a dialog over the canvas, or a locked, hidden or non-raster layer)",
+                        s.strokes
+                    );
+                    self.fail(ctx, files, &e);
+                    return;
+                }
+                s.painted += 1;
+            }
+            let i = match studio.engine.last_reshape() {
+                Reshape::Full => 0,
+                Reshape::Tail { .. } => 1,
+                Reshape::Skipped => 2,
+                Reshape::TooLong => 3,
+            };
+            s.reshape[i] += 1;
         }
         let pen_up = path_point(s.next.saturating_sub(1)).contact == Contact::Hover;
         if arty_pen::now_secs() - t0 < s.secs || !pen_up || s.strokes == 0 {
@@ -409,6 +513,7 @@ impl Bench {
         eprintln!(
             "ARTY_BENCH_STROKE {:.0} s · {} · {} frames · frame ms p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} · \
              ui ms p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} · pen-up frames {} ui ms p50 {:.2} max {:.2} · \
+             painted {}/{} · reshape full {} tail {} skipped {} too-long {} · \
              {} samples at {:.0} Hz · dropped {} · {} {:.1}px · {}×{} px · {} layers · {:.1} MB",
             s.secs,
             sync.label(),
@@ -424,6 +529,12 @@ impl Bench {
             s.up_ms.len(),
             quantile(&s.up_ms, 0.5),
             quantile(&s.up_ms, 1.0),
+            s.painted,
+            s.strokes,
+            s.reshape[0],
+            s.reshape[1],
+            s.reshape[2],
+            s.reshape[3],
             s.next,
             STROKE_HZ,
             s.queue.dropped(),
@@ -435,6 +546,16 @@ impl Bench {
             d.pixel_bytes() as f64 / (1024.0 * 1024.0)
         );
         self.stroke = None;
+        files.discard_on_close();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Print `ARTY_BENCH_ERROR <what>`, stop every hook, drop any changes,
+    /// and quit with exit code 2.
+    fn fail(&mut self, ctx: &egui::Context, files: &mut FileController, what: &str) {
+        eprintln!("ARTY_BENCH_ERROR {what}");
+        EXIT_CODE.store(2, Ordering::Relaxed);
+        (self.pan, self.open, self.stroke) = (None, None, None);
         files.discard_on_close();
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
@@ -493,6 +614,13 @@ mod tests {
         // About 2.5 px per sample at a 200 px radius: a realistic pen speed.
         let step = (pts[1].offset[0] - pts[0].offset[0]).hypot(pts[1].offset[1] - pts[0].offset[1]) * 200.0;
         assert!((1.0..6.0).contains(&step), "{step}");
+    }
+
+    #[test]
+    fn stroke_preset_reshapes() {
+        // The default must replay at pen-up, or the pen-up figure measures no replay.
+        let p = default_presets().into_iter().find(|p| p.name == DEFAULT_PRESET).expect("default preset");
+        assert!(p.taper_out > 0.0 || p.post_correction > 0, "{}", p.name);
     }
 
     #[test]

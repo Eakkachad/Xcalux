@@ -401,10 +401,31 @@ impl Worker {
     }
 }
 
+/// `ARTY_RAM_MB=<MiB>` (bench runs, plans/bench/B013): the memory size the
+/// budgets are sized from, instead of the machine's, so a run on a big box
+/// gets a small machine's budgets.
+fn ram_override() -> Option<u64> {
+    let s = std::env::var("ARTY_RAM_MB").ok()?;
+    let v = parse_ram_mb(&s);
+    if v.is_none() {
+        log::warn!("ARTY_RAM_MB: ignoring invalid value {s:?}");
+    }
+    v
+}
+
+/// MiB, 256..=1 TiB, as bytes.
+fn parse_ram_mb(s: &str) -> Option<u64> {
+    s.trim().parse::<u64>().ok().filter(|mb| (256..=1 << 20).contains(mb)).map(|mb| mb << 20)
+}
+
 /// The OS calls behind the io pool's priority and the load budget.
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod sys {
+    use windows_sys::Win32::System::JobObjects::{
+        JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject,
+    };
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
 
@@ -417,12 +438,43 @@ mod sys {
         }
     }
 
+    /// `ARTY_RAM_MB`, else installed RAM capped by the job's memory limit,
+    /// if the process runs in a job that has one (as .NET's GC does): the
+    /// OS figure ignores the job.
     pub fn physical_memory() -> Option<u64> {
+        if let Some(ram) = super::ram_override() {
+            return Some(ram);
+        }
         let mut s = MEMORYSTATUSEX { dwLength: size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
         // SAFETY: `s` is a live, writable MEMORYSTATUSEX with dwLength set,
         // as the call requires.
         let ok = unsafe { GlobalMemoryStatusEx(&mut s) };
-        (ok != 0 && s.ullTotalPhys > 0).then_some(s.ullTotalPhys)
+        (ok != 0 && s.ullTotalPhys > 0).then(|| job_memory_limit().map_or(s.ullTotalPhys, |cap| cap.min(s.ullTotalPhys)))
+    }
+
+    /// The smaller of the job and per-process commit limits of the job this
+    /// process is in, if any.
+    fn job_memory_limit() -> Option<u64> {
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // SAFETY: a null handle means the calling process's job; `info` is a
+        // live, writable struct of the size passed, and the return length
+        // pointer may be null.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                std::ptr::null_mut(),
+                JobObjectExtendedLimitInformation,
+                (&raw mut info).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+        let flags = info.BasicLimitInformation.LimitFlags;
+        let job = (flags & JOB_OBJECT_LIMIT_JOB_MEMORY != 0).then_some(info.JobMemoryLimit as u64);
+        let process = (flags & JOB_OBJECT_LIMIT_PROCESS_MEMORY != 0).then_some(info.ProcessMemoryLimit as u64);
+        job.into_iter().chain(process).filter(|&b| b > 0).min()
     }
 }
 
@@ -431,6 +483,28 @@ mod sys {
     pub fn lower_thread_priority() {}
 
     pub fn physical_memory() -> Option<u64> {
-        None
+        super::ram_override()
+    }
+}
+
+#[cfg(test)]
+mod ram_tests {
+    use super::*;
+
+    #[test]
+    fn ram_override_parses_mib() {
+        assert_eq!(parse_ram_mb("8192"), Some(8 << 30));
+        assert_eq!(parse_ram_mb(" 4096 "), Some(4 << 30));
+        for bad in ["", "0", "255", "-1", "8G", "2000000"] {
+            assert_eq!(parse_ram_mb(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn physical_memory_is_plausible() {
+        // Under a job memory cap (plans/bench/B013) this is the cap.
+        if let Some(ram) = sys::physical_memory() {
+            assert!(ram >= 256 << 20, "{ram}");
+        }
     }
 }

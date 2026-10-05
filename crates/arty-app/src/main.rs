@@ -34,7 +34,12 @@ fn main() -> eframe::Result<()> {
         wgpu_options: egui_wgpu::WgpuConfiguration::default().with_surface_config(saved_display_sync().surface_config(false)),
         ..Default::default()
     };
-    eframe::run_native(APP_NAME, options, Box::new(|cc| Ok(Box::new(app::ArtyApp::new(cc)))))
+    eframe::run_native(APP_NAME, options, Box::new(|cc| Ok(Box::new(app::ArtyApp::new(cc)))))?;
+    // A bench hook that failed (bench.rs) quits with its own code.
+    match bench::exit_code() {
+        0 => Ok(()),
+        code => std::process::exit(code),
+    }
 }
 
 /// eframe's storage folder is named after this.

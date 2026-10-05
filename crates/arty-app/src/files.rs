@@ -292,6 +292,11 @@ impl FileController {
         self.modal.is_some()
     }
 
+    /// The open dialog is the loading one (bench.rs).
+    pub fn is_loading(&self) -> bool {
+        matches!(self.modal, Some(Modal::Loading(_)))
+    }
+
     #[cfg(test)]
     pub fn title(&self) -> &str {
         &self.title

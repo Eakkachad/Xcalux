@@ -115,6 +115,12 @@ impl ArtyApp {
             }
             studio.opts = p.tool_opts;
         }
+        if bench::active() {
+            // Runs on different profiles do the same work (bench.rs).
+            let InputSettings { native_pen, display_sync, .. } = studio.input;
+            studio.input = InputSettings { native_pen, display_sync, ..InputSettings::default() };
+            autosave = AutosaveSettings::default();
+        }
         // What main.rs started the surface with (the render state is created from it).
         let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
         let running_sync = DisplaySync::from_surface_config(started, studio.fast_vsync_ok).unwrap_or_default();
@@ -128,6 +134,7 @@ impl ArtyApp {
             io_config.threads = n;
         }
         let io_threads = io_config.threads;
+        let load_budget = io_config.load.limits.max_decoded_bytes;
         let io = IoService::spawn(io_config, move || ctx.request_repaint());
         let pen = arty_pen::install(cc);
         let bench = Bench::from_env(studio.doc_epoch, pen.as_ref());
@@ -143,9 +150,11 @@ impl ArtyApp {
         let files = FileController::new(io, dialogs, &studio);
         if bench::active() {
             eprintln!(
-                "ARTY_BENCH threads · available_parallelism {} · rayon {} · io {io_threads}",
+                "ARTY_BENCH threads · available_parallelism {} · rayon {} · io {io_threads} · load budget {} MiB · autosave {}",
                 std::thread::available_parallelism().map_or(0, |n| n.get()),
-                rayon::current_num_threads()
+                rayon::current_num_threads(),
+                load_budget >> 20,
+                if autosave.enabled { format!("{} s", autosave.interval_secs) } else { "off".to_owned() }
             );
         }
 
