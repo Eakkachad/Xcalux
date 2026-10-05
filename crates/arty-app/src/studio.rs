@@ -840,7 +840,7 @@ impl Studio {
 /// Frees dropped undo steps on a background thread ("arty-undo-free"); drops inline if
 /// the thread cannot start or has gone. The thread runs below normal priority: at normal
 /// priority, woken by a push, it preempted the pushing thread for milliseconds on 4 cores
-/// (plans/bench/B012).
+/// (plans/bench/B015).
 pub fn undo_release() -> UndoRelease {
     spawn_undo_free(drop).0
 }

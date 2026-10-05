@@ -1,4 +1,4 @@
-//! Undo budget accounting cost (lowend_ux_plan E1, B012).
+//! Undo budget accounting cost (lowend_ux_plan E1, B015).
 //!
 //! cargo run --release -p arty-core --example bench_history
 //! E-cores: cmd /c "start /affinity F000 /wait /b target\release\examples\bench_history.exe"
