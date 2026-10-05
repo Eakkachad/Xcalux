@@ -182,6 +182,7 @@ impl IoService {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(cfg.threads.max(1))
             .thread_name(|i| format!("arty-io-{i}"))
+            .stack_size(512 * 1024)
             .start_handler(|_| sys::lower_thread_priority())
             .build()
             .map_err(|e| IoError::Io { op: "start the io threads", source: std::io::Error::other(e) })?;
@@ -203,6 +204,7 @@ impl IoService {
         };
         let thread = std::thread::Builder::new()
             .name("arty-io".into())
+            .stack_size(512 * 1024)
             .spawn(move || worker.run())
             .map_err(IoError::io("start the io thread"))?;
         Ok(Self { tx, events, shared, next_ticket: AtomicU64::new(0), thread: Some(thread) })

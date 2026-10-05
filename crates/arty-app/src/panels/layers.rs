@@ -29,7 +29,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, thumbs: &mu
 
     let ppp = ui.ctx().pixels_per_point();
     let size = thumbs::thumb_size([studio.doc.width(), studio.doc.height()], [THUMB_BOX.x * ppp, THUMB_BOX.y * ppp]);
-    if thumbs.update(studio, size) {
+    if thumbs.update(studio, size) && ui.input(|i| i.focused) {
         ui.ctx().request_repaint();
     }
 

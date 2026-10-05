@@ -15,6 +15,7 @@ arty-core.workspace = true
 arty-io.workspace = true
 arty-pen.workspace = true
 arty-render.workspace = true
+arty-testkit.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true

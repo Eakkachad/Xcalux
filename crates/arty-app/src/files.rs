@@ -396,8 +396,8 @@ impl FileController {
             Due::After(secs) => out.repaint_after = Some(secs),
             Due::No => {}
         }
-        if self.job.is_some() || self.autosave.is_some() || self.closing {
-            // Progress in the status bar.
+        if (self.job.is_some() || self.autosave.is_some() || self.closing) && f.focused {
+            // Progress in the status bar (visible only when focused).
             out.repaint_after = Some(out.repaint_after.map_or(0.1, |s| s.min(0.1)));
         }
         if f.now - self.last_trim >= TRIM_SECS {

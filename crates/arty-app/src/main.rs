@@ -16,8 +16,7 @@ mod studio;
 mod theme;
 mod tools;
 
-// `files` tests check that an idle frame does not allocate.
-#[cfg(test)]
+/// Global allocator tracking live and peak heap bytes.
 #[global_allocator]
 static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 

@@ -171,16 +171,31 @@ pub fn io_threads() -> Option<usize> {
     env("ARTY_IO_THREADS", parse_threads)
 }
 
-/// Reports thread pool sizes, CPU counts, and budgets on stderr for bench runs.
+/// Reports thread pool sizes, CPU counts, budgets, and heap usage on stderr for bench runs.
 pub fn report_threads(io_threads: usize, load_budget: u64, autosave_str: &str) {
     let avail = std::thread::available_parallelism().map_or(0, |n| n.get());
     let cpus = arty_io::usable_cpus();
+    let live = arty_testkit::live_bytes();
+    let peak = arty_testkit::peak_bytes();
     eprintln!(
-        "ARTY_BENCH threads · available_parallelism {avail} · usable physical {} · usable logical {} · rayon {} · io {io_threads} · load budget {} MiB · autosave {autosave_str}",
+        "ARTY_BENCH threads · available_parallelism {avail} · usable physical {} · usable logical {} · rayon {} · io {io_threads} · load budget {} MiB · autosave {autosave_str} · heap live {:.1} MiB · heap peak {:.1} MiB",
         cpus.physical,
         cpus.logical,
         rayon::current_num_threads(),
         load_budget >> 20,
+        live as f64 / (1024.0 * 1024.0),
+        peak as f64 / (1024.0 * 1024.0),
+    );
+}
+
+/// Reports live and peak heap usage on stderr for bench runs.
+pub fn report_stat(label: &str) {
+    let live = arty_testkit::live_bytes();
+    let peak = arty_testkit::peak_bytes();
+    eprintln!(
+        "ARTY_BENCH stat {label} · heap live {:.1} MiB ({live} B) · heap peak {:.1} MiB ({peak} B)",
+        live as f64 / (1024.0 * 1024.0),
+        peak as f64 / (1024.0 * 1024.0),
     );
 }
 
@@ -468,14 +483,16 @@ impl Bench {
                 let ms = |since: Instant| since.elapsed().as_secs_f64() * 1000.0;
                 let d = &studio.doc;
                 eprintln!(
-                    "ARTY_BENCH_OPEN {} · loaded {:.0} ms after the first frame ({:.0} ms after start-up) · {}×{} px · {} layers · {:.1} MB",
+                    "ARTY_BENCH_OPEN {} · loaded {:.0} ms after the first frame ({:.0} ms after start-up) · {}×{} px · {} layers · {:.1} MB · heap live {:.1} MiB · heap peak {:.1} MiB",
                     o.path.display(),
                     ms(first),
                     ms(self.created),
                     d.width(),
                     d.height(),
                     d.layer_count(),
-                    d.pixel_bytes() as f64 / (1024.0 * 1024.0)
+                    d.pixel_bytes() as f64 / (1024.0 * 1024.0),
+                    arty_testkit::live_bytes() as f64 / (1024.0 * 1024.0),
+                    arty_testkit::peak_bytes() as f64 / (1024.0 * 1024.0),
                 );
                 self.open = None;
             } else if files.has_modal() && !files.is_loading() {
@@ -527,7 +544,7 @@ impl Bench {
             "ARTY_BENCH_STROKE {:.0} s · {} · {} frames · frame ms p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} · \
              ui ms p50 {:.2} p95 {:.2} p99 {:.2} max {:.2} · pen-up frames {} ui ms p50 {:.2} max {:.2} · \
              painted {}/{} · reshape full {} tail {} skipped {} too-long {} · \
-             {} samples at {:.0} Hz · dropped {} · {} {:.1}px · {}×{} px · {} layers · {:.1} MB",
+             {} samples at {:.0} Hz · dropped {} · {} {:.1}px · {}×{} px · {} layers · {:.1} MB · heap live {:.1} MiB · heap peak {:.1} MiB",
             s.secs,
             sync.label(),
             s.dts.len(),
@@ -556,7 +573,9 @@ impl Bench {
             d.width(),
             d.height(),
             d.layer_count(),
-            d.pixel_bytes() as f64 / (1024.0 * 1024.0)
+            d.pixel_bytes() as f64 / (1024.0 * 1024.0),
+            arty_testkit::live_bytes() as f64 / (1024.0 * 1024.0),
+            arty_testkit::peak_bytes() as f64 / (1024.0 * 1024.0)
         );
         self.stroke = None;
         files.discard_on_close();

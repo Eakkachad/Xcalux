@@ -687,7 +687,9 @@ pub fn paint_ants(st: &mut SelectTool, painter: &egui::Painter, studio: &Studio,
         let text = "Selection too detailed: outline shown in part";
         painter.text(at, egui::Align2::LEFT_BOTTOM, text, egui::FontId::proportional(12.0), Color32::from_rgb(230, 160, 40));
     }
-    ctx.request_repaint_after(Duration::from_secs_f64(ANTS_TICK));
+    if ctx.input(|i| i.focused) {
+        ctx.request_repaint_after(Duration::from_secs_f64(ANTS_TICK));
+    }
 }
 
 /// The egui fallback: the outline at `lod` (coarser while more than

@@ -36,7 +36,7 @@ pub const CHAIN_BYTES: usize = {
 /// batches, each submitted before the next is built, so neither this buffer
 /// nor wgpu's pending staging grows with the page. A full chunk (the
 /// largest rect) is ~5.6 MiB.
-pub const BATCH_BYTES: usize = 32 << 20;
+pub const BATCH_BYTES: usize = 8 << 20;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SyncStats {
@@ -318,6 +318,9 @@ impl CanvasSync {
                 queue.submit(std::iter::empty());
                 let _ = device.poll(wgpu::PollType::Poll);
             }
+        }
+        if self.staging.capacity() > 1 << 20 {
+            self.staging = Vec::new();
         }
         Some(SyncStats { tiles: self.slots.len(), millis: start.elapsed().as_secs_f32() * 1000.0 })
     }
