@@ -21,9 +21,13 @@
 //! through [`Edit::apply`]. So a tile leaves the document at exactly one op,
 //! and that op's step holds it and is costed after it. Older holders were
 //! costed while the tile was in the document and charged 0 for it. Hence the
-//! stored costs sum to at least the bytes only history holds, exactly when
-//! the document scan ran (it runs only when a step could cause a trim; below
-//! the budget a step may overcount, which is safe).
+//! stored costs sum to the bytes only history holds when every step ran the
+//! document scan. The scan runs only when a step could cause a trim; below
+//! the budget a step skips it and may overcount (a tile still on a twin layer
+//! or at another slot). So before a trim for the budget, any such step makes
+//! the stack be re-costed in one pass, charging each history-only tile to its
+//! newest holder: the op it left the document at, whose drop frees it. An
+//! overcount therefore never costs an undo step.
 //!
 //! Known undercount: a [`TileGrid`] map that a structure snapshot shares with
 //! the document costs 0, and stays with the snapshot when the document later
@@ -34,7 +38,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 
 use crate::document::{DirtyRegion, Document, StructureSnapshot};
 use crate::frame::Frame;
@@ -217,9 +221,10 @@ struct Step {
     edit: Edit,
     /// What dropping this step frees (see the module docs).
     bytes: usize,
-    /// Tiles charged (test oracles).
-    #[cfg(test)]
+    /// Tiles charged, part of `bytes`.
     tiles: usize,
+    /// Costed with the document scan (or had no candidate tiles).
+    exact: bool,
 }
 
 /// Sets reused by every costing; they keep their capacity.
@@ -231,6 +236,8 @@ struct Scratch {
     blocks: AHashSet<usize>,
     /// Maps of the document's raster layers.
     maps: AHashSet<usize>,
+    /// Re-costing: each candidate tile and the index of its newest holder.
+    owner: AHashMap<usize, usize>,
 }
 
 /// What history holds, for the UI (lowend_ux_plan D9).
@@ -326,7 +333,7 @@ impl History {
     pub fn push(&mut self, edit: Edit, doc: &Document) {
         self.release_redo();
         let step = self.step(edit, doc, self.undo_bytes);
-        self.push_step(step);
+        self.push_step(step, doc);
     }
 
     /// Record a property change. `coalesce` marks it as part of a continuous
@@ -334,21 +341,18 @@ impl History {
     /// an entry, and later coalescing pushes for the same layer merge into
     /// it until [`History::end_props_gesture`] or any other history operation
     /// closes it. Entries recorded before the gesture are never merged into.
-    pub fn push_props(&mut self, layer: LayerId, before: LayerProps, coalesce: bool) {
+    /// `doc` is the document after the change.
+    pub fn push_props(&mut self, layer: LayerId, before: LayerProps, coalesce: bool, doc: &Document) {
         if coalesce && self.props_open == Some(layer) {
             return; // keep the gesture's oldest "before" state
         }
         let bytes = size_of::<Step>() + before.name.capacity();
-        self.push_step(Step {
-            edit: Edit::Props { layer, props: before },
-            bytes,
-            #[cfg(test)]
-            tiles: 0,
-        });
+        let edit = Edit::Props { layer, props: before };
+        self.push_step(Step { edit, bytes, tiles: 0, exact: true }, doc);
         self.props_open = coalesce.then_some(layer);
     }
 
-    fn push_step(&mut self, step: Step) {
+    fn push_step(&mut self, step: Step, doc: &Document) {
         self.props_open = None;
         self.release_redo();
         self.undo_bytes += step.bytes;
@@ -360,6 +364,11 @@ impl History {
         // Oldest first; the newest step always stays.
         while self.undo.len() > 1 && (self.undo.len() > self.limit || self.undo_bytes > self.budget) {
             if self.undo.len() <= self.limit {
+                // A trim for the budget: an overcount must not cause it.
+                if self.undo.iter().any(|s| !s.exact) {
+                    self.recost(doc);
+                    continue;
+                }
                 self.trimmed += 1;
             }
             let old = self.undo.pop_front().expect("len > 1");
@@ -464,30 +473,64 @@ impl History {
         self.redo_bytes = 0;
     }
 
+    /// Cost `edit`: what dropping it would free, with `doc` the document
+    /// after it. Tiles not at their own slot in the document are candidates;
+    /// the document scan, which takes out those still anywhere in it, runs
+    /// only when the result could push `stack_bytes` over the budget.
     fn step(&mut self, edit: Edit, doc: &Document, stack_bytes: usize) -> Step {
-        let bytes = self.cost(&edit, doc, stack_bytes);
-        Step {
-            edit,
-            bytes,
-            #[cfg(test)]
-            tiles: self.scratch.tiles.len(),
-        }
-    }
-
-    /// What dropping `edit` would free, with `doc` the document after it.
-    /// Tiles not at their own slot in the document are candidates; the
-    /// document scan, which takes out those still anywhere in it, runs only
-    /// when the result could push `stack_bytes` over the budget.
-    fn cost(&mut self, edit: &Edit, doc: &Document, stack_bytes: usize) -> usize {
         let s = &mut self.scratch;
         s.tiles.clear();
         s.blocks.clear();
-        let bytes = size_of::<Step>() + walk(edit, doc, s);
+        let bytes = size_of::<Step>() + walk(&edit, doc, s);
         let n = s.tiles.len();
-        if n > 0 && (self.scans_always() || stack_bytes + bytes + n * TILE_BYTES > self.budget) {
+        let exact = n == 0 || self.scans_always() || stack_bytes + bytes + n * TILE_BYTES > self.budget;
+        if n > 0 && exact {
             self.scratch.scan(doc);
         }
-        bytes + self.scratch.tiles.len() * TILE_BYTES
+        let tiles = self.scratch.tiles.len();
+        Step { edit, bytes: bytes + tiles * TILE_BYTES, tiles, exact }
+    }
+
+    /// Re-cost the tiles of every undo step against `doc` in one pass,
+    /// charging each history-only tile to its newest holder (see the module
+    /// docs). Runs only before a trim for the budget, while some step skipped
+    /// the document scan.
+    fn recost(&mut self, doc: &Document) {
+        let s = &mut self.scratch;
+        s.owner.clear();
+        s.blocks.clear();
+        s.maps.clear();
+        s.maps.extend(doc.layers.values().filter_map(Layer::raster).map(TileGrid::map_ptr));
+        for (i, step) in self.undo.iter().enumerate().rev() {
+            s.claim(&step.edit, doc, i);
+        }
+        s.maps.clear();
+        'grids: for g in doc.layers.values().filter_map(Layer::raster) {
+            if s.owner.is_empty() {
+                break;
+            }
+            if !s.maps.insert(g.map_ptr()) {
+                continue;
+            }
+            for (_, t) in g.iter() {
+                if s.owner.remove(&(Arc::as_ptr(t) as usize)).is_some() && s.owner.is_empty() {
+                    break 'grids;
+                }
+            }
+        }
+        for step in &mut self.undo {
+            step.bytes -= step.tiles * TILE_BYTES;
+            step.tiles = 0;
+            step.exact = true;
+        }
+        for &i in s.owner.values() {
+            self.undo[i].tiles += 1;
+        }
+        self.undo_bytes = 0;
+        for step in &mut self.undo {
+            step.bytes += step.tiles * TILE_BYTES;
+            self.undo_bytes += step.bytes;
+        }
     }
 
     #[cfg(test)]
@@ -512,8 +555,46 @@ impl Scratch {
     /// Note `t` (held at `c`) unless `live` holds the same tile there.
     #[inline]
     fn candidate(&mut self, live: Option<&TileGrid>, c: TileCoord, t: &TileRef) {
-        if !live.and_then(|g| g.get_ref(c)).is_some_and(|l| Arc::ptr_eq(l, t)) {
+        if !at_slot(live, c, t) {
             self.tiles.insert(Arc::as_ptr(t) as usize);
+        }
+    }
+
+    /// Make step `i` the owner of each candidate tile of `edit` that no newer
+    /// step owns. `maps` holds the document's maps, and `blocks` the snapshot
+    /// maps a newer step already claimed (it owns all their tiles).
+    fn claim(&mut self, edit: &Edit, doc: &Document, i: usize) {
+        match edit {
+            Edit::Pixels { layer, tiles } => {
+                let live = doc.layer(*layer).and_then(Layer::raster);
+                for (c, t) in tiles {
+                    if let Some(t) = t
+                        && !at_slot(live, *c, t)
+                    {
+                        self.owner.entry(Arc::as_ptr(t) as usize).or_insert(i);
+                    }
+                }
+            }
+            Edit::Structure(snap) => {
+                for l in snap.layers.values() {
+                    let Some(g) = l.raster() else { continue };
+                    if self.maps.contains(&g.map_ptr()) || !self.blocks.insert(g.map_ptr()) {
+                        continue;
+                    }
+                    let live = doc.layer(l.id).and_then(Layer::raster);
+                    for (c, t) in g.iter() {
+                        if !at_slot(live, c, t) {
+                            self.owner.entry(Arc::as_ptr(t) as usize).or_insert(i);
+                        }
+                    }
+                }
+            }
+            Edit::Batch(edits) => {
+                for e in edits {
+                    self.claim(e, doc, i);
+                }
+            }
+            Edit::Props { .. } | Edit::Selection(_) | Edit::Page(_) | Edit::Frame { .. } => {}
         }
     }
 
@@ -532,6 +613,12 @@ impl Scratch {
             }
         }
     }
+}
+
+/// Whether `live` holds `t` at `c`.
+#[inline]
+fn at_slot(live: Option<&TileGrid>, c: TileCoord, t: &TileRef) -> bool {
+    live.and_then(|g| g.get_ref(c)).is_some_and(|l| Arc::ptr_eq(l, t))
 }
 
 /// Bytes of `edit` besides its candidate tiles, which go to `s.tiles`.
@@ -837,7 +924,7 @@ mod tests {
             let mut p = doc.layer(id).unwrap().props.clone();
             p.opacity = op;
             let before = doc.set_props(id, p).unwrap();
-            h.push_props(id, before, true);
+            h.push_props(id, before, true, &doc);
         }
         assert_eq!(h.undo_len(), 1);
         h.undo(&mut doc);
@@ -849,7 +936,7 @@ mod tests {
         let mut p = doc.layer(id).unwrap().props.clone();
         p.opacity = op;
         let before = doc.set_props(id, p).unwrap();
-        h.push_props(id, before, coalesce);
+        h.push_props(id, before, coalesce, doc);
     }
 
     #[test]
@@ -861,7 +948,7 @@ mod tests {
         let mut p = doc.layer(id).unwrap().props.clone();
         p.blend = BlendMode::Multiply;
         let before = doc.set_props(id, p).unwrap();
-        h.push_props(id, before, false);
+        h.push_props(id, before, false, &doc);
         for drag in [&[0.5, 0.4][..], &[0.2]] {
             h.end_props_gesture(); // drag starts
             for &op in drag {
@@ -1065,7 +1152,7 @@ mod tests {
         let mut p = doc.layer(id).unwrap().props.clone();
         p.opacity = 0.5;
         let before = doc.set_props(id, p).unwrap();
-        h.push_props(id, before, false);
+        h.push_props(id, before, false, &doc);
         assert_eq!((h.undo_len(), h.usage().trimmed), (1, 1), "the stroke is dropped");
         h.undo(&mut doc);
         assert_eq!(doc.layer(id).unwrap().props.opacity, 1.0);
@@ -1171,6 +1258,32 @@ mod tests {
                 assert_eq!(last_tiles(&h), 10, "deleting the copy frees them");
             }
         }
+    }
+
+    #[test]
+    fn overcount_never_trims() {
+        let mut doc = Document::new(256, 256, 72);
+        let a = doc.active();
+        let all = || (0..16).map(|i| TileCoord::new(i % 4, i / 4));
+        let mut h = History::with_budget(200, 16 * TILE_BYTES * 5 / 2);
+        paint(&mut doc, a, all(), 1);
+        // Back the layer up, then clear the original: the copy holds its tiles.
+        structure(&mut doc, &mut h, |d| d.duplicate_layer(a).is_some());
+        clear(&mut doc, &mut h, a);
+        assert_eq!(last_tiles(&h), 16, "under budget the scan is skipped: overcount");
+        for v in 2..=3 {
+            paint(&mut doc, a, all(), v);
+            clear(&mut doc, &mut h, a);
+        }
+        // Two layers only history holds, under 2.5: the overcount trims nothing.
+        assert_eq!((h.undo_len(), h.usage().trimmed), (4, 0));
+        assert_eq!(h.undo.iter().map(|s| s.tiles).collect::<Vec<_>>(), [0, 0, 16, 16]);
+        assert!(h.usage().undo_bytes <= h.budget());
+        // A third does trim, oldest first.
+        paint(&mut doc, a, all(), 4);
+        clear(&mut doc, &mut h, a);
+        assert_eq!((h.undo_len(), h.usage().trimmed), (2, 3));
+        assert_eq!(h.usage().undo_bytes, h.undo.iter().map(|s| s.bytes).sum::<usize>());
     }
 
     #[test]
@@ -1527,11 +1640,15 @@ mod tests {
                 }
                 let mut rec = PixelRecorder::default();
                 let mut snaps = Vec::new();
-                let mut pushes = 0;
+                let (mut pushes, mut trimmed) = (0, 0);
                 for i in 0..1500 {
                     random_op(&mut rng, &mut doc, &mut h, &mut rec, &mut snaps);
                     let what = format!("seed {seed:#x} scan {scan} op {i}");
-                    check_stacks(&h, &doc, scan, &what);
+                    // After a trim the costs are exact, so the trim was
+                    // decided on what only history holds.
+                    let trim = h.usage().trimmed != trimmed;
+                    trimmed = h.usage().trimmed;
+                    check_stacks(&h, &doc, scan || trim, &what);
                     if h.pushes != pushes {
                         pushes = h.pushes;
                         assert!(h.undo_bytes <= h.budget || h.undo_len() == 1, "{what}: over budget after a push");

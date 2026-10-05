@@ -752,7 +752,7 @@ impl Studio {
     /// `history.end_props_gesture()`.
     pub fn set_layer_props(&mut self, id: LayerId, props: LayerProps, coalesce: bool) {
         if let Some(before) = self.doc.set_props(id, props) {
-            self.history.push_props(id, before, coalesce);
+            self.history.push_props(id, before, coalesce, &self.doc);
             self.epochs.props_changed();
         }
     }

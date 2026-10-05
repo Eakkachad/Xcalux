@@ -12,7 +12,10 @@
 //!    one that deleted a whole A4 layer;
 //! 4. the first undo of a whole-layer clear;
 //! 5. freeing a dropped whole-layer step inline vs through a release hook
-//!    that frees on another thread (as the app does).
+//!    that frees on another thread (as the app does);
+//! 6. re-costing a stack of about a 4 GB-tier budget (2 A4 whole-layer and
+//!    198 stroke steps of distinct tiles, all costed without the scan)
+//!    before a trim.
 //!
 //! Documents: 15 full A4 layers; 10 B4 600 layers at 40% coverage. Layers
 //! the step does not come from share one tile each (their maps are full
@@ -65,15 +68,16 @@ fn page(size: (u32, u32, u32), layers: usize, coverage: u32) -> Document {
     doc
 }
 
-/// 5 whole-layer and 195 stroke steps (their tiles shared, so the stack is
-/// cheap to build; its contents do not change what a push walks).
+/// 5 whole-layer and 195 stroke steps (holding the layer's own tiles, so
+/// the stack is cheap to build and its costs are exact: a push walks only
+/// its own step and never re-costs the stack).
 fn history(doc: &Document, layer: LayerId) -> History {
     let mut h = History::with_budget(200, usize::MAX);
-    let whole: Vec<TileCoord> = coords(doc, 100);
-    let t = painted_tile(7);
+    let own: Vec<(TileCoord, TileRef)> =
+        doc.layer(layer).unwrap().raster().unwrap().iter().map(|(c, t)| (c, t.clone())).collect();
     for i in 0..200 {
-        let n = if i < 5 { whole.len() } else { 20 };
-        h.push(Edit::Pixels { layer, tiles: whole[..n].iter().map(|&c| (c, Some(t.clone()))).collect() }, doc);
+        let n = if i < 5 { own.len() } else { 20 };
+        h.push(Edit::Pixels { layer, tiles: own[..n].iter().map(|(c, t)| (*c, Some(t.clone()))).collect() }, doc);
     }
     h
 }
@@ -189,9 +193,10 @@ fn free_case(
             }));
         }
         let fresh: Vec<TileRef> = (0..tiles.len()).map(|i| painted_tile(i as u16)).collect();
+        // Costed with the scan, so the next push drops it without a re-cost.
+        h.set_budget(0);
         h.push(pixels(layer, tiles, &fresh), doc);
         drop(fresh);
-        h.set_budget(0);
         let small = Edit::Pixels { layer, tiles: vec![(TileCoord::new(0, 0), None)] };
         let t = Instant::now();
         h.push(small, doc);
@@ -204,6 +209,51 @@ fn free_case(
     frees.sort_by(f64::total_cmp);
     let free = if hook { (frees[frees.len() / 2], frees[0]) } else { (0.0, 0.0) };
     (push, free)
+}
+
+/// A 20-tile stroke push that re-costs a stack of about a 4 GB-tier budget
+/// on A4 15 layers before trimming: 2 whole-layer and 198 stroke steps of
+/// distinct tiles the document does not hold (no early stop), all pushed
+/// without the scan. "Warm": a third whole-layer step was re-costed and
+/// trimmed first, then one more stroke pushed without the scan.
+fn recost_case() {
+    let doc = page(A4, 15, 100);
+    let in_doc = doc_tiles(&doc);
+    let layer = doc.active();
+    let whole = coords(&doc, 100);
+    let at20: Vec<TileCoord> = (0..20).map(|x| TileCoord::new(x, 0)).collect();
+    let fresh = |n: usize| -> Vec<TileRef> { (0..n).map(|_| new_tile()).collect() };
+    let stroke = |h: &mut History| h.push(pixels(layer, &at20, &fresh(20)), &doc);
+    let walked = 2 * whole.len() + 199 * 20;
+    for warm in [false, true] {
+        let r = stats(7, || {
+            let mut h = History::with_budget(256, usize::MAX); // no step-limit drops
+            let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let k = kept.clone();
+            h.set_release(Box::new(move |e| k.lock().unwrap().push(e)));
+            for _ in 0..2 + warm as usize {
+                h.push(pixels(layer, &whole, &fresh(whole.len())), &doc);
+            }
+            for _ in 0..198 {
+                stroke(&mut h);
+            }
+            if warm {
+                h.set_budget(h.usage().undo_bytes);
+                stroke(&mut h);
+                h.set_budget(usize::MAX);
+                stroke(&mut h); // costed without the scan again
+            }
+            h.set_budget(h.usage().undo_bytes);
+            let e = pixels(layer, &at20, &fresh(20));
+            let t = Instant::now();
+            h.push(e, &doc);
+            let dt = us(t);
+            assert!(h.usage().trimmed > 0, "the push trims");
+            dt
+        });
+        let label = format!("A4 350, 15 layers: stroke re-costing 200 steps, {}", if warm { "warm" } else { "cold" });
+        row(&label, walked, in_doc, r);
+    }
 }
 
 fn main() {
@@ -299,6 +349,7 @@ fn main() {
         dt
     });
     row("A4 36 layers: first undo of a whole-layer clear", whole.len(), in_doc, r);
+    recost_case();
     let u = h.usage();
     println!();
     let mib = u.undo_bytes >> 20;

@@ -115,4 +115,20 @@ fn history_push_is_allocation_free_when_warm() {
         let n = arty_testkit::count_allocs(|| h.push(prebuilt, &doc));
         assert_eq!(n, 0, "History::push allocated {n} times (budget {})", h.budget());
     }
+    // Three steps fit without the scan; the fourth re-costs them, then trims.
+    let mut h = History::new(8);
+    h.push(edit(), &doc);
+    h.set_budget(h.usage().undo_bytes * 7 / 2);
+    for round in 0..3 {
+        h.clear();
+        for _ in 0..3 {
+            h.push(edit(), &doc);
+        }
+        let prebuilt = edit();
+        let n = arty_testkit::count_allocs(|| h.push(prebuilt, &doc));
+        assert_eq!(h.usage().trimmed, 1);
+        if round > 0 {
+            assert_eq!(n, 0, "History::push re-costing allocated {n} times");
+        }
+    }
 }
