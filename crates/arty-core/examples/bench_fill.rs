@@ -151,7 +151,8 @@ fn case(doc: &mut Document, layer: LayerId, name: &str, seed: (i32, i32), p: Fil
 }
 
 fn main() {
-    let threads = 8;
+    // 8 as in B008; RAYON_NUM_THREADS sets it (B013 T1-emulated runs give the core count).
+    let threads = std::env::var("RAYON_NUM_THREADS").ok().and_then(|n| n.parse().ok()).filter(|&n: &usize| n > 0).unwrap_or(8);
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
     let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
     println!(

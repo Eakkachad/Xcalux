@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod bench;
 mod canvas;
 mod commands;
 mod demo;
@@ -27,6 +28,8 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([1600.0, 960.0])
             .with_min_inner_size([960.0, 600.0]),
         renderer: eframe::Renderer::Wgpu,
+        // Bench runs leave app.ron alone (bench.rs).
+        persist_window: !bench::active(),
         // LOW_LATENCY unless the user picked another Display sync (eframe's default is LOW_LATENCY too).
         wgpu_options: egui_wgpu::WgpuConfiguration::default().with_surface_config(saved_display_sync().surface_config(false)),
         ..Default::default()

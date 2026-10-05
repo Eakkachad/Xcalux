@@ -11,12 +11,13 @@ use egui_dock::{DockArea, DockState};
 use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
+use crate::bench::{self, Bench, BenchDialogs};
 use crate::canvas::CanvasPane;
 use crate::commands::{self, Command, SelModify};
 use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
-use crate::shell::{PAGE_PRESETS, Shell};
+use crate::shell::{FileRequest, PAGE_PRESETS, Shell};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
 use crate::theme::{self, ThemeKind};
 use crate::tools::{self, ToolOptions};
@@ -48,19 +49,13 @@ pub struct ArtyApp {
     dock: DockState<Tab>,
     export_job: Option<Receiver<String>>,
     files: FileController,
-    bench_pan: Option<BenchPan>,
+    /// `ARTY_BENCH_*` hooks (bench.rs); `None` in normal runs.
+    bench: Option<Bench>,
+    /// A bench variable is set: nothing is saved (bench.rs).
+    bench_run: bool,
     /// Display sync the surface was started with. eframe 0.36 applies the
     /// setting only at start-up (main.rs), so this is what is running.
     running_sync: DisplaySync,
-}
-
-/// `ARTY_BENCH_PAN=<seconds>` (B005): spin the view without any input, report frame
-/// intervals on stderr, then quit.
-struct BenchPan {
-    secs: f64,
-    start: Option<f64>,
-    /// Frame intervals, ms.
-    dts: Vec<f32>,
 }
 
 /// Status bar latency readout. `in→frame` is OS sample time to canvas processing only.
@@ -93,7 +88,7 @@ impl ArtyApp {
         // Ctrl+= / Ctrl+- / Ctrl+0 zoom the canvas (commands.rs), never the UI.
         // The option isn't persisted, but a zoom factor saved by an older build is.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        cc.egui_ctx.set_zoom_factor(1.0);
+        cc.egui_ctx.set_zoom_factor(bench::zoom().unwrap_or(1.0));
         let saved: Option<Persisted> = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY));
 
         let (_, w, h, dpi) = PAGE_PRESETS[3];
@@ -128,11 +123,31 @@ impl ArtyApp {
         }
 
         let ctx = cc.egui_ctx.clone();
-        let io = IoService::spawn(IoConfig::new(RecoveryDir::default_path()), move || ctx.request_repaint());
-        let files = FileController::new(io, Box::new(NativeDialogs), &studio);
+        let mut io_config = IoConfig::new(RecoveryDir::default_path());
+        if let Some(n) = bench::io_threads() {
+            io_config.threads = n;
+        }
+        let io_threads = io_config.threads;
+        let io = IoService::spawn(io_config, move || ctx.request_repaint());
+        let pen = arty_pen::install(cc);
+        let bench = Bench::from_env(studio.doc_epoch, pen.as_ref());
         let mut shell = Shell::new(theme_kind);
         shell.autosave = autosave;
-        let pen = arty_pen::install(cc);
+        let dialogs: Box<dyn files::FileDialogs> = match bench.as_ref().and_then(|b| b.open.as_ref()) {
+            Some(_) => {
+                shell.file_request = Some(FileRequest::Open);
+                Box::new(BenchDialogs(bench::open_path()))
+            }
+            None => Box::new(NativeDialogs),
+        };
+        let files = FileController::new(io, dialogs, &studio);
+        if bench::active() {
+            eprintln!(
+                "ARTY_BENCH threads · available_parallelism {} · rayon {} · io {io_threads}",
+                std::thread::available_parallelism().map_or(0, |n| n.get()),
+                rayon::current_num_threads()
+            );
+        }
 
         Self {
             studio,
@@ -143,41 +158,9 @@ impl ArtyApp {
             dock,
             export_job: None,
             files,
-            bench_pan: std::env::var("ARTY_BENCH_PAN")
-                .ok()
-                .and_then(|s| s.parse::<f64>().ok())
-                .map(|secs| BenchPan { secs, start: None, dts: Vec::with_capacity(4096) }),
+            bench,
+            bench_run: bench::active(),
             running_sync,
-        }
-    }
-
-    /// B005 bench hook: rotate the view 0.5° per frame around the canvas centre, then close.
-    fn bench_pan(&mut self, ctx: &egui::Context) {
-        let Some(b) = &mut self.bench_pan else { return };
-        let (now, dt) = ctx.input(|i| (i.time, i.unstable_dt));
-        let start = *b.start.get_or_insert(now);
-        b.dts.push(dt * 1000.0);
-        let view = &mut self.studio.view;
-        view.rotate_at([0.0; 2], [0.0; 2], view.rotation + 0.5f32.to_radians());
-        ctx.request_repaint();
-        if now - start >= b.secs {
-            // The first frames include start-up work.
-            let mut dts = b.dts.split_off(b.dts.len().min(30));
-            dts.sort_by(f32::total_cmp);
-            let q = |f: f32| dts.get(((dts.len() as f32 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
-            let sync = self.running_sync;
-            eprintln!(
-                "ARTY_BENCH_PAN {:.0} s · {} ({:?}) · {} frames · frame ms p50 {:.2} p95 {:.2} max {:.2}",
-                b.secs,
-                sync.label(),
-                sync.surface_config(self.studio.fast_vsync_ok),
-                dts.len(),
-                q(0.5),
-                q(0.95),
-                q(1.0)
-            );
-            self.bench_pan = None;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -471,13 +454,16 @@ impl ArtyApp {
 impl eframe::App for ArtyApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let frame_start = self.bench.is_some().then(std::time::Instant::now);
         // Applied on the next paint, only when the setting changed. eframe 0.36 does not
         // pass this back to its painter (see main.rs), so the start-up config is what counts.
         let want = self.studio.input.display_sync.surface_config(self.studio.fast_vsync_ok);
         if frame.wgpu_surface_config().is_some_and(|c| c != want) {
             frame.set_wgpu_surface_config(want);
         }
-        self.bench_pan(&ctx);
+        if let Some(b) = &mut self.bench {
+            b.frame(&ctx, &mut self.studio, self.running_sync);
+        }
         if self.shell.theme_dirty {
             theme::apply(&ctx, self.shell.theme);
             self.shell.theme_dirty = false;
@@ -534,9 +520,25 @@ impl eframe::App for ArtyApp {
         tools::page::dialogs(&ctx, &mut self.studio, &mut self.shell);
         self.files.ui(&ctx, &mut self.studio, &mut self.shell);
         self.toasts(&ctx);
+        if let (Some(b), Some(t)) = (&mut self.bench, frame_start) {
+            b.frame_done(&ctx, t.elapsed(), &self.studio, &mut self.files, self.running_sync);
+        }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(b) = &mut self.bench {
+            b.raw_input(raw_input, ctx.pixels_per_point(), self.shell.canvas_center_px, &self.studio);
+        }
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        !self.bench_run
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if self.bench_run {
+            return;
+        }
         let p = Persisted {
             theme: self.shell.theme,
             layout_version: LAYOUT_VERSION,

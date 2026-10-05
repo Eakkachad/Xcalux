@@ -30,6 +30,8 @@ impl Page {
     pub const B4_600: Page = Page { width: 6071, height: 8598, dpi: 600 };
     /// B4 at 350 dpi, for machines that cannot hold the 600 dpi page.
     pub const B4_350: Page = Page { width: 3542, height: 5016, dpi: 350 };
+    /// A4 at 350 dpi (the app's default page; the low-end gates' page with 15 layers).
+    pub const A4_350: Page = Page { width: 2894, height: 4093, dpi: 350 };
 
     pub fn tiles_wide(&self) -> i32 {
         self.width.div_ceil(TILE_SIZE as u32) as i32
@@ -245,6 +247,29 @@ fn make_tile(page: Page, spec: &Spec, c: TileCoord, edge: bool) -> TileRef {
 /// tones, line art, bottom to top) holding 30 raster layers. Tiles are
 /// generated in parallel on the global rayon pool.
 pub fn synthetic_manga_page(page: Page) -> Document {
+    synthetic_manga_page_layers(page, 30)
+}
+
+/// Layers of each type on a page of `rasters` raster layers: the reference
+/// page's 10 / 8 / 6 / 6 scaled, at least one each, summing to `rasters`
+/// (at least 4). 15 gives 5 / 4 / 3 / 3.
+pub fn layer_counts(rasters: u32) -> [(LayerType, u32); 4] {
+    let rasters = rasters.max(4);
+    let mut out = LayerType::ALL.map(|t| {
+        let (n, _) = t.layers_and_coverage();
+        (t, ((n * rasters) as f64 / 30.0).round().max(1.0) as u32)
+    });
+    // Rounding leftovers go to (or come from) line art, the largest group.
+    let sum: u32 = out.iter().map(|&(_, n)| n).sum();
+    out[0].1 = (out[0].1 + rasters).saturating_sub(sum).max(1);
+    out
+}
+
+/// [`synthetic_manga_page`] with `rasters` raster layers split by
+/// [`layer_counts`]; each layer keeps its type's coverage. 30 gives the
+/// reference page.
+pub fn synthetic_manga_page_layers(page: Page, rasters: u32) -> Document {
+    let counts = layer_counts(rasters);
     let order = [LayerType::Flat, LayerType::Gradient, LayerType::Tone, LayerType::LineArt];
     let mut layers = Vec::new();
     let mut root = Vec::new();
@@ -254,7 +279,8 @@ pub fn synthetic_manga_page(page: Page) -> Document {
         let folder = LayerId(next);
         next += 1;
         root.push(folder);
-        let (count, coverage) = kind.layers_and_coverage();
+        let (_, coverage) = kind.layers_and_coverage();
+        let count = counts.iter().find(|&&(t, _)| t == kind).map_or(0, |&(_, n)| n);
         let mut children = Vec::new();
         for i in 0..count {
             let id = LayerId(next);
@@ -299,6 +325,19 @@ pub fn synthetic_manga_page(page: Page) -> Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layer_counts_scale_the_recipe() {
+        let n = |r: u32| layer_counts(r).map(|(_, n)| n);
+        assert_eq!(n(30), [10, 8, 6, 6]);
+        assert_eq!(n(15), [5, 4, 3, 3]);
+        assert_eq!(n(4), [1, 1, 1, 1]);
+        for r in 4..=60 {
+            assert_eq!(n(r).iter().sum::<u32>(), r, "{r}");
+        }
+        let doc = synthetic_manga_page_layers(Page { width: 640, height: 640, dpi: 300 }, 15);
+        assert_eq!(doc.layer_count(), 19);
+    }
 
     #[test]
     fn small_page_matches_the_recipe() {

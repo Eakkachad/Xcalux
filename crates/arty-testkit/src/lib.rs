@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "synthetic")]
 pub mod synthetic;
 #[cfg(feature = "synthetic")]
-pub use synthetic::{LayerType, Page, synthetic_manga_page};
+pub use synthetic::{LayerType, Page, layer_counts, synthetic_manga_page, synthetic_manga_page_layers};
 
 thread_local! {
     static TRACKING: Cell<bool> = const { Cell::new(false) };
