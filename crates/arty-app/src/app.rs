@@ -17,7 +17,7 @@ use crate::commands::{self, Command, SelModify};
 use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
-use crate::shell::{FileRequest, PAGE_PRESETS, Shell};
+use crate::shell::{self, FileRequest, PAGE_PRESETS, Shell, new_doc_text};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
 use crate::theme::{self, ThemeKind};
 use crate::tools::{self, ToolOptions};
@@ -91,7 +91,7 @@ impl ArtyApp {
         cc.egui_ctx.set_zoom_factor(bench::zoom().unwrap_or(1.0));
         let saved: Option<Persisted> = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY));
 
-        let (_, w, h, dpi) = PAGE_PRESETS[3];
+        let (w, h, dpi) = shell::DEFAULT_PAGE;
         let mut studio = Studio::new(Document::new(w, h, dpi));
         studio.history.set_budget(arty_core::undo_budget(arty_io::physical_memory()));
         studio.history.set_release(crate::studio::undo_release());
@@ -369,10 +369,11 @@ impl ArtyApp {
             ui.heading("New Page");
             ui.add_space(6.0);
             let form = &mut self.shell.new_doc;
-            egui::ComboBox::from_id_salt("page-preset").width(340.0).selected_text(PAGE_PRESETS[form.preset].0).show_ui(ui, |ui| {
+            let current = shell::preset_for(form.width, form.height, form.dpi);
+            let shown = current.map_or(new_doc_text::CUSTOM, |i| PAGE_PRESETS[i].0);
+            egui::ComboBox::from_id_salt("page-preset").width(340.0).selected_text(shown).show_ui(ui, |ui| {
                 for (i, (name, w, h, dpi)) in PAGE_PRESETS.iter().enumerate() {
-                    if ui.selectable_label(form.preset == i, *name).clicked() {
-                        form.preset = i;
+                    if ui.selectable_label(current == Some(i), *name).clicked() {
                         form.width = *w;
                         form.height = *h;
                         form.dpi = *dpi;
@@ -402,6 +403,15 @@ impl ArtyApp {
                 let mm = |px: u32| px as f32 / form.dpi as f32 * 25.4;
                 ui.weak(format!("{:.0} × {:.0} mm", mm(form.width), mm(form.height)));
                 ui.end_row();
+                let m = shell::page_memory(form.width, form.height);
+                ui.label("");
+                ui.weak(format!("≈{} {} · {} {}", shell::mib(m.0), new_doc_text::PER_LAYER, shell::mib(m.1), new_doc_text::GPU));
+                ui.end_row();
+                if shell::page_memory_heavy(m, arty_io::physical_memory()) {
+                    ui.label("");
+                    ui.add(egui::Label::new(RichText::new(new_doc_text::HEAVY).color(ui.visuals().warn_fg_color)).wrap());
+                    ui.end_row();
+                }
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {

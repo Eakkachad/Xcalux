@@ -78,8 +78,8 @@ pub struct IoConfig {
 
 impl IoConfig {
     /// Half the usable physical cores (at most 7) as io threads, respecting process affinity,
-    /// unless overridden by `ARTY_IO_THREADS`. The pixel budget for loads is 75% of physical
-    /// memory (at most 16 GiB).
+    /// unless overridden by `ARTY_IO_THREADS`. The pixel budget for loads is half of physical
+    /// memory (at most 16 GiB), leaving the rest for the GPU page, undo and the OS.
     ///
     /// Sizing by physical cores avoids stealing frame time from painting during background
     /// saves: plans/bench/B002_io.md T9 measured +6.0 ms frame p99 with 19 threads vs +0.6 ms
@@ -87,11 +87,14 @@ impl IoConfig {
     pub fn new(recovery_dir: PathBuf) -> Self {
         let threads = io_threads_override().unwrap_or_else(|| default_io_threads(usable_cpus().physical));
         let mut load = LoadOptions::default();
-        if let Some(ram) = physical_memory() {
-            load.limits.max_decoded_bytes = load.limits.max_decoded_bytes.min(ram / 4 * 3);
-        }
+        load.limits.max_decoded_bytes = decoded_budget(load.limits.max_decoded_bytes, physical_memory());
         Self { threads, recovery_dir, load }
     }
+}
+
+/// Decoded-pixel budget for loads: `max`, capped at half of `ram` when known.
+fn decoded_budget(max: u64, ram: Option<u64>) -> u64 {
+    ram.map_or(max, |r| max.min(r / 2))
 }
 
 pub enum Request {
@@ -681,6 +684,16 @@ mod sys_tests {
         for bad in ["", "0", "255", "-1", "8G", "2000000"] {
             assert_eq!(parse_ram_mb(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn load_budget_is_half_of_ram() {
+        let max = LoadOptions::default().limits.max_decoded_bytes;
+        assert_eq!(max, 16 << 30);
+        assert_eq!(decoded_budget(max, Some(4 << 30)), 2 << 30);
+        assert_eq!(decoded_budget(max, Some(16 << 30)), 8 << 30);
+        assert_eq!(decoded_budget(max, Some(64 << 30)), max);
+        assert_eq!(decoded_budget(max, None), max);
     }
 
     #[test]

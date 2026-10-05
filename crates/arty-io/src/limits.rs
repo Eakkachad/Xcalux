@@ -69,7 +69,7 @@ pub struct LoadLimits {
 }
 
 impl Default for LoadLimits {
-    /// The app lowers `max_decoded_bytes` to 75% of physical RAM.
+    /// The app lowers `max_decoded_bytes` to 50% of physical RAM.
     fn default() -> Self {
         Self { max_decoded_bytes: 16 * GIB, max_entries: 8_388_608, max_layers: MAX_LAYER_COUNT }
     }
