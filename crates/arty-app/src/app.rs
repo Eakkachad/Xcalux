@@ -5,6 +5,7 @@ use std::sync::mpsc::Receiver;
 use arty_brush::BrushPreset;
 use arty_core::Document;
 use arty_io::{IoConfig, IoService, RecoveryDir};
+use arty_pen::PenStats;
 use egui::{Color32, RichText};
 use egui_dock::{DockArea, DockState};
 use egui_phosphor::regular as icon;
@@ -16,7 +17,7 @@ use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
 use crate::shell::{PAGE_PRESETS, Shell};
-use crate::studio::{InputSettings, Rgb, Studio};
+use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
 use crate::theme::{self, ThemeKind};
 
 const STORAGE_KEY: &str = "arty-v2";
@@ -44,6 +45,30 @@ pub struct ArtyApp {
     dock: DockState<Tab>,
     export_job: Option<Receiver<String>>,
     files: FileController,
+    bench_pan: Option<BenchPan>,
+}
+
+/// `ARTY_BENCH_PAN=<seconds>` (B005): spin the view without any input, report frame
+/// intervals on stderr, then quit.
+struct BenchPan {
+    secs: f64,
+    start: Option<f64>,
+    /// Frame intervals, ms.
+    dts: Vec<f32>,
+}
+
+/// Status bar latency readout. `in→frame` is OS sample time to canvas processing only.
+fn latency_text(st: PenStats, frame_ms: f32, sync: DisplaySync) -> String {
+    let pen = if st.native {
+        format!("pen {:.0} Hz · in→frame {:.1} ms (max {:.1})", st.rate_hz, st.age_ms, st.age_max_ms)
+    } else {
+        "pen: system".to_owned()
+    };
+    let mut s = format!("{pen} · frame {frame_ms:.1} ms · {}", sync.label());
+    if st.dropped > 0 {
+        s.push_str(&format!(" · dropped {}", st.dropped));
+    }
+    s
 }
 
 impl ArtyApp {
@@ -57,6 +82,9 @@ impl ArtyApp {
 
         let (_, w, h, dpi) = PAGE_PRESETS[3];
         let mut studio = Studio::new(Document::new(w, h, dpi));
+        // Mailbox panics where unsupported and eframe exposes no surface capabilities.
+        studio.fast_vsync_ok =
+            cc.wgpu_render_state.as_ref().is_some_and(|r| r.adapter.get_info().backend == egui_wgpu::wgpu::Backend::Dx12);
         let mut dock = panels::default_layout();
         let mut theme_kind = ThemeKind::Dark;
         let mut autosave = AutosaveSettings::default();
@@ -95,6 +123,40 @@ impl ArtyApp {
             dock,
             export_job: None,
             files,
+            bench_pan: std::env::var("ARTY_BENCH_PAN")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .map(|secs| BenchPan { secs, start: None, dts: Vec::with_capacity(4096) }),
+        }
+    }
+
+    /// B005 bench hook: rotate the view 0.5° per frame around the canvas centre, then close.
+    fn bench_pan(&mut self, ctx: &egui::Context) {
+        let Some(b) = &mut self.bench_pan else { return };
+        let (now, dt) = ctx.input(|i| (i.time, i.unstable_dt));
+        let start = *b.start.get_or_insert(now);
+        b.dts.push(dt * 1000.0);
+        let view = &mut self.studio.view;
+        view.rotate_at([0.0; 2], [0.0; 2], view.rotation + 0.5f32.to_radians());
+        ctx.request_repaint();
+        if now - start >= b.secs {
+            // The first frames include start-up work.
+            let mut dts = b.dts.split_off(b.dts.len().min(30));
+            dts.sort_by(f32::total_cmp);
+            let q = |f: f32| dts.get(((dts.len() as f32 - 1.0) * f).round() as usize).copied().unwrap_or(0.0);
+            let sync = self.studio.input.display_sync;
+            eprintln!(
+                "ARTY_BENCH_PAN {:.0} s · {} ({:?}) · {} frames · frame ms p50 {:.2} p95 {:.2} max {:.2}",
+                b.secs,
+                sync.label(),
+                sync.surface_config(false),
+                dts.len(),
+                q(0.5),
+                q(0.95),
+                q(1.0)
+            );
+            self.bench_pan = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -232,6 +294,14 @@ impl ArtyApp {
                 let mb = s.doc.pixel_bytes() as f64 / (1024.0 * 1024.0);
                 ui.label(weak(format!("{} layers · {mb:.1} MB", s.doc.layer_count())));
                 ui.separator();
+                if s.input.show_latency {
+                    let frame_ms = ui.input(|i| i.stable_dt) * 1000.0;
+                    ui.label(weak(latency_text(self.canvas.pen_stats(), frame_ms, s.input.display_sync))).on_hover_text(
+                        "in→frame: age of the newest pen sample when the canvas used it (OS timestamp to frame). \
+                         It does not include rendering, presenting or the display.",
+                    );
+                    ui.separator();
+                }
                 let st = self.shell.last_sync;
                 ui.label(weak(format!("composite {} tiles {:.1} ms", st.tiles, st.millis)));
             });
@@ -325,8 +395,15 @@ impl ArtyApp {
 }
 
 impl eframe::App for ArtyApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Applied on the next paint, only when the setting changed. eframe 0.36 does not
+        // pass this back to its painter (see main.rs), so the start-up config is what counts.
+        let want = self.studio.input.display_sync.surface_config(self.studio.fast_vsync_ok);
+        if frame.wgpu_surface_config().is_some_and(|c| c != want) {
+            frame.set_wgpu_surface_config(want);
+        }
+        self.bench_pan(&ctx);
         if self.shell.theme_dirty {
             theme::apply(&ctx, self.shell.theme);
             self.shell.theme_dirty = false;
@@ -390,5 +467,77 @@ impl eframe::App for ArtyApp {
             autosave: self.shell.autosave,
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::MemStorage;
+    use arty_brush::pressure::PressureCurve;
+
+    fn default_persisted() -> Persisted {
+        Persisted {
+            theme: ThemeKind::Light,
+            layout_version: LAYOUT_VERSION,
+            dock: panels::default_layout(),
+            presets: arty_brush::default_presets(),
+            input: InputSettings::default(),
+            swatches: vec![[0.1, 0.2, 0.3]],
+            autosave: AutosaveSettings::default(),
+        }
+    }
+
+    /// Replaces the balanced `input:( ... )` group of a RON text.
+    fn replace_input(ron: &str, legacy: &str) -> String {
+        let start = ron.find("input:(").expect("input field") + "input:".len();
+        let mut depth = 0;
+        let end = ron[start..]
+            .char_indices()
+            .find_map(|(i, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(start + i + 1)
+            })
+            .expect("balanced input group");
+        format!("{}{legacy}{}", &ron[..start], &ron[end..])
+    }
+
+    #[test]
+    fn legacy_persisted_blob_loads() {
+        let mut st = MemStorage::default();
+        eframe::set_value(&mut st, STORAGE_KEY, &default_persisted());
+        let text = st.0[STORAGE_KEY].clone();
+        assert!(text.contains("pressure_curve:(points:["), "{text}");
+        let legacy = replace_input(&text, "(pressure_gamma:1.5,mouse_pressure:0.8)");
+        assert!(legacy.contains("input:(pressure_gamma:1.5,mouse_pressure:0.8),"), "{legacy}");
+        st.0.insert(STORAGE_KEY.to_owned(), legacy);
+
+        let p: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("legacy blob loads");
+        assert_eq!(p.theme, ThemeKind::Light);
+        assert_eq!(p.layout_version, LAYOUT_VERSION);
+        assert!(Tab::PANELS.iter().all(|t| p.dock.find_tab(t).is_some()), "layout kept");
+        assert_eq!(p.presets, arty_brush::default_presets());
+        assert_eq!(p.swatches, vec![[0.1, 0.2, 0.3]]);
+        assert_eq!(p.input.mouse_pressure, 0.8);
+        assert_eq!(p.input.pressure_curve, PressureCurve::from_gamma(1.5));
+        assert_eq!(p.input.display_sync, DisplaySync::LowLatency);
+    }
+
+    #[test]
+    fn latency_text_formats() {
+        let st = PenStats { native: true, rate_hz: 238.4, age_ms: 2.44, age_max_ms: 6.06, dropped: 0 };
+        assert_eq!(
+            latency_text(st, 6.94, DisplaySync::LowLatency),
+            "pen 238 Hz · in→frame 2.4 ms (max 6.1) · frame 6.9 ms · Low latency"
+        );
+        assert_eq!(
+            latency_text(PenStats { dropped: 3, ..st }, 16.7, DisplaySync::Smooth),
+            "pen 238 Hz · in→frame 2.4 ms (max 6.1) · frame 16.7 ms · Smooth · dropped 3"
+        );
+        assert_eq!(latency_text(PenStats::default(), 8.33, DisplaySync::Off), "pen: system · frame 8.3 ms · Off");
     }
 }
