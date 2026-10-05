@@ -136,9 +136,9 @@ fn layer_row(
     let layer = studio.doc.layer(id)?;
     let pal = shell.theme.palette();
     let props = layer.props.clone();
-    let folder_open = match &layer.content {
-        LayerContent::Folder { expanded, .. } => Some(*expanded),
-        LayerContent::Raster(_) => None,
+    let (folder_open, framed) = match &layer.content {
+        LayerContent::Folder { expanded, frame, .. } => (Some(*expanded), frame.is_some()),
+        LayerContent::Raster(_) => (None, false),
     };
     let selected = studio.doc.active() == id;
     let page = [studio.doc.width(), studio.doc.height()];
@@ -196,7 +196,11 @@ fn layer_row(
         ui.painter().text(
             egui::pos2(x + 9.0, cy),
             egui::Align2::CENTER_CENTER,
-            if open { icon::FOLDER_OPEN } else { icon::FOLDER },
+            match (framed, open) {
+                (true, _) => icon::LAYOUT,
+                (false, true) => icon::FOLDER_OPEN,
+                (false, false) => icon::FOLDER,
+            },
             egui::FontId::proportional(16.0),
             ui.visuals().text_color(),
         );
@@ -255,7 +259,9 @@ fn layer_row(
 
     // State badges.
     let mut bx = rect.right() - 12.0;
-    for (on, glyph) in [(props.locked, icon::LOCK_SIMPLE), (props.lock_alpha, icon::CHECKERBOARD)] {
+    for (on, glyph) in
+        [(props.locked, icon::LOCK_SIMPLE), (props.lock_alpha, icon::CHECKERBOARD), (props.reference, icon::LIGHTHOUSE)]
+    {
         if on {
             ui.painter().text(egui::pos2(bx, cy), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(12.0), pal.text_weak);
             bx -= 16.0;
@@ -396,7 +402,7 @@ fn drop_target(doc: &Document, slots: &[Slot], y: f32) -> Option<Drop> {
                 below
             }
         }
-        LayerContent::Folder { children, expanded } => {
+        LayerContent::Folder { children, expanded, .. } => {
             if frac < 0.25 {
                 above
             } else if frac <= 0.75 {

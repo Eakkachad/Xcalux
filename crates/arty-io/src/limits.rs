@@ -45,6 +45,11 @@ pub const MAX_LEXT_ENTRY: u64 = MIB;
 pub const MAX_LEXT_TOTAL: u64 = 16 * MIB;
 /// Unknown SAFE_TO_COPY sections kept for re-saving, in total.
 pub const MAX_EXTRA_TOTAL: u64 = 16 * MIB;
+/// Encoded `SELM` (selection) body. Larger selections are binarized, then
+/// left out of the file.
+pub const MAX_SELM_BYTES: usize = 8 << 20;
+/// `PSET` (page setup) body.
+pub const MAX_PSET_BYTES: usize = 4096;
 
 /// Largest output an lz4 block of `stored` bytes can decode to
 /// (255·stored + 64). Anything claiming more is a decompression bomb.

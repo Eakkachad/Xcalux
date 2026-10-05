@@ -89,7 +89,7 @@ impl TabViewer for Viewer<'_> {
         match tab {
             Tab::Canvas => self.canvas.ui(ui, self.studio, self.shell),
             Tab::SubTool => subtool::ui(ui, self.studio, self.shell, self.previews),
-            Tab::ToolProperty => property::ui(ui, self.studio),
+            Tab::ToolProperty => property::ui(ui, self.studio, self.shell),
             Tab::BrushSize => brush_size::ui(ui, self.studio),
             Tab::Color => color::wheel_ui(ui, self.studio),
             Tab::ColorSet => color::swatches_ui(ui, self.studio),

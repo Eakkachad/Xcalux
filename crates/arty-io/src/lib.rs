@@ -21,15 +21,23 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 pub mod codec;
 pub mod error;
 pub mod format;
+#[doc(hidden)]
+pub mod fram;
 mod index;
 #[cfg(feature = "legacy")]
 pub mod legacy;
 pub mod limits;
 pub mod manifest;
 pub mod names;
+#[doc(hidden)]
+pub mod pset;
 pub mod readat;
 pub mod reader;
 pub mod recovery;
+#[doc(hidden)]
+pub mod refl;
+#[doc(hidden)]
+pub mod selm;
 pub mod service;
 pub mod sink;
 pub mod table;

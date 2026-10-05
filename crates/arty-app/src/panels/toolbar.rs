@@ -6,7 +6,7 @@ use egui_phosphor::regular as icon;
 
 use crate::commands::{self, Command};
 use crate::shell::Shell;
-use crate::studio::{Studio, Tool};
+use crate::studio::{FrameMode, Studio, Tool};
 
 const TOOLS: &[(Tool, &str, &str)] = &[
     (Tool::Brush(BrushGroup::Pen), icon::PEN_NIB, "Pen (P)"),
@@ -15,6 +15,19 @@ const TOOLS: &[(Tool, &str, &str)] = &[
     (Tool::Brush(BrushGroup::Airbrush), icon::SPRAY_BOTTLE, "Airbrush (J)"),
     (Tool::Brush(BrushGroup::Blend), icon::DROP_HALF, "Blend (U)"),
     (Tool::Brush(BrushGroup::Eraser), icon::ERASER, "Eraser (E)"),
+];
+
+const EDIT_TOOLS: &[(Tool, &str, &str)] = &[
+    (Tool::Move, icon::ARROWS_OUT_CARDINAL, "Move (K)"),
+    (Tool::Select, icon::SELECTION, "Selection (M)"),
+    (Tool::MagicWand, icon::MAGIC_WAND, "Magic Wand (W)"),
+    (Tool::Fill, icon::PAINT_BUCKET, "Fill (G)"),
+];
+
+const FRAME_TOOLS: &[(Tool, &str, &str)] = &[
+    (Tool::Frame(FrameMode::Rect), icon::FRAME_CORNERS, "Rectangle Frame"),
+    (Tool::Frame(FrameMode::Cut), icon::SCISSORS, "Divide Frame"),
+    (Tool::Frame(FrameMode::Edit), icon::BOUNDING_BOX, "Frame Edit (O)"),
 ];
 
 const VIEW_TOOLS: &[(Tool, &str, &str)] = &[
@@ -28,7 +41,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     let pal = shell.theme.palette();
     ui.vertical_centered(|ui| {
         ui.add_space(4.0);
-        for group in [TOOLS, VIEW_TOOLS] {
+        for group in [TOOLS, EDIT_TOOLS, FRAME_TOOLS, VIEW_TOOLS] {
             for &(tool, glyph, tip) in group {
                 let selected = studio.tool == tool;
                 if tool_button(ui, glyph, selected, pal.accent).on_hover_text(tip).clicked() {

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use arty_core::Document;
 use arty_io::{AppSection, FileKind, IoError, IoEvent, IoService, LayerExt, Loaded, RecoveryEntry, Request, SaveExtras, Ticket};
+use arty_io::selm::SelectionSave;
 use arty_render::View;
 use arty_render::view::{MAX_ZOOM, MIN_ZOOM};
 use egui::{RichText, ViewportCommand};
@@ -363,6 +364,8 @@ impl FileController {
             && !studio.engine.is_stroking()
         {
             shell.file_request = None;
+            // Save, Save As, New and Open take the transformed pixels.
+            studio.commit_transform();
             self.on_request(req, studio, shell);
         }
 
@@ -372,7 +375,8 @@ impl FileController {
             captured: self.captured,
             since: self.captured_at,
             last_input: self.last_input,
-            stroking: studio.engine.is_stroking(),
+            // A transform session's preview is not a state to recover.
+            stroking: studio.engine.is_stroking() || studio.transform.is_some(),
             in_flight: self.autosave.is_some() || self.job.is_some(),
             focus_lost,
         };
@@ -576,7 +580,7 @@ impl FileController {
 
     fn on_event(&mut self, e: IoEvent, studio: &mut Studio, shell: &mut Shell) {
         match e {
-            IoEvent::Saved { ticket, path, rev, .. } => {
+            IoEvent::Saved { ticket, path, rev, stats } => {
                 let Some(Job::Save { ticket: t, key, then, .. }) = &self.job else { return };
                 if *t != ticket {
                     return;
@@ -589,7 +593,11 @@ impl FileController {
                 self.captured = Some(key);
                 self.captured_at = self.now;
                 self.set_name(file_name(&path));
-                studio.notice = Some(format!("Saved {}", path.display()));
+                studio.notice = Some(match stats.selection_saved {
+                    SelectionSave::Binarized => "Saved; the selection was too detailed and its soft edges were made hard".into(),
+                    SelectionSave::Dropped => "Saved without the selection, which was too large to store".into(),
+                    SelectionSave::None | SelectionSave::Exact => format!("Saved {}", path.display()),
+                });
                 self.path = Some(path);
                 if let Some(then) = then {
                     self.proceed(then, shell);

@@ -1,6 +1,6 @@
 //! hokusai `TiledSurface` over an ARTY raster layer.
 
-use arty_core::{DirtyRegion, PixelRecorder, TileCoord, TileGrid, TilePixels};
+use arty_core::{DirtyRegion, PixelRecorder, Selection, TileCoord, TileGrid, TilePixels};
 
 use crate::shape::{DabStats, TileClip};
 
@@ -19,6 +19,19 @@ pub struct LayerSurface<'a> {
     pub clip: Option<&'a TileClip>,
     /// Running cost of the dabs drawn.
     pub stats: &'a mut DabStats,
+    /// The selection painting is limited to (`None`: no selection).
+    pub mask: Option<&'a Selection>,
+    /// Mask of the tile hokusai currently holds.
+    pub mask_cur: MaskCur,
+}
+
+/// The selection over the tile being painted. SEL-CORE adds the variants
+/// for partially selected tiles.
+#[derive(Default, Clone, Copy)]
+pub enum MaskCur {
+    /// Every pixel may be painted.
+    #[default]
+    All,
 }
 
 impl LayerSurface<'_> {

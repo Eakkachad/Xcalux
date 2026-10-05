@@ -17,4 +17,4 @@ pub use engine::{Reshape, StrokeEngine, StrokeRefused};
 pub use input::{InputSample, Stabilizer};
 pub use preset::{BrushGroup, BrushPreset, MAX_BRUSH_SIZE, MIN_BRUSH_SIZE, default_presets};
 pub use preview::render_preview;
-pub use surface::LayerSurface;
+pub use surface::{LayerSurface, MaskCur};

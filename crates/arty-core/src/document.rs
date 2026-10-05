@@ -1,11 +1,16 @@
 //! The document: page size, layer tree, active layer and dirty tracking.
 
+use std::sync::Arc;
+
 use ahash::{AHashMap, AHashSet};
 
 use crate::blend::{BlendMode, blend_tile, blend_tile_atop};
 use crate::fix15::ONE_U16;
+use crate::frame::Frame;
 use crate::grid::TileGrid;
 use crate::layer::{Layer, LayerContent, LayerId, LayerProps};
+use crate::page::PageSetup;
+use crate::selection::Selection;
 use crate::tile::{TILE_SIZE, TileCoord};
 
 /// Deepest allowed folder nesting (top level = 1). `move_layer` refuses
@@ -83,6 +88,11 @@ pub struct Document {
     revision: u64,
     /// Bumped by view-only changes (active layer, folder expansion).
     view_revision: u64,
+    /// Pixel selection (document data, as in CSP); empty = none.
+    selection: Selection,
+    /// Bumped by every selection change, recorded or not (outline caches).
+    selection_rev: u64,
+    page: Option<PageSetup>,
 }
 
 /// Everything needed to rebuild a document, e.g. by a file reader.
@@ -140,6 +150,9 @@ impl Document {
             dirty: DirtyRegion::default(),
             revision: 0,
             view_revision: 0,
+            selection: Selection::default(),
+            selection_rev: 0,
+            page: None,
         };
         let id = LayerId(1);
         doc.layers.insert(
@@ -216,6 +229,9 @@ impl Document {
             dirty: DirtyRegion::default(),
             revision: self.revision,
             view_revision: self.view_revision,
+            selection: self.selection.clone(),
+            selection_rev: self.selection_rev,
+            page: self.page,
         }
     }
 
@@ -286,6 +302,9 @@ impl Document {
             dirty: DirtyRegion::default(),
             revision: 0,
             view_revision: 0,
+            selection: Selection::default(),
+            selection_rev: 0,
+            page: None,
         };
         doc.dirty.mark_all();
         Ok(doc)
@@ -350,8 +369,120 @@ impl Document {
         Some((grid, &mut self.dirty))
     }
 
+    /// [`Self::paint_target`] plus the selection painting is limited to:
+    /// `Some` exactly when there is one.
+    pub fn paint_target_masked(&mut self, id: LayerId) -> Option<(&mut TileGrid, &mut DirtyRegion, Option<&Selection>)> {
+        let layer = self.layers.get_mut(&id)?;
+        let grid = layer.raster_mut()?;
+        self.revision = self.revision.wrapping_add(1);
+        let mask = (!self.selection.is_empty()).then_some(&self.selection);
+        Some((grid, &mut self.dirty, mask))
+    }
+
     pub fn dirty_mut(&mut self) -> &mut DirtyRegion {
         &mut self.dirty
+    }
+
+    // ----- selection and page setup ------------------------------------------
+
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    pub fn selection_rev(&self) -> u64 {
+        self.selection_rev
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.selection.is_empty()
+    }
+
+    /// Replace the selection, returning the old one. A content change
+    /// (the selection is saved); no tiles are dirtied.
+    pub fn swap_selection(&mut self, s: Selection) -> Selection {
+        let old = std::mem::replace(&mut self.selection, s);
+        self.selection_rev = self.selection_rev.wrapping_add(1);
+        self.bump();
+        old
+    }
+
+    /// Set the selection without counting it as an edit (file readers).
+    pub fn set_selection_unrecorded(&mut self, s: Selection) {
+        self.selection = s;
+        self.selection_rev = self.selection_rev.wrapping_add(1);
+    }
+
+    pub fn page_setup(&self) -> Option<&PageSetup> {
+        self.page.as_ref()
+    }
+
+    /// Replace the page setup. Returns the old value when it changed.
+    pub fn set_page_setup(&mut self, s: Option<PageSetup>) -> Option<Option<PageSetup>> {
+        if self.page == s {
+            return None;
+        }
+        let old = std::mem::replace(&mut self.page, s);
+        self.bump();
+        Some(old)
+    }
+
+    /// Set the page setup without counting it as an edit (file readers,
+    /// the New dialog).
+    pub fn set_page_unrecorded(&mut self, s: Option<PageSetup>) {
+        self.page = s;
+    }
+
+    // ----- frames --------------------------------------------------------------
+
+    /// The frame of a frame border folder.
+    pub fn frame(&self, id: LayerId) -> Option<&Arc<Frame>> {
+        match &self.layers.get(&id)?.content {
+            LayerContent::Folder { frame, .. } => frame.as_ref(),
+            LayerContent::Raster(_) => None,
+        }
+    }
+
+    /// Replace a folder's frame. Returns the old one when it changed;
+    /// `None` for a missing layer, a raster layer or the same frame.
+    pub fn set_frame(&mut self, id: LayerId, f: Option<Arc<Frame>>) -> Option<Option<Arc<Frame>>> {
+        let page_tiles = (self.tiles_wide(), self.tiles_high());
+        let Some(Layer { content: LayerContent::Folder { frame, .. }, .. }) = self.layers.get_mut(&id) else {
+            return None;
+        };
+        let same = match (&*frame, &f) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same {
+            return None;
+        }
+        if let Some(new) = &f {
+            debug_assert_eq!(new.tiles(), page_tiles, "frame built for another page size");
+        }
+        let toggled = frame.is_some() != f.is_some();
+        let new = f.clone();
+        let old = std::mem::replace(frame, f);
+        for c in old.iter().chain(new.iter()).flat_map(|f| f.touched_tiles()) {
+            self.dirty.mark(c);
+        }
+        if toggled {
+            // Masking starts or stops: every tile of the children changes.
+            self.mark_layer_dirty(id);
+        }
+        self.bump();
+        Some(old)
+    }
+
+    /// The nearest ancestor-or-self of `id` that has a frame.
+    pub fn frame_folder_of(&self, id: LayerId) -> Option<LayerId> {
+        let mut at = id;
+        loop {
+            if self.frame(at).is_some() {
+                return Some(at);
+            }
+            at = self.location(at)?.0?;
+        }
     }
 
     /// Replace a layer's settings. Returns the old settings when changed.
@@ -385,7 +516,11 @@ impl Document {
                     self.dirty.mark(c);
                 }
             }
-            LayerContent::Folder { children, .. } => {
+            LayerContent::Folder { children, frame, .. } => {
+                // A frame's border shows even where no child has pixels.
+                for c in frame.iter().flat_map(|f| f.touched_tiles()) {
+                    self.dirty.mark(c);
+                }
                 for c in children.clone() {
                     self.mark_layer_dirty(c);
                 }
@@ -433,7 +568,7 @@ impl Document {
     fn push_rows(&self, ids: &[LayerId], depth: usize, out: &mut Vec<(LayerId, usize)>) {
         for &id in ids.iter().rev() {
             out.push((id, depth));
-            if let Some(Layer { content: LayerContent::Folder { children, expanded: true }, .. }) =
+            if let Some(Layer { content: LayerContent::Folder { children, expanded: true, .. }, .. }) =
                 self.layers.get(&id)
             {
                 self.push_rows(children, depth + 1, out);
@@ -542,7 +677,7 @@ impl Document {
         Some(self.insert_above_active(Layer {
             id,
             props,
-            content: LayerContent::Folder { children: Vec::new(), expanded: true },
+            content: LayerContent::Folder { children: Vec::new(), expanded: true, frame: None },
         }))
     }
 
@@ -696,9 +831,10 @@ impl Document {
         let new_id = self.alloc_id().expect("room checked by duplicate_layer");
         let content = match src.content {
             LayerContent::Raster(g) => LayerContent::Raster(g),
-            LayerContent::Folder { children, expanded } => LayerContent::Folder {
+            LayerContent::Folder { children, expanded, frame } => LayerContent::Folder {
                 children: children.into_iter().map(|c| self.clone_subtree(c)).collect(),
                 expanded,
+                frame,
             },
         };
         self.layers.insert(new_id, Layer { id: new_id, props: src.props, content });
@@ -911,7 +1047,11 @@ mod tests {
         Layer {
             id: LayerId(id),
             props: LayerProps::named("f"),
-            content: LayerContent::Folder { children: children.iter().map(|&c| LayerId(c)).collect(), expanded: true },
+            content: LayerContent::Folder {
+                children: children.iter().map(|&c| LayerId(c)).collect(),
+                expanded: true,
+                frame: None,
+            },
         }
     }
 
@@ -1145,6 +1285,130 @@ mod tests {
         assert_eq!(doc.add_folder(), None);
         assert_eq!(doc.duplicate_layer(LayerId(1)), None);
         assert_eq!(doc.layer_count(), count, "no id was reused");
+    }
+
+    fn frame_shape() -> crate::frame::FrameShape {
+        crate::frame::FrameShape {
+            panels: Vec::new(),
+            border: crate::frame::BorderStyle { width: 2.0, color: [0, 0, 0, ONE_U16] },
+        }
+    }
+
+    fn some_selection() -> Selection {
+        let mut s = Selection::new();
+        s.insert_tile(TileCoord::new(0, 0), crate::selection::full_mask().clone());
+        s
+    }
+
+    fn some_page() -> PageSetup {
+        let trim = crate::geom::RectF { x: 4.0, y: 4.0, w: 50.0, h: 50.0 };
+        PageSetup { trim, bleed: 2.0, safe: 3.0, inner: crate::geom::RectF::default(), unit: 2 }
+    }
+
+    #[test]
+    fn swap_selection_bumps_both_revisions() {
+        let mut doc = Document::new(128, 64, 72);
+        let id = doc.active();
+        assert!(!doc.has_selection());
+        assert!(doc.paint_target_masked(id).unwrap().2.is_none(), "no selection, no mask");
+        doc.dirty.drain_into(&mut Vec::new());
+        let (rev, sel_rev) = (doc.revision(), doc.selection_rev());
+        let old = doc.swap_selection(some_selection());
+        assert!(old.is_empty() && doc.has_selection());
+        assert_ne!(doc.revision(), rev);
+        assert_ne!(doc.selection_rev(), sel_rev);
+        assert!(doc.dirty.is_clean(), "a selection change dirties no tiles");
+        let (_, _, mask) = doc.paint_target_masked(id).unwrap();
+        assert!(mask.is_some_and(|m| m.tile_count() == 1));
+        assert!(doc.paint_target_masked(LayerId(99)).is_none());
+    }
+
+    #[test]
+    fn unrecorded_setters_do_not_bump_revision() {
+        let mut doc = Document::new(64, 64, 72);
+        let (rev, sel_rev) = (doc.revision(), doc.selection_rev());
+        doc.set_selection_unrecorded(some_selection());
+        assert!(doc.has_selection());
+        assert_ne!(doc.selection_rev(), sel_rev, "outline caches still see the change");
+        doc.set_page_unrecorded(Some(some_page()));
+        assert_eq!(doc.page_setup(), Some(&some_page()));
+        assert_eq!(doc.revision(), rev);
+
+        // The recorded setter returns the old value and bumps, only on change.
+        assert_eq!(doc.set_page_setup(Some(some_page())), None);
+        assert_eq!(doc.revision(), rev);
+        assert_eq!(doc.set_page_setup(None), Some(Some(some_page())));
+        assert_ne!(doc.revision(), rev);
+        assert_eq!(doc.page_setup(), None);
+    }
+
+    #[test]
+    fn snapshot_shares_the_selection() {
+        let mut doc = Document::new(64, 64, 72);
+        doc.swap_selection(some_selection());
+        doc.set_page_setup(Some(some_page()));
+        let snap = doc.snapshot();
+        assert!(snap.selection().shares_storage(doc.selection()));
+        assert_eq!(snap.selection_rev(), doc.selection_rev());
+        assert_eq!(snap.page_setup(), doc.page_setup());
+        doc.swap_selection(Selection::default());
+        assert!(snap.has_selection(), "the snapshot keeps its selection");
+    }
+
+    #[test]
+    fn folder_dirty_marking_covers_its_frame() {
+        let mut doc = Document::new(256, 256, 72);
+        let raster = doc.active();
+        let folder = doc.add_folder().unwrap();
+        let t = TileCoord::new(3, 2);
+        let f = Frame::with_full_tiles(frame_shape(), 256, 256, &[t]);
+        let mut out = Vec::new();
+        doc.dirty.drain_into(&mut out);
+        let rev = doc.revision();
+
+        assert!(matches!(doc.set_frame(folder, Some(f.clone())), Some(None)));
+        assert_ne!(doc.revision(), rev);
+        assert!(!doc.dirty.drain_into(&mut out));
+        assert!(out.contains(&t), "set_frame marks the frame's tiles: {out:?}");
+        assert!(Arc::ptr_eq(doc.frame(folder).unwrap(), &f));
+
+        let rev = doc.revision();
+        assert!(doc.set_frame(folder, Some(f.clone())).is_none(), "same frame");
+        assert!(doc.set_frame(raster, Some(f.clone())).is_none(), "rasters have no frame");
+        assert!(doc.set_frame(LayerId(99), None).is_none());
+        assert_eq!(doc.revision(), rev);
+
+        // The folder has no children: only its frame's tiles are dirtied.
+        doc.mark_layer_dirty(folder);
+        assert!(!doc.dirty.drain_into(&mut out));
+        assert_eq!(out, vec![t]);
+
+        let copy = doc.duplicate_layer(folder).unwrap();
+        assert!(Arc::ptr_eq(doc.frame(copy).unwrap(), &f), "duplicate copies the frame");
+        assert!(matches!(doc.set_frame(folder, None), Some(Some(old)) if Arc::ptr_eq(&old, &f)));
+        assert!(doc.frame(folder).is_none());
+    }
+
+    #[test]
+    fn frame_folder_of_walks_ancestors() {
+        let mut doc = Document::new(64, 64, 72);
+        let base = doc.active();
+        let outer = doc.add_folder().unwrap();
+        let inner = doc.add_folder().unwrap();
+        let r = doc.add_raster_layer().unwrap();
+        assert!(doc.move_layer(inner, Some(outer), 0));
+        assert!(doc.move_layer(r, Some(inner), 0));
+        assert_eq!(doc.frame_folder_of(r), None);
+
+        doc.set_frame(outer, Some(Frame::build(frame_shape(), 64, 64)));
+        assert_eq!(doc.frame_folder_of(r), Some(outer));
+        assert_eq!(doc.frame_folder_of(inner), Some(outer));
+        assert_eq!(doc.frame_folder_of(outer), Some(outer));
+        assert_eq!(doc.frame_folder_of(base), None);
+        assert_eq!(doc.frame_folder_of(LayerId(99)), None);
+
+        doc.set_frame(inner, Some(Frame::build(frame_shape(), 64, 64)));
+        assert_eq!(doc.frame_folder_of(r), Some(inner), "the nearest one");
     }
 
     #[test]

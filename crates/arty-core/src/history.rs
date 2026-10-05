@@ -6,18 +6,42 @@
 //! keeps the swapped-out ones as the redo entry.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use ahash::AHashSet;
 
 use crate::document::{DirtyRegion, Document, StructureSnapshot};
+use crate::frame::Frame;
 use crate::grid::TileGrid;
 use crate::layer::{LayerId, LayerProps};
+use crate::page::PageSetup;
+use crate::selection::Selection;
 use crate::tile::{TileCoord, TileRef};
 
+/// One undo step: the state to put back. Applying an edit returns the edit
+/// that reverses it.
 pub enum Edit {
     Pixels { layer: LayerId, tiles: Vec<(TileCoord, Option<TileRef>)> },
     Props { layer: LayerId, props: LayerProps },
     Structure(Box<StructureSnapshot>),
+    /// The selection to restore.
+    Selection(Box<Selection>),
+    /// The page setup to restore.
+    Page(Option<PageSetup>),
+    /// The frame to restore on a folder.
+    Frame { layer: LayerId, frame: Option<Arc<Frame>> },
+    /// Several edits as one step, applied last to first.
+    Batch(Vec<Edit>),
+}
+
+/// What part of the document a history step changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Touch {
+    Pixels(LayerId),
+    Props(LayerId),
+    Structure,
+    Selection,
+    Page,
 }
 
 impl Edit {
@@ -39,13 +63,32 @@ impl Edit {
                 Edit::Props { layer, props: old }
             }
             Edit::Structure(snap) => Edit::Structure(Box::new(doc.swap_structure(*snap))),
+            Edit::Selection(sel) => Edit::Selection(Box::new(doc.swap_selection(*sel))),
+            Edit::Page(page) => Edit::Page(doc.set_page_setup(page).unwrap_or(page)),
+            Edit::Frame { layer, frame } => {
+                let old = doc.set_frame(layer, frame.clone()).unwrap_or(frame);
+                Edit::Frame { layer, frame: old }
+            }
+            // The inverses come out last to first, which is the order that
+            // undoes them (applied last to first again).
+            Edit::Batch(edits) => Edit::Batch(edits.into_iter().rev().map(|e| e.apply(doc)).collect()),
         }
     }
 
-    fn touched_layer(&self) -> Option<LayerId> {
+    /// Report what applying this edit changes. A frame edit counts as a
+    /// structure change (the composite of the folder changes).
+    pub fn touched(&self, f: &mut impl FnMut(Touch)) {
         match self {
-            Edit::Pixels { layer, .. } | Edit::Props { layer, .. } => Some(*layer),
-            Edit::Structure(_) => None,
+            Edit::Pixels { layer, .. } => f(Touch::Pixels(*layer)),
+            Edit::Props { layer, .. } => f(Touch::Props(*layer)),
+            Edit::Structure(_) | Edit::Frame { .. } => f(Touch::Structure),
+            Edit::Selection(_) => f(Touch::Selection),
+            Edit::Page(_) => f(Touch::Page),
+            Edit::Batch(edits) => {
+                for e in edits {
+                    e.touched(f);
+                }
+            }
         }
     }
 }
@@ -162,21 +205,22 @@ impl History {
         !self.redo.is_empty()
     }
 
-    /// Undo one step. Returns the layer it affected, if any.
-    pub fn undo(&mut self, doc: &mut Document) -> Option<LayerId> {
+    /// Undo one step. Returns what it changed (empty when there was
+    /// nothing to undo).
+    pub fn undo(&mut self, doc: &mut Document) -> Vec<Touch> {
         self.props_open = None;
-        let edit = self.undo.pop_back()?;
-        let layer = edit.touched_layer();
+        let Some(edit) = self.undo.pop_back() else { return Vec::new() };
+        let touched = touches(&edit);
         self.redo.push(edit.apply(doc));
-        layer
+        touched
     }
 
-    pub fn redo(&mut self, doc: &mut Document) -> Option<LayerId> {
+    pub fn redo(&mut self, doc: &mut Document) -> Vec<Touch> {
         self.props_open = None;
-        let edit = self.redo.pop()?;
-        let layer = edit.touched_layer();
+        let Some(edit) = self.redo.pop() else { return Vec::new() };
+        let touched = touches(&edit);
         self.undo.push_back(edit.apply(doc));
-        layer
+        touched
     }
 
     pub fn clear(&mut self) {
@@ -188,6 +232,12 @@ impl History {
     pub fn undo_len(&self) -> usize {
         self.undo.len()
     }
+}
+
+fn touches(edit: &Edit) -> Vec<Touch> {
+    let mut out = Vec::new();
+    edit.touched(&mut |t| out.push(t));
+    out
 }
 
 #[cfg(test)]
@@ -218,15 +268,102 @@ mod tests {
         h.push(stroke(&mut doc, &mut rec, 1, 200).unwrap());
         assert_eq!((pixel(&doc, 0)[0], pixel(&doc, 1)[0]), (100, 200));
 
-        h.undo(&mut doc);
+        let id = doc.active();
+        assert_eq!(h.undo(&mut doc), [Touch::Pixels(id)]);
         assert_eq!((pixel(&doc, 0)[0], pixel(&doc, 1)[0]), (100, 0));
         h.undo(&mut doc);
         assert_eq!(pixel(&doc, 0)[0], 0);
         assert!(doc.active_layer().raster().unwrap().is_empty(), "first stroke created the tile");
+        assert!(h.undo(&mut doc).is_empty(), "nothing left to undo");
 
-        h.redo(&mut doc);
+        assert_eq!(h.redo(&mut doc), [Touch::Pixels(id)]);
         h.redo(&mut doc);
         assert_eq!((pixel(&doc, 0)[0], pixel(&doc, 1)[0]), (100, 200));
+        assert!(h.redo(&mut doc).is_empty());
+    }
+
+    fn selection_at(x: i32) -> Selection {
+        let mut s = Selection::new();
+        s.insert_tile(TileCoord::new(x, 0), crate::selection::full_mask().clone());
+        s
+    }
+
+    #[test]
+    fn selection_edit_round_trips_the_same_storage() {
+        let mut doc = Document::new(256, 64, 72);
+        let mut h = History::default();
+        let first = selection_at(0);
+        doc.swap_selection(first.clone());
+        let second = selection_at(1);
+        let old = doc.swap_selection(second.clone());
+        h.push(Edit::Selection(Box::new(old)));
+        let rev = doc.revision();
+
+        assert_eq!(h.undo(&mut doc), [Touch::Selection]);
+        assert!(doc.selection().shares_storage(&first));
+        assert_ne!(doc.revision(), rev);
+        assert_eq!(h.redo(&mut doc), [Touch::Selection]);
+        assert!(doc.selection().shares_storage(&second));
+    }
+
+    #[test]
+    fn page_edit_round_trips() {
+        let mut doc = Document::new(64, 64, 72);
+        let mut h = History::default();
+        let trim = crate::geom::RectF { x: 1.0, y: 2.0, w: 30.0, h: 40.0 };
+        let page = PageSetup { trim, bleed: 1.0, safe: 2.0, inner: crate::geom::RectF::default(), unit: 0 };
+        let old = doc.set_page_setup(Some(page)).unwrap();
+        h.push(Edit::Page(old));
+        assert_eq!(h.undo(&mut doc), [Touch::Page]);
+        assert_eq!(doc.page_setup(), None);
+        assert_eq!(h.redo(&mut doc), [Touch::Page]);
+        assert_eq!(doc.page_setup(), Some(&page));
+    }
+
+    #[test]
+    fn frame_edit_restores_the_same_arc() {
+        let mut doc = Document::new(128, 128, 72);
+        let folder = doc.add_folder().unwrap();
+        let mut h = History::default();
+        let shape = crate::frame::FrameShape {
+            panels: Vec::new(),
+            border: crate::frame::BorderStyle { width: 1.0, color: [0; 4] },
+        };
+        let a = Frame::with_full_tiles(shape.clone(), 128, 128, &[TileCoord::new(0, 0)]);
+        let b = Frame::with_full_tiles(shape, 128, 128, &[TileCoord::new(1, 1)]);
+        doc.set_frame(folder, Some(a.clone()));
+        let old = doc.set_frame(folder, Some(b.clone())).unwrap();
+        h.push(Edit::Frame { layer: folder, frame: old });
+
+        assert_eq!(h.undo(&mut doc), [Touch::Structure]);
+        assert!(Arc::ptr_eq(doc.frame(folder).unwrap(), &a));
+        assert_eq!(h.redo(&mut doc), [Touch::Structure]);
+        assert!(Arc::ptr_eq(doc.frame(folder).unwrap(), &b));
+    }
+
+    #[test]
+    fn batch_undoes_last_to_first_and_redoes_first_to_last() {
+        let mut doc = Document::new(256, 64, 72);
+        let id = doc.active();
+        let mut h = History::default();
+        let mut rec = PixelRecorder::default();
+        let (s0, s1, s2) = (doc.selection().clone(), selection_at(1), selection_at(2));
+        // One step of three operations: select s1, paint, select s2. Each
+        // recorded edit is the inverse of its operation, in operation order.
+        let undo_1 = doc.swap_selection(s1.clone());
+        let paint = stroke(&mut doc, &mut rec, 0, 77).unwrap();
+        let undo_2 = doc.swap_selection(s2.clone());
+        h.push(Edit::Batch(vec![Edit::Selection(Box::new(undo_1)), paint, Edit::Selection(Box::new(undo_2))]));
+
+        assert_eq!(h.undo(&mut doc), [Touch::Selection, Touch::Pixels(id), Touch::Selection]);
+        assert!(doc.selection().shares_storage(&s0), "the first operation is undone last");
+        assert_eq!(pixel(&doc, 0)[0], 0);
+        h.redo(&mut doc);
+        assert!(doc.selection().shares_storage(&s2), "the last operation is redone last");
+        assert_eq!(pixel(&doc, 0)[0], 77);
+        h.undo(&mut doc);
+        assert!(doc.selection().shares_storage(&s0));
+        assert!(!s1.is_empty());
     }
 
     #[test]

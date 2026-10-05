@@ -264,7 +264,7 @@ pub fn synthetic_manga_page(page: Page) -> Document {
             let colour = [rng.range(0.2, 1.0), rng.range(0.2, 1.0), rng.range(0.2, 1.0)];
             specs.push((id, format!("{} {}", kind.name(), i + 1), Spec { kind, seed: u64::from(id.0), coverage, colour }));
         }
-        let content = LayerContent::Folder { children, expanded: true };
+        let content = LayerContent::Folder { children, expanded: true, frame: None };
         layers.push(Layer { id: folder, props: LayerProps::named(kind.name()), content });
     }
     let mut active = LayerId(1);

@@ -7,6 +7,16 @@ use std::sync::mpsc::{Receiver, channel};
 use arty_core::{CompositeScratch, Document, TILE_SIZE, TileCoord, fix15, tile::new_tile_box};
 use rayon::prelude::*;
 
+/// Which part of the page Export PNG writes.
+// FRAMES: the Export dialog offers Bleed and Trim once page setups exist.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExportCrop {
+    Canvas,
+    Bleed,
+    Trim,
+}
+
 /// Flatten the page to straight-alpha RGBA8.
 pub fn flatten_rgba(doc: &Document) -> (u32, u32, Vec<u8>) {
     let (w, h) = (doc.width(), doc.height());
@@ -55,8 +65,9 @@ fn write_png(path: &PathBuf, w: u32, h: u32, dpi: u32, data: &[u8]) -> Result<()
 }
 
 /// Ask for a destination, then encode in the background. The receiver
-/// yields a user-facing status message when done.
-pub fn export_png(doc: &Document) -> Option<Receiver<String>> {
+/// yields a user-facing status message when done. (Every crop exports the
+/// whole canvas for now.)
+pub fn export_png(doc: &Document, _crop: ExportCrop) -> Option<Receiver<String>> {
     let path = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name("page.png").save_file()?;
     let (w, h, data) = flatten_rgba(doc);
     let dpi = doc.dpi();

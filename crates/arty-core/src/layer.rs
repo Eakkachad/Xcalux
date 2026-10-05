@@ -1,8 +1,11 @@
 //! Layers: raster pixel layers and folders.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::blend::BlendMode;
+use crate::frame::Frame;
 use crate::grid::TileGrid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -23,6 +26,9 @@ pub struct LayerProps {
     pub lock_alpha: bool,
     /// Disallow any edit.
     pub locked: bool,
+    /// A reference layer for fills and the magic wand (CSP 参照レイヤー).
+    #[serde(default)]
+    pub reference: bool,
 }
 
 impl LayerProps {
@@ -35,6 +41,7 @@ impl LayerProps {
             clip: false,
             lock_alpha: false,
             locked: false,
+            reference: false,
         }
     }
 }
@@ -42,8 +49,9 @@ impl LayerProps {
 #[derive(Clone)]
 pub enum LayerContent {
     Raster(TileGrid),
-    /// Children ordered bottom → top.
-    Folder { children: Vec<LayerId>, expanded: bool },
+    /// Children ordered bottom → top. `frame`: a frame border folder's
+    /// panels, which mask the children (only folders can have one).
+    Folder { children: Vec<LayerId>, expanded: bool, frame: Option<Arc<Frame>> },
 }
 
 #[derive(Clone)]

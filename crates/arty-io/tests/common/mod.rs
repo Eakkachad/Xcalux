@@ -13,8 +13,8 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use arty_core::tile::new_tile;
 use arty_core::{
-    BlendMode, CompositeScratch, DocParts, Document, Layer, LayerContent, LayerId, LayerProps, TileCoord, TileGrid,
-    TileRef,
+    BlendMode, CompositeScratch, DocParts, Document, Layer, LayerContent, LayerId, LayerProps, Selection, TileCoord,
+    TileGrid, TileRef,
 };
 use arty_io::format::{T_MAX, T_MIN};
 use arty_io::{CommitMeta, FileWriter, LoadOptions, Loaded, Progress, SaveExtras, SaveOptions, SessionId, Verify};
@@ -177,6 +177,7 @@ fn props(rng: &mut Rng, folder: bool) -> LayerProps {
         clip: rng.chance(1, 4),
         lock_alpha: rng.chance(1, 4),
         locked: rng.chance(1, 6),
+        reference: false,
     }
 }
 
@@ -218,7 +219,7 @@ pub fn random_doc(rng: &mut Rng) -> Document {
     for node in nodes {
         let props = props(rng, node.folder);
         let content = if node.folder {
-            LayerContent::Folder { children: node.children, expanded: rng.chance(1, 2) }
+            LayerContent::Folder { children: node.children, expanded: rng.chance(1, 2), frame: None }
         } else {
             let mut grid = TileGrid::new();
             for _ in 0..rng.below(9) {
@@ -282,6 +283,8 @@ pub fn assert_same_doc(a: &Document, b: &Document) {
     assert_eq!(a.active(), b.active());
     assert_eq!(a.next_layer_id(), b.next_layer_id());
     assert_eq!(a.layer_count(), b.layer_count());
+    assert_eq!(a.page_setup(), b.page_setup(), "page setup");
+    assert_same_selection(a.selection(), b.selection());
     let mut sharing: AHashMap<usize, usize> = AHashMap::new();
     let mut samples = vec![TileCoord::new(0, 0)];
     for id in layer_ids(a) {
@@ -290,13 +293,17 @@ pub fn assert_same_doc(a: &Document, b: &Document) {
         assert_eq!(pa.name, pb.name, "layer {id:?}");
         assert_eq!(pa.opacity.to_bits(), pb.opacity.to_bits(), "layer {id:?} opacity");
         assert_eq!(
-            (pa.visible, pa.blend, pa.clip, pa.lock_alpha, pa.locked),
-            (pb.visible, pb.blend, pb.clip, pb.lock_alpha, pb.locked),
+            (pa.visible, pa.blend, pa.clip, pa.lock_alpha, pa.locked, pa.reference),
+            (pb.visible, pb.blend, pb.clip, pb.lock_alpha, pb.locked, pb.reference),
             "layer {id:?}"
         );
         match (&la.content, &lb.content) {
-            (LayerContent::Folder { children: ca, expanded: ea }, LayerContent::Folder { children: cb, expanded: eb }) => {
+            (
+                LayerContent::Folder { children: ca, expanded: ea, frame: fa },
+                LayerContent::Folder { children: cb, expanded: eb, frame: fb },
+            ) => {
                 assert_eq!((ca, ea), (cb, eb), "folder {id:?}");
+                assert_eq!(fa.as_ref().map(|f| f.shape()), fb.as_ref().map(|f| f.shape()), "folder {id:?} frame");
             }
             (LayerContent::Raster(ga), LayerContent::Raster(gb)) => {
                 let mut ka: Vec<_> = ga.coords().collect();
@@ -324,6 +331,16 @@ pub fn assert_same_doc(a: &Document, b: &Document) {
         b.composite_tile(c, &mut ob, &mut sb);
         assert!(*oa == *ob, "composite differs at {c:?}");
     }
+}
+
+/// Both selections hold the same tiles with the same coverage.
+pub fn assert_same_selection(a: &Selection, b: &Selection) {
+    let tiles = |s: &Selection| {
+        let mut v: Vec<_> = s.tiles().map(|(c, m)| (c, **m)).collect();
+        v.sort_by_key(|(c, _)| (c.y, c.x));
+        v
+    };
+    assert!(tiles(a) == tiles(b), "selection differs");
 }
 
 /// Record boundaries of a well-formed file: `(offset, kind, end)`.

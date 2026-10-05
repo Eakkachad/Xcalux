@@ -42,13 +42,14 @@ use crate::limits::{
 };
 use crate::manifest::{
     AppSection, DocFields, KNOWN_TAGS, LayerExt, SEC_CRITICAL, SEC_SAFE_TO_COPY, SectionWriter, TAG_DOC, TAG_LAYR,
-    TAG_LEXT, TAG_META, TAG_VIEW, lext_body, meta_body, truncate_str,
+    TAG_LEXT, TAG_META, TAG_PSET, TAG_SELM, TAG_VIEW, lext_body, meta_body, truncate_str,
 };
 use crate::names::blend_id;
 use crate::reader::{self, Loaded};
 use crate::recovery::{self, SessionLock, is_sharing_violation};
+use crate::selm::{SelectionSave, SelmCache};
 use crate::sink::{FileSink, Sink};
-use crate::{FileKind, Progress, phase, sniff, table};
+use crate::{FileKind, Progress, fram, phase, pset, refl, selm, sniff, table};
 
 /// Blob bytes are gathered into appends of about this size.
 const STAGING: usize = 4 << 20;
@@ -130,6 +131,8 @@ pub struct SaveStats {
     pub live_bytes: u64,
     /// Layer names cut to 4096 bytes.
     pub truncated_names: u32,
+    /// How the selection went into the file.
+    pub selection_saved: SelectionSave,
     pub ms_plan: f32,
     pub ms_encode: f32,
     pub ms_io: f32,
@@ -369,7 +372,7 @@ impl<S: Sink> FileWriter<S> {
         let r = update_cache(&mut cache, doc, pool).and_then(|(classified, evicted)| {
             self.index.forget(&evicted);
             let ms = ms_since(t);
-            let mut stats = self.commit_from(doc, ex, meta, &cache, &[], o, pool, p)?;
+            let mut stats = self.commit_from(doc, ex, meta, &cache, &[], &mut SelmCache::default(), o, pool, p)?;
             stats.classified = classified;
             stats.ms_plan += ms;
             Ok(stats)
@@ -378,8 +381,8 @@ impl<S: Sink> FileWriter<S> {
         r
     }
 
-    /// [`FileWriter::commit`] with a cache already updated for `doc` and
-    /// files to copy unchanged blobs from.
+    /// [`FileWriter::commit`] with a cache already updated for `doc`,
+    /// files to copy unchanged blobs from, and the selection encoding cache.
     pub(crate) fn commit_from(
         &mut self,
         doc: &Document,
@@ -387,12 +390,13 @@ impl<S: Sink> FileWriter<S> {
         meta: &CommitMeta<'_>,
         cache: &TileCache,
         sources: &[Source<'_>],
+        selm: &mut SelmCache,
         o: &SaveOptions,
         pool: &ThreadPool,
         p: &Progress,
     ) -> Result<SaveStats, IoError> {
         let old_end = self.index.valid_end;
-        let r = self.commit_inner(doc, ex, meta, cache, sources, o, pool, p);
+        let r = self.commit_inner(doc, ex, meta, cache, sources, selm, o, pool, p);
         if r.is_err() && self.sink.len() != old_end {
             let _ = self.sink.set_len(old_end);
         }
@@ -423,6 +427,7 @@ impl<S: Sink> FileWriter<S> {
         meta: &CommitMeta<'_>,
         cache: &TileCache,
         sources: &[Source<'_>],
+        selm: &mut SelmCache,
         o: &SaveOptions,
         pool: &ThreadPool,
         p: &Progress,
@@ -561,7 +566,8 @@ impl<S: Sink> FileWriter<S> {
         }
         stats.reused = (blob_entries - jobs.len()) as u32;
 
-        let raw = build_manifest(doc, &layers, &table_offsets, ex, meta)?;
+        let (raw, selection_saved) = build_manifest(doc, &layers, &table_offsets, ex, meta, selm)?;
+        stats.selection_saved = selection_saved;
         if jobs.is_empty() && stats.tables_written == 0 && self.index.last_manifest_raw.as_deref() == Some(raw.as_slice()) {
             stats.unchanged = true;
             stats.file_len = self.sink.len();
@@ -656,15 +662,16 @@ fn layer_flags(l: &Layer) -> u8 {
     f
 }
 
-/// The manifest body: DOC, LAYR, META, then VIEW, LEXT and kept sections
-/// when present, in that order (so equal input gives equal bytes).
+/// The manifest body: DOC, LAYR, META, then VIEW, SELM, PSET, LEXT and kept
+/// sections when present, in that order (so equal input gives equal bytes).
 fn build_manifest(
     doc: &Document,
     layers: &[PlannedLayer<'_>],
     table_offsets: &[u64],
     ex: &SaveExtras,
     meta: &CommitMeta<'_>,
-) -> Result<Vec<u8>, IoError> {
+    selm: &mut SelmCache,
+) -> Result<(Vec<u8>, SelectionSave), IoError> {
     let mut w = SectionWriter::default();
     let fields = DocFields {
         width: doc.width(),
@@ -716,8 +723,22 @@ fn build_manifest(
         }
         w.push(TAG_VIEW, SEC_SAFE_TO_COPY, view);
     }
+    let (w_px, h_px) = (doc.width(), doc.height());
+    let (selm_body, selection_saved) = selm::encode(doc.selection(), doc.selection_rev(), w_px, h_px, selm);
+    if let Some(body) = &selm_body {
+        w.push(TAG_SELM, SEC_SAFE_TO_COPY, body);
+    }
+    if let Some(body) = pset::encode(doc.page_setup()) {
+        w.push(TAG_PSET, SEC_SAFE_TO_COPY, &body);
+    }
+    // Entries made from document data replace the loaded copies of the
+    // same (layer, tag); every other loaded entry is written back as read.
     let ids: AHashSet<u32> = layers.iter().map(|l| l.layer.id.0).collect();
-    let ext: Vec<&LayerExt> = ex.layer_ext.iter().filter(|e| ids.contains(&e.layer)).collect();
+    let mut from_doc = fram::encode_all(doc);
+    from_doc.extend(refl::encode_all(doc));
+    let doc_keys: AHashSet<(u32, [u8; 4])> = from_doc.iter().map(|e| (e.layer, e.tag)).collect();
+    let kept = ex.layer_ext.iter().filter(|e| !doc_keys.contains(&(e.layer, e.tag)));
+    let ext: Vec<&LayerExt> = from_doc.iter().chain(kept).filter(|e| ids.contains(&e.layer)).collect();
     if !ext.is_empty() {
         let total: u64 = ext.iter().map(|e| e.bytes.len() as u64).sum();
         let largest = ext.iter().map(|e| e.bytes.len() as u64).max().unwrap_or(0);
@@ -741,7 +762,7 @@ fn build_manifest(
     if raw.len() as u64 > MAX_MANIFEST_RAW {
         return Err(IoError::limit("manifest size", raw.len() as u64, MAX_MANIFEST_RAW));
     }
-    Ok(raw)
+    Ok((raw, selection_saved))
 }
 
 // ----- sessions --------------------------------------------------------------
@@ -788,6 +809,8 @@ pub struct Session {
     origin: Option<PathBuf>,
     lock: Option<SessionLock>,
     compaction: Compaction,
+    /// The last `SELM` encoding (autosaves rewrite the manifest every commit).
+    selm: SelmCache,
 }
 
 impl Session {
@@ -802,6 +825,7 @@ impl Session {
             origin: None,
             lock: None,
             compaction: Compaction::default(),
+            selm: SelmCache::default(),
         }
     }
 
@@ -1010,7 +1034,7 @@ impl Session {
 
     /// Write and verify the temp file; every handle is closed on return.
     fn write_temp<S: Sink>(
-        &self,
+        &mut self,
         file: File,
         uuid: [u8; 16],
         doc: &Document,
@@ -1032,7 +1056,7 @@ impl Session {
         let sink = FileSink::new(file).map_err(IoError::io("open temp file"))?;
         let mut w = FileWriter::create(wrap(sink), 0, uuid)?;
         let meta = CommitMeta { session: self.id, rev: doc.revision(), src: None, clean: false };
-        let mut stats = w.commit_from(doc, ex, &meta, &self.cache, &sources, o, pool, p)?;
+        let mut stats = w.commit_from(doc, ex, &meta, &self.cache, &sources, &mut self.selm, o, pool, p)?;
         let encoded = std::mem::take(&mut w.encoded);
         let (sink, index) = w.into_parts();
         let sink = unwrap(sink);
@@ -1181,7 +1205,7 @@ impl Session {
         let sources = sources([(self.main.as_ref(), main.as_ref())]);
         let mut w = FileWriter::resume(wrap(sink), rec);
         let o = SaveOptions { verify: Verify::Off, now_ms: None, uuid: None };
-        let r = w.commit_from(doc, ex, meta, &self.cache, &sources, &o, pool, p);
+        let r = w.commit_from(doc, ex, meta, &self.cache, &sources, &mut self.selm, &o, pool, p);
         let (_, index) = w.into_parts();
         self.recovery = Some(index);
         r
@@ -1216,7 +1240,7 @@ impl Session {
             ]);
             let mut w = FileWriter::create(wrap(sink), OPT_RECOVERY_FILE, new_file_uuid()?)?;
             let o = SaveOptions { verify: Verify::Off, now_ms: None, uuid: None };
-            let stats = w.commit_from(doc, ex, meta, &self.cache, &sources, &o, pool, p)?;
+            let stats = w.commit_from(doc, ex, meta, &self.cache, &sources, &mut self.selm, &o, pool, p)?;
             Ok((stats, w.into_parts().1))
         })();
         let replaced = written.and_then(|w| {

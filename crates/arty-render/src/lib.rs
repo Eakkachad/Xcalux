@@ -4,6 +4,7 @@
 //! ([`CanvasSync`]), into a mipmapped GPU texture array ([`CanvasGpu`]) that
 //! an egui paint callback draws through the [`View`] transform.
 
+pub mod ants;
 pub mod gpu;
 pub mod upload;
 pub mod view;

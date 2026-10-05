@@ -1,9 +1,10 @@
 //! UI-side state shared by panels, menus and dialogs (not part of the
 //! document model).
 
-use arty_core::LayerId;
+use arty_core::{LayerId, PageSetup};
 use arty_render::SyncStats;
 
+use crate::commands::SelModify;
 use crate::files::AutosaveSettings;
 use crate::theme::ThemeKind;
 
@@ -60,6 +61,19 @@ pub struct Shell {
     /// already been given focus (requested once, on its first frame).
     pub renaming: Option<(LayerId, String, bool)>,
     pub toast: Option<(String, f64)>,
+    /// The Export PNG dialog is open (it picks the crop).
+    pub export_dialog: bool,
+    /// The Page Setup dialog is open.
+    // FRAMES: set by the PageSetup command, read by the dialog.
+    #[allow(dead_code)]
+    pub page_setup_open: bool,
+    /// The Grow / Shrink / Feather dialog is open.
+    // SEL-UI: set by SelectionDialog, read by the dialog.
+    #[allow(dead_code)]
+    pub sel_dialog: Option<SelModify>,
+    /// Page setup of the manuscript preset picked in the New dialog,
+    /// applied to the new document.
+    pub new_doc_page: Option<PageSetup>,
 }
 
 impl Shell {
@@ -79,6 +93,10 @@ impl Shell {
             reset_layout_requested: false,
             renaming: None,
             toast: None,
+            export_dialog: false,
+            page_setup_open: false,
+            sel_dialog: None,
+            new_doc_page: None,
         }
     }
 

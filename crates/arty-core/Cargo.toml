@@ -7,10 +7,11 @@ license.workspace = true
 
 [dependencies]
 ahash.workspace = true
+rayon.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
-arty-testkit.workspace = true
+arty-testkit = { workspace = true, features = ["synthetic"] }
 
 [lints]
 workspace = true
