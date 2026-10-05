@@ -261,20 +261,23 @@ fn recost_case() {
     }
 }
 
-/// A 20-tile stroke push that re-costs 99 pairs of "shift the bottom layer
-/// up (structure step), then a 20-tile stroke on the next layer" before
-/// trimming. Each stroke copies its layer's map on write, so the snapshots
-/// end up holding 99 distinct drifted maps, whole layers of tiles the
-/// document still holds; history holds only the strokes' old tiles.
-fn drifted_recost_case(name: &str, size: (u32, u32, u32), layers: usize, coverage: u32) {
+/// A 20-tile stroke push after 99 pairs of "shift the bottom layer up
+/// (structure step), then a 20-tile stroke on the next layer"; with `trim`
+/// it re-costs before trimming. Each stroke copies its layer's map on write,
+/// so the snapshots end up holding 99 distinct drifted maps, whole layers of
+/// tiles the document still holds; history holds only the strokes' old tiles
+/// and the drifted maps' tables. Every push checks each snapshot's shared
+/// maps (99 × layers) for tables the document has left. Only the push is
+/// timed: the stroke's own copy on write happens before.
+fn drifted_recost_case(name: &str, size: (u32, u32, u32), layers: usize, coverage: u32, trim: bool) {
     let base = page(size, layers, coverage);
     let in_doc = doc_tiles(&base);
     let ids: Vec<LayerId> = base.root().to_vec();
     let at20: Vec<TileCoord> = (0..20).map(|x| TileCoord::new(x, 0)).collect();
-    let stroke = |doc: &mut Document, h: &mut History, id: LayerId| {
+    let stroke = |doc: &mut Document, id: LayerId| {
         let (grid, _) = doc.paint_target(id).unwrap();
         let tiles = at20.iter().map(|&c| (c, grid.replace(c, Some(new_tile())))).collect();
-        h.push(Edit::Pixels { layer: id, tiles }, doc);
+        Edit::Pixels { layer: id, tiles }
     };
     let r = stats(7, || {
         let mut doc = base.snapshot();
@@ -287,16 +290,21 @@ fn drifted_recost_case(name: &str, size: (u32, u32, u32), layers: usize, coverag
             let bottom = doc.root()[0];
             assert!(doc.shift_layer(bottom, 1));
             h.push(Edit::Structure(Box::new(snap)), &doc);
-            stroke(&mut doc, &mut h, ids[i % layers]);
+            let e = stroke(&mut doc, ids[i % layers]);
+            h.push(e, &doc);
         }
-        h.set_budget(h.usage().undo_bytes);
+        if trim {
+            h.set_budget(h.usage().undo_bytes);
+        }
+        let e = stroke(&mut doc, ids[99 % layers]);
         let t = Instant::now();
-        stroke(&mut doc, &mut h, ids[99 % layers]);
+        h.push(e, &doc);
         let dt = us(t);
-        assert!(h.usage().trimmed > 0, "the push trims");
+        assert_eq!(h.usage().trimmed > 0, trim, "the push trims only at budget");
         dt
     });
-    row(&format!("{name}: stroke re-costing 99 moves + 99 strokes (99 drifted maps)"), 100 * 20, in_doc, r);
+    let what = if trim { "re-costing" } else { "under budget after" };
+    row(&format!("{name}: stroke {what} 99 moves + 99 strokes (99 drifted maps)"), 100 * 20, in_doc, r);
 }
 
 fn main() {
@@ -304,9 +312,11 @@ fn main() {
     println!("|---|---:|---:|---:|---:|");
     if std::env::args().any(|a| a == "recost") {
         recost_case();
-        drifted_recost_case("A4 350, 15 layers", A4, 15, 100);
-        drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40);
-        drifted_recost_case("B4 600, 10 full layers", B4, 10, 100);
+        for trim in [true, false] {
+            drifted_recost_case("A4 350, 15 layers", A4, 15, 100, trim);
+            drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40, trim);
+            drifted_recost_case("B4 600, 10 full layers", B4, 10, 100, trim);
+        }
         return;
     }
     for (name, size, layers, coverage) in [("A4 350, 15 layers", A4, 15, 100), ("B4 600, 10 layers @40%", B4, 10, 40)] {
@@ -400,9 +410,11 @@ fn main() {
     });
     row("A4 36 layers: first undo of a whole-layer clear", whole.len(), in_doc, r);
     recost_case();
-    drifted_recost_case("A4 350, 15 layers", A4, 15, 100);
-    drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40);
-    drifted_recost_case("B4 600, 10 full layers", B4, 10, 100);
+    for trim in [true, false] {
+        drifted_recost_case("A4 350, 15 layers", A4, 15, 100, trim);
+        drifted_recost_case("B4 600, 10 layers @40%", B4, 10, 40, trim);
+        drifted_recost_case("B4 600, 10 full layers", B4, 10, 100, trim);
+    }
     let u = h.usage();
     println!();
     let mib = u.undo_bytes >> 20;

@@ -5,10 +5,11 @@
 use arty_brush::pressure::PressureCurve;
 use arty_brush::{BrushGroup, BrushPreset, Reshape, StrokeEngine, StrokeRefused, default_presets};
 use arty_core::{
-    CompositeScratch, Document, Edit, History, LayerId, LayerProps, PageSetup, Selection, TileCoord, Touch, fix15, selection,
-    Affine64, tile::new_tile_box,
+    CompositeScratch, Document, Edit, Frame, History, LayerId, LayerProps, PageSetup, Selection, TileCoord, Touch, fix15,
+    selection, Affine64, tile::new_tile_box,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use arty_pen::PenEnd;
 use arty_render::View;
@@ -382,6 +383,9 @@ pub struct Studio {
     pub transform: Option<TransformState>,
     /// The panel selected in Frame Edit: (frame folder, panel index).
     pub frame_sel: Option<(LayerId, usize)>,
+    /// A frame border drag in progress: the folder and its frame before the
+    /// drag. Its previews are in the document but in no step yet.
+    pub(crate) frame_preview: Option<(LayerId, Arc<Frame>)>,
     /// The last selection-target commit: the (document epoch, selection
     /// revision) it made and its affine. Until that selection's outline is
     /// extracted, the ants draw the old one moved by it.
@@ -415,6 +419,7 @@ impl Studio {
             opts: ToolOptions::default(),
             transform: None,
             frame_sel: None,
+            frame_preview: None,
             ants_carry: None,
         };
         s.select_tool(Tool::Brush(BrushGroup::Pen));
@@ -658,22 +663,31 @@ impl Studio {
     // ----- history ---------------------------------------------------------
 
     /// Undo one step. During a transform session this cancels the session
-    /// instead (its preview was never recorded).
+    /// instead (its preview was never recorded). A frame border drag is
+    /// recorded first, so this undoes it.
     pub fn undo(&mut self) {
         if self.engine.is_stroking() {
             return;
         }
         if self.transform.is_some() {
             self.cancel_transform();
-        } else if self.history.can_undo() {
+            return;
+        }
+        self.commit_frame_preview();
+        if self.history.can_undo() {
             let touched = self.history.undo(&mut self.doc);
             self.history_applied(&touched);
         }
     }
 
-    /// Redo one step; nothing during a transform session.
+    /// Redo one step; nothing during a transform session or a frame border
+    /// drag.
     pub fn redo(&mut self) {
-        if !self.engine.is_stroking() && self.transform.is_none() && self.history.can_redo() {
+        if !self.engine.is_stroking()
+            && self.transform.is_none()
+            && self.frame_preview.is_none()
+            && self.history.can_redo()
+        {
             let touched = self.history.redo(&mut self.doc);
             self.history_applied(&touched);
         }
@@ -754,23 +768,21 @@ impl Studio {
     /// Change a layer's settings with undo. `coalesce` merges the change into
     /// the undo step of the gesture in progress (see `History::push_props`);
     /// callers mark the gesture's start and end with
-    /// `history.end_props_gesture()`. Refused while stroking; a transform
-    /// session is committed first (history only runs between steps). The
-    /// layer panel calls this every frame, so an unchanged `props` is a no-op.
+    /// `history.end_props_gesture()`. Applies mid-stroke and keeps a
+    /// transform session open (a props push may run off a step boundary).
     pub fn set_layer_props(&mut self, id: LayerId, props: LayerProps, coalesce: bool) {
-        if self.engine.is_stroking() || self.doc.layer(id).is_none_or(|l| l.props == props) {
-            return;
-        }
-        self.commit_transform();
         if let Some(before) = self.doc.set_props(id, props) {
-            self.history.push_props(id, before, coalesce, &self.doc);
+            self.history.push_props(id, before, coalesce);
             self.epochs.props_changed();
         }
     }
 
     /// Clear the active layer, or only its selected area when there is a
-    /// selection (CSP).
+    /// selection (CSP). Refused while stroking.
     pub fn clear_active_layer(&mut self) {
+        if self.engine.is_stroking() {
+            return;
+        }
         self.commit_transform();
         let id = self.doc.active();
         let Some(layer) = self.doc.layer(id) else { return };
@@ -802,6 +814,7 @@ impl Studio {
         // A session or panel of the old document means nothing here.
         self.transform = None;
         self.frame_sel = None;
+        self.frame_preview = None;
         self.history.clear();
         self.epochs.structure_changed();
         self.fit_pending = true;
@@ -818,6 +831,7 @@ impl Studio {
         self.doc.dirty_mut().mark_all();
         self.transform = None;
         self.frame_sel = None;
+        self.frame_preview = None;
         self.history.clear();
         // Layer ids restart per document: thumbnails must not match old ones.
         self.epochs.structure_changed();
@@ -830,9 +844,17 @@ impl Studio {
 /// the thread cannot start or has gone. The thread runs below normal priority: at normal
 /// priority, woken by a push, it preempted the pushing thread for milliseconds on 4 cores
 /// (plans/bench/B012).
-pub fn undo_release() -> Box<dyn FnMut(Edit) + Send> {
+pub fn undo_release() -> UndoRelease {
+    spawn_undo_free().0
+}
+
+/// The hook [`History::set_release`] takes.
+pub type UndoRelease = Box<dyn FnMut(Edit) + Send>;
+
+/// [`undo_release`] and its thread, which ends once the hook is dropped.
+fn spawn_undo_free() -> (UndoRelease, Option<std::thread::JoinHandle<()>>) {
     let (tx, rx) = std::sync::mpsc::channel::<Edit>();
-    let ok = std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("arty-undo-free".into())
         .spawn(move || {
             arty_io::lower_thread_priority();
@@ -840,13 +862,15 @@ pub fn undo_release() -> Box<dyn FnMut(Edit) + Send> {
                 drop(e);
             }
         })
-        .is_ok();
+        .ok();
+    let ok = thread.is_some();
     // A failed send hands the Edit back inside the error, which drops it here.
-    Box::new(move |e| {
+    let release = Box::new(move |e| {
         if ok {
             let _ = tx.send(e);
         }
-    })
+    });
+    (release, thread)
 }
 
 /// In-memory `eframe::Storage`, so tests go through eframe's real RON encoding.
@@ -964,6 +988,67 @@ mod tests {
 
         s.new_document(64, 64, 72);
         assert_eq!(s.history.budget(), layer * 5 / 2, "a new document keeps the budget");
+    }
+
+    #[test]
+    fn undo_free_thread_frees_trimmed_steps_and_ends() {
+        let mut s = Studio::new(Document::new(256, 256, 72));
+        let (release, thread) = spawn_undo_free();
+        s.history.set_release(release);
+        let thread = thread.expect("the thread starts");
+        let id = s.doc.active();
+        s.history.set_budget(16 * arty_core::TILE_BYTES * 3 / 2);
+        let mut first = Vec::new();
+        for v in 1..=3 {
+            let (grid, _) = s.doc.paint_target(id).unwrap();
+            for c in (0..16).map(|i| TileCoord::new(i % 4, i / 4)) {
+                grid.get_mut_or_create(c)[5][5] = [v; 4];
+            }
+            if v == 1 {
+                let grid = s.doc.layer(id).unwrap().raster().unwrap();
+                first.extend(grid.iter().map(|(_, t)| std::sync::Arc::downgrade(t)));
+            }
+            s.clear_active_layer();
+        }
+        assert_eq!(s.history.usage().trimmed, 2, "the first two clears were dropped");
+        let freed = |w: &[std::sync::Weak<_>]| w.iter().all(|t| t.strong_count() == 0);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !freed(&first) && std::time::Instant::now() < until {
+            std::thread::yield_now();
+        }
+        assert!(freed(&first), "the thread freed the dropped tiles");
+        drop(s);
+        while !thread.is_finished() && std::time::Instant::now() < until {
+            std::thread::yield_now();
+        }
+        assert!(thread.is_finished(), "the thread ends with its History");
+    }
+
+    #[test]
+    fn clear_and_props_mid_stroke() {
+        let mut s = Studio::new(Document::new(256, 256, 72));
+        let id = s.doc.active();
+        let (grid, _) = s.doc.paint_target(id).unwrap();
+        grid.get_mut_or_create(TileCoord::new(0, 0))[20][10] = [7; 4];
+        let before = s.doc.layer(id).unwrap().raster().unwrap().clone();
+        let at = |x: f32| arty_brush::InputSample { x, y: 10.0, pressure: 1.0, ..Default::default() };
+        assert!(s.begin_stroke(at(10.0)));
+        s.feed_stroke(at(30.0));
+        let rev = s.doc.revision();
+        s.clear_active_layer();
+        assert_eq!((s.history.undo_len(), s.doc.revision()), (0, rev), "a clear waits for the stroke");
+        // A rename (or any layer setting) applies at once.
+        let props = LayerProps { name: "inks".into(), ..s.doc.layer(id).unwrap().props.clone() };
+        s.set_layer_props(id, props, false);
+        s.feed_stroke(at(40.0));
+        s.end_stroke();
+        assert_eq!((s.doc.layer(id).unwrap().props.name.as_str(), s.history.undo_len()), ("inks", 2));
+        while s.history.can_undo() {
+            s.undo();
+        }
+        let layer = s.doc.layer(id).unwrap();
+        assert!(layer.raster().unwrap().get(TileCoord::new(0, 0)) == before.get(TileCoord::new(0, 0)));
+        assert_ne!(layer.props.name, "inks");
     }
 
     #[test]

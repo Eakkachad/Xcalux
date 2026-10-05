@@ -264,17 +264,26 @@ impl Studio {
     }
 
     /// Show `shape` on folder `id` without recording it (live property
-    /// drags); [`Self::commit_frame_preview`] records the result.
+    /// drags); [`Self::commit_frame_preview`] records the result, and every
+    /// history entry point calls it first.
     pub fn preview_frame(&mut self, id: LayerId, shape: FrameShape) {
         if self.engine.is_stroking() || self.doc.frame(id).is_none_or(|f| *f.shape() == shape) {
             return;
+        }
+        if self.frame_preview.as_ref().is_some_and(|p| p.0 != id) {
+            self.commit_frame_preview();
+        }
+        if self.frame_preview.is_none() {
+            self.frame_preview = self.doc.frame(id).map(|f| (id, f.clone()));
         }
         let built = Frame::build(shape, self.doc.width(), self.doc.height());
         self.doc.set_frame(id, Some(built));
     }
 
-    /// Record the previews made since the frame was `start` as one step.
-    pub fn commit_frame_preview(&mut self, id: LayerId, start: Arc<Frame>) {
+    /// Record the previews made since [`Self::preview_frame`] started as one
+    /// step; no-op without any.
+    pub fn commit_frame_preview(&mut self) {
+        let Some((id, start)) = self.frame_preview.take() else { return };
         if self.doc.frame(id).is_some_and(|f| !Arc::ptr_eq(f, &start)) {
             self.record_edit(Edit::Frame { layer: id, frame: Some(start) });
         }
@@ -793,12 +802,8 @@ impl CanvasTool for FrameTool {
 /// A drag's last change, on the frame its button is released, is still a
 /// preview: [`finish_style_drag`] then records the drag as one step.
 fn style_change(ui: &egui::Ui, studio: &mut Studio, id: LayerId, shape: FrameShape) {
-    let key = egui::Id::new(("frame-style-start", id.0));
-    let dragging = ui.data(|d| d.get_temp::<Arc<Frame>>(key)).is_some();
+    let dragging = studio.frame_preview.as_ref().is_some_and(|p| p.0 == id);
     if dragging || ui.input(|i| i.pointer.any_down()) {
-        if !dragging && let Some(start) = studio.doc.frame(id).cloned() {
-            ui.data_mut(|d| d.insert_temp(key, start));
-        }
         studio.preview_frame(id, shape);
     } else {
         studio.edit_frame(id, |_| Some(shape));
@@ -807,12 +812,8 @@ fn style_change(ui: &egui::Ui, studio: &mut Studio, id: LayerId, shape: FrameSha
 
 /// Record a finished style drag as one `Edit::Frame`.
 fn finish_style_drag(ui: &egui::Ui, studio: &mut Studio, id: LayerId) {
-    let key = egui::Id::new(("frame-style-start", id.0));
-    if !ui.input(|i| i.pointer.any_down())
-        && let Some(start) = ui.data(|d| d.get_temp::<Arc<Frame>>(key))
-    {
-        ui.data_mut(|d| d.remove::<Arc<Frame>>(key));
-        studio.commit_frame_preview(id, start);
+    if !ui.input(|i| i.pointer.any_down()) && studio.frame_preview.as_ref().is_some_and(|p| p.0 == id) {
+        studio.commit_frame_preview();
     }
 }
 
@@ -1140,13 +1141,37 @@ mod tests {
             assert_eq!(s.doc.frame(id).unwrap().shape().border.width, w, "rebuilt live");
         }
         assert_eq!(steps(&s), n, "nothing recorded during the drag");
-        s.commit_frame_preview(id, start.clone());
+        s.commit_frame_preview();
         assert_eq!(steps(&s), n + 1);
         s.undo();
         assert!(Arc::ptr_eq(s.doc.frame(id).unwrap(), &start));
-        // A drag that ends where it started records nothing.
-        s.commit_frame_preview(id, start);
+        // A drag that changed nothing records nothing.
+        s.preview_frame(id, start.shape().clone());
+        s.commit_frame_preview();
         assert_eq!(steps(&s), n);
+
+        // Every history entry point records an open drag first, so no step
+        // holds a preview frame.
+        type Entry = fn(&mut Studio);
+        let entries: [(&str, Entry); 4] = [
+            ("edit_structure", |s| {
+                s.edit_structure(|d| d.add_raster_layer().is_some());
+            }),
+            ("undo", |s| s.undo()),
+            ("commit_transform", |s| s.commit_transform()),
+            ("select_tool", |s| s.select_tool(Tool::Hand)),
+        ];
+        for (name, entry) in entries {
+            let mut shape = start.shape().clone();
+            shape.border.width = 6.0;
+            s.preview_frame(id, shape);
+            entry(&mut s);
+            assert!(s.frame_preview.is_none(), "{name}");
+            while steps(&s) > n {
+                s.undo();
+            }
+            assert!(Arc::ptr_eq(s.doc.frame(id).unwrap(), &start), "{name}: undo goes back to before the drag");
+        }
     }
 
     /// Each Rectangle Frame (and New Frame Border Folder) is a sibling of

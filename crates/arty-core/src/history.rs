@@ -34,16 +34,21 @@
 //! any that left the document since did so at a newer op, whose step holds it
 //! and is still on the stack (trims drop the oldest), so that step owns it.
 //!
-//! All of this needs the document on a step boundary at every history call:
-//! no stroke or transform preview in progress. Their old tiles are held
-//! outside both the document and history, and a re-cost would charge them to
-//! any snapshot that holds them.
+//! A [`TileGrid`] map that a structure snapshot shares with the document
+//! costs 0 when its step is costed, and stays with the snapshot when the
+//! document later copies it on write (a stroke on that layer). Its tiles are
+//! covered as above, but its table is then history-only with no step that
+//! removed it, even after that stroke is undone: up to (structure steps ×
+//! raster layers) tables, 68 KiB each on A4 350 dpi and 272 KiB on B4 600
+//! dpi. So each step records the maps it shared, and every push charges each
+//! of those tables the document no longer holds to its newest holder.
 //!
-//! Known undercount: a [`TileGrid`] map that a structure snapshot shares with
-//! the document costs 0, and stays with the snapshot when the document later
-//! copies it on write. Each copy needs a later pixel step, so there are at
-//! most `limit` of them: about 68 KiB × 200 on A4 350 dpi, 272 KiB × 200 on
-//! B4 600 dpi. It is not counted.
+//! All of this needs the document on a step boundary at every push: no
+//! stroke or transform preview in progress. Their old tiles are held outside
+//! both the document and history, and a re-cost would charge them to any
+//! snapshot that holds them. The exception is [`History::push_props`], which
+//! the layer panel may call mid-stroke or mid-transform: it holds no tiles and
+//! trims only for the step limit, leaving the budget to the next push.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -239,6 +244,12 @@ struct Step {
     /// a re-cost walks (see the module docs). Empty, and unallocated, for
     /// anything but a snapshot that deleted or rewrote layers.
     walked: Box<[usize]>,
+    /// Snapshot maps that were document maps when costed, with their table
+    /// bytes: charged while the document no longer holds them (see the
+    /// module docs). Empty, and unallocated, for anything but a snapshot.
+    shared: Box<[(usize, usize)]>,
+    /// Bytes charged for `shared` tables, part of `bytes`.
+    tables: usize,
 }
 
 /// Sets reused by every costing; they keep their capacity.
@@ -254,6 +265,9 @@ struct Scratch {
     owner: AHashMap<usize, usize>,
     /// Snapshot maps the step being costed walked.
     walked: Vec<usize>,
+    /// Snapshot maps (and table bytes) the step being costed shares with the
+    /// document.
+    shared: Vec<(usize, usize)>,
 }
 
 /// What history holds, for the UI (lowend_ux_plan D9).
@@ -358,7 +372,7 @@ impl History {
         // the stack, which scans the document itself: scan once.
         let recosts = self.undo.iter().any(|s| !s.exact);
         let step = self.step(edit, doc, self.undo_bytes, recosts);
-        self.push_step(step, doc);
+        self.push_step(step, Some(doc));
     }
 
     /// Record a property change. `coalesce` marks it as part of a continuous
@@ -366,18 +380,22 @@ impl History {
     /// an entry, and later coalescing pushes for the same layer merge into
     /// it until [`History::end_props_gesture`] or any other history operation
     /// closes it. Entries recorded before the gesture are never merged into.
-    /// `doc` is the document after the change.
-    pub fn push_props(&mut self, layer: LayerId, before: LayerProps, coalesce: bool, doc: &Document) {
+    /// May be called off a step boundary (see the module docs).
+    pub fn push_props(&mut self, layer: LayerId, before: LayerProps, coalesce: bool) {
         if coalesce && self.props_open == Some(layer) {
             return; // keep the gesture's oldest "before" state
         }
         let bytes = size_of::<Step>() + before.name.capacity();
         let edit = Edit::Props { layer, props: before };
-        self.push_step(Step { edit, bytes, tiles: 0, exact: true, walked: Box::default() }, doc);
+        let (walked, shared) = (Box::default(), Box::default());
+        let step = Step { edit, bytes, tiles: 0, exact: true, walked, shared, tables: 0 };
+        self.push_step(step, None);
         self.props_open = coalesce.then_some(layer);
     }
 
-    fn push_step(&mut self, step: Step, doc: &Document) {
+    /// Push `step` and trim. `doc` is `None` for a props push, which may be
+    /// off a step boundary: it trims only for the step limit.
+    fn push_step(&mut self, step: Step, doc: Option<&Document>) {
         self.props_open = None;
         self.release_redo();
         self.undo_bytes += step.bytes;
@@ -386,11 +404,20 @@ impl History {
         {
             self.pushes += 1;
         }
+        let budget = match doc {
+            Some(doc) => {
+                self.charge_tables(doc);
+                self.budget
+            }
+            None => usize::MAX,
+        };
         // Oldest first; the newest step always stays.
-        while self.undo.len() > 1 && (self.undo.len() > self.limit || self.undo_bytes > self.budget) {
+        while self.undo.len() > 1 && (self.undo.len() > self.limit || self.undo_bytes > budget) {
             if self.undo.len() <= self.limit {
                 // A trim for the budget: an overcount must not cause it.
-                if self.undo.iter().any(|s| !s.exact) {
+                if let Some(doc) = doc
+                    && self.undo.iter().any(|s| !s.exact)
+                {
                     self.recost(doc);
                     continue;
                 }
@@ -508,9 +535,11 @@ impl History {
         s.tiles.clear();
         s.blocks.clear();
         s.walked.clear();
+        s.shared.clear();
         let mut bytes = size_of::<Step>() + walk(&edit, doc, s);
         let walked: Box<[usize]> = s.walked.as_slice().into();
-        bytes += walked.len() * size_of::<usize>();
+        let shared: Box<[(usize, usize)]> = s.shared.as_slice().into();
+        bytes += walked.len() * size_of::<usize>() + shared.len() * size_of::<(usize, usize)>();
         let n = s.tiles.len();
         let over = stack_bytes + bytes + n * TILE_BYTES > self.budget;
         let exact = n == 0 || self.scans_always() || (over && !recosts);
@@ -522,7 +551,32 @@ impl History {
             }
         }
         let tiles = self.scratch.tiles.len();
-        Step { edit, bytes: bytes + tiles * TILE_BYTES, tiles, exact, walked }
+        Step { edit, bytes: bytes + tiles * TILE_BYTES, tiles, exact, walked, shared, tables: 0 }
+    }
+
+    /// Charge each `shared` table the document no longer holds to its newest
+    /// holder (see the module docs). A table a newer step walked is that
+    /// step's already.
+    fn charge_tables(&mut self, doc: &Document) {
+        if self.undo.iter().all(|s| s.shared.is_empty()) {
+            return;
+        }
+        let s = &mut self.scratch;
+        s.maps.clear();
+        s.maps.extend(doc.layers.values().filter_map(Layer::raster).map(TileGrid::map_ptr));
+        s.blocks.clear();
+        for step in self.undo.iter_mut().rev() {
+            let mut tables = 0;
+            for &(m, bytes) in &step.shared {
+                if !s.maps.contains(&m) && s.blocks.insert(m) {
+                    tables += bytes;
+                }
+            }
+            s.blocks.extend(step.walked.iter().copied());
+            step.bytes = step.bytes - step.tables + tables;
+            self.undo_bytes = self.undo_bytes - step.tables + tables;
+            step.tables = tables;
+        }
     }
 
     /// Re-cost the tiles of every undo step against `doc` in one pass,
@@ -688,6 +742,9 @@ fn walk(edit: &Edit, doc: &Document, s: &mut Scratch) -> usize {
                         // Unchanged, or a twin of a document layer not
                         // written since: every tile is in the document.
                         if s.maps.contains(&g.map_ptr()) {
+                            if !s.shared.iter().any(|&(m, _)| m == g.map_ptr()) {
+                                s.shared.push((g.map_ptr(), g.map_bytes()));
+                            }
                             continue;
                         }
                         if s.blocks.insert(g.map_ptr()) {
@@ -965,7 +1022,7 @@ mod tests {
             let mut p = doc.layer(id).unwrap().props.clone();
             p.opacity = op;
             let before = doc.set_props(id, p).unwrap();
-            h.push_props(id, before, true, &doc);
+            h.push_props(id, before, true);
         }
         assert_eq!(h.undo_len(), 1);
         h.undo(&mut doc);
@@ -977,7 +1034,7 @@ mod tests {
         let mut p = doc.layer(id).unwrap().props.clone();
         p.opacity = op;
         let before = doc.set_props(id, p).unwrap();
-        h.push_props(id, before, coalesce, doc);
+        h.push_props(id, before, coalesce);
     }
 
     #[test]
@@ -989,7 +1046,7 @@ mod tests {
         let mut p = doc.layer(id).unwrap().props.clone();
         p.blend = BlendMode::Multiply;
         let before = doc.set_props(id, p).unwrap();
-        h.push_props(id, before, false, &doc);
+        h.push_props(id, before, false);
         for drag in [&[0.5, 0.4][..], &[0.2]] {
             h.end_props_gesture(); // drag starts
             for &op in drag {
@@ -1193,10 +1250,12 @@ mod tests {
         let mut p = doc.layer(id).unwrap().props.clone();
         p.opacity = 0.5;
         let before = doc.set_props(id, p).unwrap();
-        h.push_props(id, before, false, &doc);
-        assert_eq!((h.undo_len(), h.usage().trimmed), (1, 1), "the stroke is dropped");
+        h.push_props(id, before, false);
+        assert_eq!((h.undo_len(), h.usage().trimmed), (2, 0), "a props push leaves the budget to the next push");
+        h.push(stroke(&mut doc, &mut rec, 1, 50).unwrap(), &doc);
+        assert_eq!((h.undo_len(), h.usage().trimmed), (1, 2), "the stroke and the props step are dropped");
         h.undo(&mut doc);
-        assert_eq!(doc.layer(id).unwrap().props.opacity, 1.0);
+        assert_eq!(pixel(&doc, 1)[0], 0);
         assert!(!h.can_undo());
     }
 
@@ -1229,6 +1288,22 @@ mod tests {
         h.push(stroke(&mut doc, &mut rec, 1, 50).unwrap(), &doc);
         assert_eq!((h.usage().redo_bytes, h.redo_len()), (0, 0));
         assert_eq!(freed.load(Ordering::Relaxed), 1, "the cleared redo step reaches the hook");
+
+        // A redo that takes the undo stack over budget drops nothing either.
+        let mut doc = Document::new(256, 256, 72);
+        let id = doc.active();
+        let mut h = History::with_budget(200, 64 * TILE_BYTES);
+        let freed = counter(&mut h);
+        paint(&mut doc, id, (0..16).map(|i| TileCoord::new(i % 4, i / 4)), 7);
+        h.push(stroke(&mut doc, &mut rec, 0, 100).unwrap(), &doc);
+        let edit = apply_fill(&mut doc, id, &partial_region(256, 256), INK, 1.0, FillBlend::Normal).unwrap();
+        h.push(edit, &doc);
+        h.set_budget(4 * TILE_BYTES);
+        h.undo(&mut doc);
+        h.redo(&mut doc);
+        let u = h.usage();
+        assert!(u.undo_bytes >= 16 * TILE_BYTES, "the redone fill holds the 16 painted tiles");
+        assert_eq!((u.undo_steps, u.trimmed, freed.load(Ordering::Relaxed)), (2, 0, 0), "redo is never trimmed");
     }
 
     #[test]
@@ -1349,6 +1424,40 @@ mod tests {
         h.recost(&doc);
         check_stacks(&h, &doc, true, "re-cost");
         assert_eq!(h.undo.iter().map(|s| s.tiles).collect::<Vec<_>>(), [0, 1, 16, 16]);
+    }
+
+    #[test]
+    fn shared_tables_the_document_left_are_charged() {
+        let mut doc = Document::new(256, 256, 72);
+        let a = doc.active();
+        paint(&mut doc, a, row(16), 1);
+        let b = doc.add_raster_layer().unwrap();
+        let mut h = History::default();
+        let mut rec = PixelRecorder::default();
+        doc.set_active(a);
+        // Each move's snapshot shares a's map; the stroke copies it on write
+        // and its undo keeps the copy, so only the snapshot holds the old one.
+        for delta in [-1, 1, -1] {
+            assert!(structure(&mut doc, &mut h, |d| d.shift_layer(b, delta)));
+            h.push(stroke(&mut doc, &mut rec, 0, 9).unwrap(), &doc);
+            h.undo(&mut doc);
+        }
+        let old_table = |s: &Step| match &s.edit {
+            Edit::Structure(snap) => snap.layers[&a].raster().unwrap().map_bytes(),
+            _ => 0,
+        };
+        let tables = |h: &History| h.undo.iter().map(|s| s.tables).collect::<Vec<_>>();
+        let want: Vec<usize> = h.undo.iter().map(old_table).collect();
+        assert!(want.len() == 3 && want.iter().all(|&t| t > 0));
+        assert_eq!(tables(&h), want, "every old table of a, once");
+        let bytes = |h: &History| h.undo.iter().map(|s| s.bytes).sum::<usize>();
+        assert_eq!(h.usage().undo_bytes, bytes(&h));
+
+        // Undoing the last move puts its map back in the document.
+        h.undo(&mut doc);
+        h.push(stroke(&mut doc, &mut rec, 1, 9).unwrap(), &doc);
+        assert_eq!(tables(&h), [want[0], want[1], 0]);
+        check_stacks(&h, &doc, false, "after undo");
     }
 
     #[test]
@@ -1730,8 +1839,13 @@ mod tests {
                 let mut snaps = Vec::new();
                 let (mut pushes, mut trimmed) = (0, 0);
                 for i in 0..1500 {
+                    let steps = h.undo_len() + h.redo_len();
                     random_op(&mut rng, &mut doc, &mut h, &mut rec, &mut snaps);
                     let what = format!("seed {seed:#x} scan {scan} op {i}");
+                    if h.pushes == pushes {
+                        // Undo and redo never trim.
+                        assert_eq!((h.undo_len() + h.redo_len(), h.usage().trimmed), (steps, trimmed), "{what}");
+                    }
                     // After a trim the costs are exact, so the trim was
                     // decided on what only history holds.
                     let trim = h.usage().trimmed != trimmed;

@@ -171,16 +171,20 @@ impl Studio {
         }
     }
 
-    /// Commit the session as one history step; no-op without one.
+    /// Commit the session as one history step; no-op without one. Then
+    /// records an open frame border drag (`commit_frame_preview`): every
+    /// history entry point calls this first, so it starts on a step boundary.
     pub fn commit_transform(&mut self) {
-        let Some(st) = self.transform.take() else { return };
-        let moved = (st.session.target() == XfTarget::Selection).then(|| st.session.affine());
-        if let Some(edit) = st.session.commit(&mut self.doc, self.opts.transform.filter) {
-            self.record_edit(edit);
-            if let Some(xf) = moved {
-                self.ants_carry = Some(((self.doc_epoch, self.doc.selection_rev()), xf));
+        if let Some(st) = self.transform.take() {
+            let moved = (st.session.target() == XfTarget::Selection).then(|| st.session.affine());
+            if let Some(edit) = st.session.commit(&mut self.doc, self.opts.transform.filter) {
+                self.record_edit(edit);
+                if let Some(xf) = moved {
+                    self.ants_carry = Some(((self.doc_epoch, self.doc.selection_rev()), xf));
+                }
             }
         }
+        self.commit_frame_preview();
     }
 
     /// Drop the session, restoring the layer; no-op without one.
@@ -729,7 +733,7 @@ mod tests {
 
         // Every guard commits first: one step each, with the pixels moved.
         type Guard = fn(&mut Studio);
-        let guards: [(&str, Guard); 7] = [
+        let guards: [(&str, Guard); 6] = [
             ("select_tool", |s| s.select_tool(Tool::Hand)),
             ("edit_structure", |s| {
                 s.edit_structure(|d| d.add_raster_layer().is_some());
@@ -745,11 +749,6 @@ mod tests {
                 s.end_stroke();
             }),
             ("clear_active_layer", |s| s.clear_active_layer()),
-            ("set_layer_props", |s| {
-                let id = s.doc.active();
-                let p = arty_core::LayerProps { opacity: 0.5, ..s.doc.layer(id).unwrap().props.clone() };
-                s.set_layer_props(id, p, false);
-            }),
             ("set_page_setup", |s| {
                 let trim = RectF { x: 8.0, y: 8.0, w: 200.0, h: 200.0 };
                 s.set_page_setup(Some(arty_core::PageSetup { trim, bleed: 4.0, safe: 4.0, inner: RectF::default(), unit: 0 }));
@@ -772,12 +771,21 @@ mod tests {
             s.doc.set_active(id);
             assert_eq!((alpha(&s, 100, 50), alpha(&s, 31, 50)), (0, ONE_U16), "{name}: undo restores");
         }
-        // The layer panel sets the props every frame: unchanged ones keep the session.
+        // Layer settings keep the session (lower the opacity to line it up):
+        // their step holds no pixels, and undo still cancels the session first.
         let (mut s, mut shell, id) = studio();
         run(Command::Transform, &mut s, &mut shell);
+        shift(&mut s, 64.0);
         s.set_layer_props(id, s.doc.layer(id).unwrap().props.clone(), false);
-        assert!(s.transform.is_some() && !s.history.can_undo());
-        s.cancel_transform();
+        assert!(s.transform.is_some() && !s.history.can_undo(), "unchanged props are no step");
+        let p = arty_core::LayerProps { opacity: 0.5, ..s.doc.layer(id).unwrap().props.clone() };
+        s.set_layer_props(id, p, false);
+        assert!(s.transform.is_some() && s.history.undo_len() == 1);
+        s.undo();
+        assert!(s.transform.is_none() && s.history.undo_len() == 1, "undo cancels the session");
+        assert_eq!((alpha(&s, 100, 50), alpha(&s, 31, 50)), (0, ONE_U16));
+        s.undo();
+        assert_eq!(s.doc.layer(id).unwrap().props.opacity, 1.0);
 
         // Flip and Rotate without a session start one.
         let (mut s, mut shell, _) = studio();
