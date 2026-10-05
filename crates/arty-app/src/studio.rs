@@ -6,7 +6,7 @@ use arty_brush::pressure::PressureCurve;
 use arty_brush::{BrushGroup, BrushPreset, Reshape, StrokeEngine, StrokeRefused, default_presets};
 use arty_core::{
     CompositeScratch, Document, Edit, History, LayerId, LayerProps, PageSetup, Selection, TileCoord, Touch, fix15, selection,
-    tile::new_tile_box,
+    Affine64, tile::new_tile_box,
 };
 use std::collections::HashMap;
 
@@ -382,6 +382,10 @@ pub struct Studio {
     pub transform: Option<TransformState>,
     /// The panel selected in Frame Edit: (frame folder, panel index).
     pub frame_sel: Option<(LayerId, usize)>,
+    /// The last selection-target commit: the (document epoch, selection
+    /// revision) it made and its affine. Until that selection's outline is
+    /// extracted, the ants draw the old one moved by it.
+    pub ants_carry: Option<((u64, u64), Affine64)>,
 }
 
 impl Studio {
@@ -411,6 +415,7 @@ impl Studio {
             opts: ToolOptions::default(),
             transform: None,
             frame_sel: None,
+            ants_carry: None,
         };
         s.select_tool(Tool::Brush(BrushGroup::Pen));
         s

@@ -190,6 +190,17 @@ fn fr03_cutting() {
     let (cut, _) = bordered.cut([-5.0, 7.0], [205.0, 7.0], 2.0, 2.0).unwrap();
     assert_eq!(cut.panels.len(), 1, "a 6 px strip under a 4 px border is dropped");
     assert_eq!(cut.panels[0].bounds().y, 8.0);
+
+    // A gutter wider than the panel would drop both pieces: the panel is
+    // not divided, and with nothing divided there is no cut.
+    let caption = shape(vec![rect(0.0, 0.0, 100.0, 60.0)], 2.0, BLACK);
+    assert!(caption.cut([-10.0, 30.0], [110.0, 30.0], 70.0, 8.0).is_none());
+    // Across it and a tall panel: only the tall one is divided.
+    let both = shape(vec![rect(0.0, 0.0, 100.0, 60.0), rect(150.0, 0.0, 150.0, 300.0)], 2.0, BLACK);
+    let (cut, _) = both.cut([-10.0, 30.0], [310.0, 30.0], 70.0, 8.0).unwrap();
+    assert_eq!(cut.panels[0], both.panels[0], "the caption is kept whole");
+    assert_eq!(cut.panels.len(), 2);
+    assert!((cut.panels[1].bounds().y - 65.0).abs() < 1e-3, "{:?}", cut.panels[1].bounds());
 }
 
 fn dir(p: &Panel, i: usize) -> [f32; 2] {

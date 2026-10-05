@@ -391,8 +391,9 @@ impl FrameShape {
     /// Cut every panel the segment `a`→`b` crosses, with gutters `gap_h`
     /// (between pieces stacked vertically) and `gap_v` (side by side).
     /// Returns the new shape and the indices of the B pieces; `None` when
-    /// the segment misses every panel. Pieces under [`MIN_PIECE_AREA`] or
-    /// narrower than twice the border are dropped.
+    /// the segment divides no panel. Pieces under [`MIN_PIECE_AREA`] or
+    /// narrower than twice the border are dropped; a panel that would
+    /// lose both pieces (a gutter wider than it) is left whole.
     pub fn cut(&self, a: Pt, b: Pt, gap_h: f32, gap_v: f32) -> Option<(FrameShape, Vec<usize>)> {
         let d = sub(b, a);
         // A mostly horizontal line stacks the pieces vertically.
@@ -407,10 +408,17 @@ impl FrameShape {
                 panels.push(p.clone());
                 continue;
             }
-            crossed = true;
             let (pa, pb) = p.split(a, b, gap);
-            panels.extend(keep(pa));
-            if let Some(pb) = keep(pb) {
+            let (pa, pb) = (keep(pa), keep(pb));
+            if pa.is_none() && pb.is_none() {
+                // The gutter is wider than the panel: dividing it would
+                // delete it (and hide its art), so it is not divided.
+                panels.push(p.clone());
+                continue;
+            }
+            crossed = true;
+            panels.extend(pa);
+            if let Some(pb) = pb {
                 bs.push(panels.len());
                 panels.push(pb);
             }
@@ -984,14 +992,26 @@ pub fn over_color(px: &mut TilePixels, color: [u16; 4], line: Cov<'_>) {
 
 
 /// Add a frame folder holding `shape` and an empty raster child above the
-/// active layer; the child becomes active. Not recorded; callers wrap it
-/// in a structure edit. `None` for a shape with no panels or when layer
-/// ids are used up.
+/// active layer; the child becomes active. Inside a frame folder, the new
+/// one goes directly above the outermost enclosing frame folder instead:
+/// nested in it, the enclosing panels would mask it. Not recorded; callers
+/// wrap it in a structure edit. `None` for a shape with no panels or when
+/// layer ids are used up.
 pub fn add_frame_folder(doc: &mut Document, shape: FrameShape) -> Option<LayerId> {
     if shape.panels.is_empty() {
         return None;
     }
-    let folder = doc.add_folder()?;
+    let active = doc.active();
+    let mut at = active;
+    while let Some(f) = doc.frame_folder_of(at) {
+        doc.set_active(f);
+        let Some(Some(parent)) = doc.location(f).map(|l| l.0) else { break };
+        at = parent;
+    }
+    let Some(folder) = doc.add_folder() else {
+        doc.set_active(active);
+        return None;
+    };
     if let Some(mut props) = doc.layer(folder).map(|l| l.props.clone()) {
         props.name = format!("Frame {}", folder.0);
         doc.set_props(folder, props);

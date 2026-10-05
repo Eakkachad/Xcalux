@@ -35,6 +35,12 @@ impl FillTool {
         studio.commit_transform();
         let Some(id) = fill_target(studio) else { return };
         preselect_blend(studio);
+        // Behind only adds alpha, which a locked alpha forbids (the core
+        // refuses it too): say so instead of filling nothing.
+        if studio.opts.fill.blend == FillBlend::Behind && studio.doc.layer(id).is_some_and(|l| l.props.lock_alpha) {
+            studio.notice = Some("Layer transparency is locked".into());
+            return;
+        }
         let o = &studio.opts.fill;
         let (p, opacity, blend) = (o.params(studio.doc.dpi()), o.opacity.clamp(0.0, 1.0), o.blend);
         let color = main_color(studio);
@@ -143,7 +149,8 @@ fn main_color(studio: &Studio) -> [u16; 4] {
     [r, g, b, fix15::ONE_U16]
 }
 
-/// The active layer when it can take a fill; otherwise a notice.
+/// The active layer when it can take a fill (not a folder, locked or
+/// hidden); otherwise a notice.
 fn fill_target(studio: &mut Studio) -> Option<LayerId> {
     let id = studio.doc.active();
     let layer = studio.doc.layer(id)?;
@@ -151,6 +158,9 @@ fn fill_target(studio: &mut Studio) -> Option<LayerId> {
         "Select a raster layer to fill"
     } else if layer.props.locked {
         "Layer is locked"
+    } else if !layer.props.visible {
+        // As the brushes refuse it: the fill would not be seen.
+        "Layer is hidden"
     } else {
         return Some(id);
     };
@@ -335,6 +345,51 @@ mod tests {
         click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
         assert_eq!(studio.notice.take().as_deref(), Some("Select a raster layer to fill"));
         assert_eq!(studio.history.undo_len(), steps);
+    }
+
+    /// A hidden layer is refused like the brushes refuse it, for the Fill
+    /// tool and Fill Selection alike.
+    #[test]
+    fn fill_refuses_a_hidden_layer() {
+        let mut studio = Studio::new(Document::new(200, 150, 350));
+        let mut shell = Shell::new(ThemeKind::Dark);
+        let mut tool = FillTool::default();
+        let id = studio.doc.active();
+        let mut p = studio.doc.layer(id).unwrap().props.clone();
+        p.visible = false;
+        studio.doc.set_props(id, p);
+        let mut sel = Selection::new();
+        sel.insert_tile(TileCoord::new(0, 0), full_mask().clone());
+        studio.set_selection(sel);
+        let (steps, rev) = (studio.history.undo_len(), studio.doc.revision());
+        click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
+        assert_eq!(studio.notice.take().as_deref(), Some("Layer is hidden"));
+        commands::execute(Command::FillSelection, &mut studio, &mut shell);
+        assert_eq!(studio.notice.take().as_deref(), Some("Layer is hidden"));
+        assert_eq!((studio.history.undo_len(), studio.doc.revision()), (steps, rev), "no step, no change");
+        assert!(studio.doc.active_layer().raster().unwrap().is_empty());
+    }
+
+    /// Behind (preselected on a reference layer) on a layer with locked
+    /// transparency fills nothing: the click says why.
+    #[test]
+    fn behind_on_locked_transparency_leaves_a_notice() {
+        let mut studio = Studio::new(Document::new(200, 150, 350));
+        let mut shell = Shell::new(ThemeKind::Dark);
+        let mut tool = FillTool::default();
+        let id = studio.doc.active();
+        let mut p = studio.doc.layer(id).unwrap().props.clone();
+        (p.reference, p.lock_alpha) = (true, true);
+        studio.doc.set_props(id, p);
+        let (steps, rev) = (studio.history.undo_len(), studio.doc.revision());
+        click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
+        assert_eq!(studio.opts.fill.blend, FillBlend::Behind, "preselected for the reference layer");
+        assert_eq!(studio.notice.take().as_deref(), Some("Layer transparency is locked"));
+        assert_eq!((studio.history.undo_len(), studio.doc.revision()), (steps, rev));
+        // Normal recolours what is there, as alpha lock allows.
+        studio.opts.fill.blend = FillBlend::Normal;
+        click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
+        assert_eq!(studio.notice, None);
     }
 
     #[test]

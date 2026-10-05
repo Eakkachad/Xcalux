@@ -80,22 +80,90 @@ pub fn paint_guides(painter: &egui::Painter, studio: &Studio, opts: &PageViewOpt
         let c = corners(r).map(pos);
         vec![c[0], c[1], c[2], c[3], c[0]]
     };
+    // Only what crosses the canvas is dashed: at high zoom the whole
+    // perimeter would be hundreds of thousands of dashes.
+    let clip = painter.clip_rect().expand(2.0);
+    let mut shapes = Vec::new();
     if p.bleed > 0.0 {
-        painter.extend(Shape::dashed_line(
-            &closed(p.bleed_rect(w as u32, h as u32)),
-            Stroke::new(1.0, BLEED),
-            6.0,
-            4.0,
-        ));
+        let path = closed(p.bleed_rect(w as u32, h as u32));
+        dashes(&path, clip, Stroke::new(1.0, BLEED), 6.0, 4.0, &mut shapes);
     }
     let safe = p.safe_rect();
     if p.safe > 0.0 && safe.w > 0.0 && safe.h > 0.0 {
-        painter.extend(Shape::dashed_line(&closed(safe), Stroke::new(1.0, SAFE), 3.0, 3.0));
+        dashes(&closed(safe), clip, Stroke::new(1.0, SAFE), 3.0, 3.0, &mut shapes);
     }
     if p.inner.w > 0.0 && p.inner.h > 0.0 {
-        painter.extend(Shape::dotted_line(&closed(p.inner), INNER, 4.0, 0.9));
+        dots(&closed(p.inner), clip, INNER, 4.0, 0.9, &mut shapes);
     }
+    painter.extend(shapes);
     painter.add(Shape::line(closed(p.trim), Stroke::new(1.0, TRIM)));
+}
+
+/// The part `[t0, t1]` of segment `a`→`b` inside `r` (Liang–Barsky).
+fn clip_segment(a: Pos2, b: Pos2, r: egui::Rect) -> Option<(f32, f32)> {
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for (p, q) in [(-d.x, a.x - r.min.x), (d.x, r.max.x - a.x), (-d.y, a.y - r.min.y), (d.y, r.max.y - a.y)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+        }
+    }
+    (t0 < t1).then_some((t0, t1))
+}
+
+/// For the part of every edge of `path` inside `clip`: `f(at, from, to)`,
+/// where `from..to` is that part as arc length along the whole path and
+/// `at(s)` the point at arc length `s` on the edge.
+fn visible_spans(path: &[Pos2], clip: egui::Rect, mut f: impl FnMut(&dyn Fn(f32) -> Pos2, f32, f32)) {
+    let mut s0 = 0.0;
+    for e in path.windows(2) {
+        let (a, b) = (e[0], e[1]);
+        let len = (b - a).length();
+        if len > 0.0
+            && let Some((t0, t1)) = clip_segment(a, b, clip)
+        {
+            let at = |s: f32| a + (b - a) * ((s - s0) / len);
+            f(&at, s0 + t0 * len, s0 + t1 * len);
+        }
+        s0 += len;
+    }
+}
+
+/// The dashes of [`Shape::dashed_line`] (`dash` on, `gap` off from the
+/// start of `path`) that cross `clip`.
+fn dashes(path: &[Pos2], clip: egui::Rect, stroke: Stroke, dash: f32, gap: f32, out: &mut Vec<Shape>) {
+    let period = dash + gap;
+    visible_spans(path, clip, |at, from, to| {
+        let mut d0 = (from / period).floor() * period;
+        while d0 < to {
+            let (x0, x1) = (d0.max(from), (d0 + dash).min(to));
+            if x1 > x0 {
+                out.push(Shape::line_segment([at(x0), at(x1)], stroke));
+            }
+            d0 += period;
+        }
+    });
+}
+
+/// The dots of [`Shape::dotted_line`] (every `spacing` from the start of
+/// `path`) that fall inside `clip`.
+fn dots(path: &[Pos2], clip: egui::Rect, color: Color32, spacing: f32, radius: f32, out: &mut Vec<Shape>) {
+    visible_spans(path, clip, |at, from, to| {
+        let mut s = (from / spacing).ceil() * spacing;
+        while s < to {
+            out.push(Shape::circle_filled(at(s), radius, color));
+            s += spacing;
+        }
+    });
 }
 
 // ----- Page Setup dialog --------------------------------------------------------
@@ -466,5 +534,94 @@ mod tests {
         let back = PageForm::from_doc(&studio);
         assert!(!back.none && back.centre);
         assert_eq!(back.setup(2000, 3000), *studio.doc.page_setup().unwrap());
+    }
+
+    /// The shapes `paint_guides` adds on a 1600 × 1000 point canvas.
+    fn guide_shapes(studio: &Studio) -> Vec<Shape> {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+            paint_guides(&ui.painter().with_clip_rect(screen), studio, &studio.opts.page, [800.0, 500.0], 1.0);
+        });
+        out.textures_delta.clear();
+        out.shapes.into_iter().map(|s| s.shape).collect()
+    }
+
+    /// Guides dash only what crosses the canvas: the shape count stays
+    /// bounded by the canvas size at any zoom.
+    #[test]
+    fn guides_are_culled_to_the_canvas() {
+        let (w, h) = (6071, 8598);
+        let mut studio = Studio::new(Document::new(w, h, 600));
+        let mut form = PageForm::from_doc(&studio);
+        form.apply_preset(0, 600);
+        let mut setup = form.setup(w, h);
+        setup.safe = 120.0;
+        setup.inner = RectF { x: setup.trim.x + 400.0, y: setup.trim.y + 400.0, w: setup.trim.w - 800.0, h: setup.trim.h - 800.0 };
+        studio.set_page_setup(Some(setup));
+        let setup = *studio.doc.page_setup().unwrap();
+        assert!(setup.bleed > 0.0 && setup.safe > 0.0 && setup.inner.w > 0.0);
+
+        // The whole page in view: as many dashes as the uncut pattern.
+        studio.view.fit(w as f32, h as f32, 1600.0, 1000.0);
+        let m = studio.view.doc_to_screen([800.0, 500.0]);
+        let closed = |r: RectF| {
+            let c = corners(r).map(|q| Pos2::from(m.apply(q)));
+            vec![c[0], c[1], c[2], c[3], c[0]]
+        };
+        let uncut = Shape::dashed_line(&closed(setup.bleed_rect(w, h)), Stroke::new(1.0, BLEED), 6.0, 4.0).len()
+            + Shape::dashed_line(&closed(setup.safe_rect()), Stroke::new(1.0, SAFE), 3.0, 3.0).len()
+            + Shape::dotted_line(&closed(setup.inner), INNER, 4.0, 0.9).len()
+            + 1;
+        assert!(guide_shapes(&studio).len().abs_diff(uncut) <= 8, "{} vs {uncut}", guide_shapes(&studio).len());
+
+        // At 64× on the bleed corner, only the dashes on the canvas are made.
+        let bleed = setup.bleed_rect(w, h);
+        studio.view.zoom = 64.0;
+        studio.view.center = [bleed.x + 5.0, bleed.y + 5.0];
+        let n = guide_shapes(&studio).len();
+        assert!(n > 10 && n < 2_000, "{n} shapes");
+    }
+
+    /// B010 addendum: guide shapes and CPU per frame (build + tessellation)
+    /// on a B4 600 dpi page with bleed, safe and inner frame.
+    ///
+    /// cargo test -p arty-app --release bench_guides -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_guides() {
+        use std::time::Instant;
+        let (w, h) = (6071, 8598);
+        let mut studio = Studio::new(Document::new(w, h, 600));
+        let mut form = PageForm::from_doc(&studio);
+        form.apply_preset(0, 600);
+        let mut setup = form.setup(w, h);
+        setup.safe = 120.0;
+        setup.inner = RectF { x: setup.trim.x + 400.0, y: setup.trim.y + 400.0, w: setup.trim.w - 800.0, h: setup.trim.h - 800.0 };
+        studio.set_page_setup(Some(setup));
+        let bleed = studio.doc.page_setup().unwrap().bleed_rect(w, h);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 1000.0));
+        println!("| view | shapes | build + tessellate (ms/frame) |");
+        println!("|---|---:|---:|");
+        for (zoom, label) in [(0.0, "whole page"), (8.0, "8×, bleed corner"), (64.0, "64×, bleed corner")] {
+            if zoom == 0.0 {
+                studio.view.fit(w as f32, h as f32, 1600.0, 1000.0);
+            } else {
+                studio.view.zoom = zoom;
+                studio.view.center = [bleed.x + 5.0, bleed.y + 5.0];
+            }
+            let frames = 20;
+            let (mut shapes, t) = (0, Instant::now());
+            for _ in 0..frames {
+                let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+                    paint_guides(&ui.painter().with_clip_rect(screen), &studio, &studio.opts.page, [800.0, 500.0], 1.0);
+                });
+                out.textures_delta.clear();
+                shapes = out.shapes.len();
+                let _ = ctx.tessellate(out.shapes, 1.0);
+            }
+            println!("| {label} | {shapes} | {:.3} |", t.elapsed().as_secs_f64() * 1e3 / frames as f64);
+        }
     }
 }

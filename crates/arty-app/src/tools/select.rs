@@ -172,6 +172,8 @@ pub fn shape_polygon(
 fn apply_shape(studio: &mut Studio, shape: &Selection, op: SelectOp) {
     let mut sel = studio.doc.selection().clone();
     sel.combine(shape, op);
+    // Subtracting from a full edge tile leaves 255 past the page.
+    sel.clip_to_page(studio.doc.width(), studio.doc.height());
     studio.set_selection(sel);
 }
 
@@ -236,7 +238,7 @@ impl SelectTool {
 
     /// Vertices of the unclosed polygon.
     #[cfg(test)]
-    fn polygon_len(&self) -> Option<usize> {
+    pub(crate) fn polygon_len(&self) -> Option<usize> {
         match &self.gesture {
             Some(Gesture::Polygon { pts, .. }) => Some(pts.len()),
             _ => None,
@@ -494,6 +496,12 @@ impl CanvasTool for SelectTool {
 /// SelectAll, Deselect, InvertSelection, SelectionDialog and
 /// Grow/Shrink/FeatherSelection.
 pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
+    if studio.engine.is_stroking() {
+        return;
+    }
+    // A selection-target session moves the selection on commit: derive the
+    // new one from where it went, not where it was.
+    studio.commit_transform();
     let (w, h) = (studio.doc.width(), studio.doc.height());
     let shape = studio.opts.select.morph;
     let modify = |studio: &mut Studio, px: u16, f: &dyn Fn(&Selection) -> Selection| {
@@ -636,23 +644,35 @@ fn lod_for(zoom: f32) -> usize {
     (0..3).rev().find(|&k| LOD_TOL[k] * zoom <= 0.5).unwrap_or(0)
 }
 
-/// The selection outline, drawn after the page guides.
-pub fn paint_ants(st: &mut SelectTool, painter: &egui::Painter, studio: &Studio, origin: [f32; 2], ppp: f32) {
-    st.sync_ants(studio, false);
-    let a = &st.ants;
-    let ctx = painter.ctx();
-    if a.pending.is_some() {
-        // Poll for the extraction.
-        ctx.request_repaint_after(Duration::from_millis(16));
-    }
-    let (Some(c), Some(geom)) = (&a.contours, &a.geom) else { return };
-    let mut m = studio.view.doc_to_screen(origin);
+/// Document → screen for the ants. During a selection-target session they
+/// follow the floating pixels; after its commit, the outline on hand (of
+/// the selection before the move) keeps that affine until the moved one's
+/// is extracted, so it does not jump back for those frames.
+fn ants_matrix(a: &Ants, studio: &Studio, origin: [f32; 2]) -> Affine2 {
+    let view = studio.view.doc_to_screen(origin);
     if let Some(t) = &studio.transform
         && t.session.target() == XfTarget::Selection
     {
-        // The ants follow the floating pixels.
-        m = compose(m, t.session.affine());
+        return compose(view, t.session.affine());
     }
+    let now = (studio.doc_epoch, studio.doc.selection_rev());
+    match studio.ants_carry {
+        Some((k, xf)) if k == now && a.key != Some(now) => compose(view, xf),
+        _ => view,
+    }
+}
+
+/// The selection outline, drawn after the page guides.
+pub fn paint_ants(st: &mut SelectTool, painter: &egui::Painter, studio: &Studio, origin: [f32; 2], ppp: f32) {
+    st.sync_ants(studio, false);
+    let ctx = painter.ctx();
+    if st.ants.pending.is_some() {
+        // Poll for the extraction.
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
+    let m = ants_matrix(&st.ants, studio, origin);
+    let a = &st.ants;
+    let (Some(c), Some(geom)) = (&a.contours, &a.geom) else { return };
     let zoom = (m.a * m.d - m.b * m.c).abs().sqrt();
     let phase = (ctx.input(|i| i.time) / ANTS_TICK).floor() as f32 * 2.0;
     let lod = lod_for(zoom);
@@ -1076,6 +1096,85 @@ mod tests {
         st.sync_ants(&studio, true);
         assert_eq!(st.ants.builds, 3);
         assert_eq!(st.ants.geom.as_ref().unwrap().segments(0), 4);
+    }
+
+    /// A selection-target session moved by 64 px to the right: pixels in
+    /// tile (1, 1), the selection on it.
+    fn moved_session(studio: &mut Studio) {
+        let id = studio.doc.active();
+        let (g, _) = studio.doc.paint_target(id).unwrap();
+        g.get_mut_or_create(TileCoord::new(1, 1))[5][5] = [0, 0, 0, fix15::ONE_U16];
+        studio.set_selection(full_tiles_at(&[(1, 1)]));
+        assert!(studio.begin_transform(false));
+        let t = studio.transform.as_mut().unwrap();
+        assert_eq!(t.session.target(), XfTarget::Selection);
+        let p = t.session.params();
+        t.request(arty_core::transform::XfParams { t: [64.0, 0.0], ..p });
+    }
+
+    fn full_tiles_at(cs: &[(i32, i32)]) -> Selection {
+        let mut s = Selection::new();
+        for &(x, y) in cs {
+            s.insert_tile(TileCoord::new(x, y), full_mask().clone());
+        }
+        s
+    }
+
+    /// Invert, Grow, Shrink and Feather during a selection-target session
+    /// work on where the selection went.
+    #[test]
+    fn selection_commands_during_a_session_use_the_moved_selection() {
+        for cmd in [Command::InvertSelection, Command::GrowSelection { px: 2 }, Command::ShrinkSelection { px: 2 }] {
+            let (mut studio, mut shell, _) = setup(Tool::Select);
+            moved_session(&mut studio);
+            let steps = studio.history.undo_len();
+            execute(cmd, &mut studio, &mut shell);
+            assert!(studio.transform.is_none(), "{cmd:?} committed the session");
+            assert_eq!(studio.history.undo_len(), steps + 2, "{cmd:?}: the commit, then the command");
+            let sel = studio.doc.selection();
+            let (old, new) = (sel.value(64 + 32, 64 + 32), sel.value(128 + 32, 64 + 32));
+            if cmd == Command::InvertSelection {
+                assert_eq!((old, new), (255, 0), "the inverse of the moved selection");
+            } else {
+                assert_eq!((old, new), (0, 255), "{cmd:?} of the moved selection");
+            }
+        }
+    }
+
+    /// Subtracting or inverting the whole page on a page whose sides are not
+    /// multiples of 64 deselects (no tiles left past the page).
+    #[test]
+    fn subtracting_the_whole_page_deselects() {
+        let mut studio = Studio::new(Document::new(300, 130, 72));
+        studio.set_selection(Selection::all(300, 130));
+        let beyond: [Pt; 4] = [[-10.0, -10.0], [400.0, -10.0], [400.0, 200.0], [-10.0, 200.0]];
+        let shape = rasterize_polygon(&beyond, 300, 130, true);
+        apply_shape(&mut studio, &shape, SelectOp::Subtract);
+        assert!(!studio.doc.has_selection(), "deselected");
+        studio.set_selection(shape);
+        execute(Command::InvertSelection, &mut studio, &mut Shell::new(ThemeKind::Dark));
+        assert!(!studio.doc.has_selection());
+    }
+
+    /// After a selection-target commit the ants keep the session's affine
+    /// until the moved selection's outline is extracted.
+    #[test]
+    fn ants_stay_moved_until_the_new_outline_lands() {
+        let (mut studio, _, mut st) = setup(Tool::Select);
+        moved_session(&mut studio);
+        st.sync_ants(&studio, true);
+        let view = studio.view.doc_to_screen(ORIGIN);
+        let moved = compose(view, studio.transform.as_ref().unwrap().session.affine());
+        assert_eq!(ants_matrix(&st.ants, &studio, ORIGIN), moved, "during the session");
+        studio.commit_transform();
+        // The extraction for the committed selection has not landed yet.
+        assert_ne!(st.ants.key, Some((studio.doc_epoch, studio.doc.selection_rev())));
+        assert_eq!(ants_matrix(&st.ants, &studio, ORIGIN), moved, "still where the content went");
+        st.sync_ants(&studio, true);
+        assert_eq!(ants_matrix(&st.ants, &studio, ORIGIN), view, "the moved outline, drawn as is");
+        // Undo is a new selection: no carry.
+        studio.undo();
+        assert_eq!(ants_matrix(&st.ants, &studio, ORIGIN), view);
     }
 
     #[test]

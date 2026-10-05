@@ -180,8 +180,56 @@ impl Selection {
         for (c, m) in par_map(&partial, |(c, m)| (*c, map_tile(m, |v| 255 - v))) {
             out.set(c, m);
         }
+        // `255 − 0` past the page: the inverse of a shape covering an edge
+        // tile's page pixels must not keep it.
+        out.clip_to_page(w, h);
         out.bounds = out.tight_bounds();
         out
+    }
+
+    /// Canonical form relative to a `w`×`h` page: in the edge tiles, decide
+    /// on the page pixels only. A tile with none selected is removed, one
+    /// with all of them fully selected becomes [`full_mask`] (as
+    /// [`Selection::all`] stores it), and any other has its pixels past the
+    /// page cleared. Visits only the edge tiles.
+    ///
+    /// Inverting and subtracting turn the 0 the rasterizer leaves past the
+    /// page into 255; without this, a selection could hold such tiles and
+    /// no page pixel at all (`is_empty()` false, nothing selected).
+    pub fn clip_to_page(&mut self, w: u32, h: u32) {
+        let (tw, th) = page_tiles(w, h);
+        if tw == 0 || th == 0 {
+            return;
+        }
+        let t = TILE_SIZE as i32;
+        let (lw_last, lh_last) = (w as i32 - (tw - 1) * t, h as i32 - (th - 1) * t);
+        let mut edge = Vec::new();
+        if lw_last < t {
+            edge.extend((0..th).map(|ty| TileCoord::new(tw - 1, ty)));
+        }
+        if lh_last < t {
+            edge.extend((0..tw - i32::from(lw_last < t)).map(|tx| TileCoord::new(tx, th - 1)));
+        }
+        for c in edge {
+            let Some(m) = self.tiles.get(&c).filter(|m| !is_full(m)).cloned() else { continue };
+            let lw = if c.x == tw - 1 { lw_last as usize } else { TILE_SIZE };
+            let lh = if c.y == th - 1 { lh_last as usize } else { TILE_SIZE };
+            let page = || m.iter().take(lh).flat_map(|row| &row[..lw]);
+            let off_page =
+                m.iter().enumerate().any(|(y, row)| row.iter().enumerate().any(|(x, &v)| v != 0 && (x >= lw || y >= lh)));
+            if page().all(|&v| v == 0) {
+                self.remove_tile(c);
+            } else if page().all(|&v| v == 255) {
+                self.put(c, full_mask().clone());
+            } else if off_page {
+                let mut out = *m;
+                for (y, row) in out.iter_mut().enumerate() {
+                    let from = if y < lh { lw } else { 0 };
+                    row[from..].fill(0);
+                }
+                self.put(c, Arc::new(out));
+            }
+        }
     }
 
     /// Combine `shape` into this selection, per pixel: Add is `max`,

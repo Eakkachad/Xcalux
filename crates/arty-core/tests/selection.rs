@@ -219,7 +219,11 @@ fn sc04_invert_all_and_subtract_everything() {
         v.sort_by_key(|(c, _)| (c.y, c.x));
         v
     };
-    assert!(tiles(&back) == tiles(&a), "invert ∘ invert = id");
+    // On the page: past it, edge tiles hold 0 after an invert.
+    let mut on_page = a.clone();
+    on_page.clip_to_page(w, h);
+    assert!(tiles(&back) == tiles(&on_page), "invert ∘ invert = id");
+    assert!(dense(&on_page, w, h) == dense(&a, w, h));
     let inv = dense(&a.inverted(w, h), w, h);
     assert!(dense(&a, w, h).iter().zip(&inv).all(|(&m, &i)| i == 255 - m));
 
@@ -549,4 +553,61 @@ fn sc07_erase_selected() {
     assert!(erase_selected(&mut doc, id).is_none());
     doc.swap_selection(Selection::new());
     assert!(erase_selected(&mut doc, id).is_none(), "no selection");
+}
+
+/// Edge tiles decide on their page pixels: subtracting or inverting
+/// everything leaves no selection, not tiles selected only past the page.
+#[test]
+fn sc08_edge_tiles_are_canonical_on_the_page() {
+    let (w, h) = (300, 130);
+    let beyond: [Pt; 4] = [[-10.0, -10.0], [400.0, -10.0], [400.0, 200.0], [-10.0, 200.0]];
+    let page = raster::rasterize_polygon(&beyond, w, h, true);
+    assert!(page.inverted(w, h).is_empty(), "inverting a page-covering shape selects nothing");
+
+    let mut s = Selection::all(w, h);
+    s.combine(&page, SelectOp::Subtract);
+    s.clip_to_page(w, h);
+    assert!(s.is_empty(), "subtracting the page deselects");
+
+    // A page-covering shape becomes `Selection::all` after the clip, so
+    // later ops take the full-tile paths.
+    let mut p = page.clone();
+    p.clip_to_page(w, h);
+    assert!(p.tiles().all(|(_, m)| Arc::ptr_eq(m, full_mask())));
+    assert_eq!(p.tile_count(), 5 * 3);
+
+    // Two subtractions that together cover an edge tile's page pixels.
+    let mut s = Selection::all(w, h);
+    for x in [[250.0, 280.0], [280.0, 400.0]] {
+        let r: [Pt; 4] = [[x[0], -10.0], [x[1], -10.0], [x[1], 200.0], [x[0], 200.0]];
+        s.combine(&raster::rasterize_polygon(&r, w, h, false), SelectOp::Subtract);
+        s.clip_to_page(w, h);
+    }
+    for ty in 0..3 {
+        assert!(matches!(s.get(TileCoord::new(4, ty)), MaskView::Empty), "column 4, row {ty}");
+    }
+    assert!(matches!(s.get(TileCoord::new(3, 0)), MaskView::Partial(_)));
+
+    // A partial edge tile keeps its page pixels and loses the rest.
+    let mut m: MaskPixels = [[255; T]; T];
+    m[0][0] = 7;
+    let mut s = Selection::new();
+    s.insert_tile(TileCoord::new(4, 1), Arc::new(m));
+    s.clip_to_page(w, h);
+    let MaskView::Partial(m) = s.get(TileCoord::new(4, 1)) else { panic!("kept as partial") };
+    assert_eq!((m[0][0], m[1][300 - 256 - 1], m[1][300 - 256]), (7, 255, 0));
+    let mut m: MaskPixels = [[255; T]; T];
+    m[0][0] = 7;
+    let mut s = Selection::new();
+    s.insert_tile(TileCoord::new(2, 2), Arc::new(m));
+    s.clip_to_page(w, h);
+    let MaskView::Partial(m) = s.get(TileCoord::new(2, 2)) else { panic!("kept as partial") };
+    assert_eq!((m[0][0], m[1][63], m[130 - 128][0]), (7, 255, 0));
+    // Interior tiles are left alone.
+    let mut m: MaskPixels = [[0; T]; T];
+    m[63][63] = 9;
+    let mut s = Selection::new();
+    s.insert_tile(TileCoord::new(1, 0), Arc::new(m));
+    s.clip_to_page(w, h);
+    assert_eq!(s.value(127, 63), 9);
 }

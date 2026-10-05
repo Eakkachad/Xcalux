@@ -185,15 +185,17 @@ pub fn fill_region(doc: &Document, seed: (i32, i32), p: &FillParams, s: &mut Fil
     if r > 0 && p.contiguous {
         close_gaps(&g, seed, r, s);
     }
+    // Strengths To darkest already built, for the antialiasing to reuse.
+    let mut strengths = Vec::new();
     if scale > 0 {
         match p.scale_mode {
             ScaleMode::Plain => scale::grow_plain(&g, &s.pass, &mut s.region, scale as u32, &mut s.flags),
-            ScaleMode::ToDarkest => scale::grow_darkest(&g, &src, &s.pass, &mut s.region, scale as u32),
+            ScaleMode::ToDarkest => strengths = scale::grow_darkest(&g, &src, &s.pass, &mut s.region, scale as u32),
         }
     } else if scale < 0 {
         scale::shrink(&g, &mut s.region, &mut s.core, scale.unsigned_abs(), &mut s.flags);
     }
-    let out = coverage(&g, &src, &s.region, &s.pass, p.antialias, sel, &mut s.flags);
+    let out = coverage(&g, &src, &s.region, &s.pass, p.antialias, sel, &strengths, &mut s.flags);
     (!out.is_empty()).then_some(out)
 }
 
@@ -455,21 +457,7 @@ fn close_gaps(g: &Geom, seed: (i32, i32), r: u32, s: &mut FillScratch) {
     // The clicked core: the seed's component, or the nearest core pixel
     // within 2R when the seed sits in the ring, or the seed alone.
     let core_at = |x: i32, y: i32| g.pixel(x, y).is_some_and(|(i, ry, rx)| s.core.get(i)[ry] >> rx & 1 == 1);
-    let start = if core_at(seed.0, seed.1) {
-        Some(seed)
-    } else {
-        let reach = 2 * r as i32;
-        let mut best: Option<(i32, (i32, i32))> = None;
-        for dy in -reach..=reach {
-            for dx in -reach..=reach {
-                let d = dx * dx + dy * dy;
-                if d <= reach * reach && best.is_none_or(|(b, _)| d < b) && core_at(seed.0 + dx, seed.1 + dy) {
-                    best = Some((d, (seed.0 + dx, seed.1 + dy)));
-                }
-            }
-        }
-        best.map(|(_, p)| p)
-    };
+    let start = if core_at(seed.0, seed.1) { Some(seed) } else { nearest_core(g, seed, 2 * r, &s.region, &core_at) };
     match start {
         Some(p) => {
             let mut fl = Flood {
@@ -512,10 +500,50 @@ fn close_gaps(g: &Geom, seed: (i32, i32), r: u32, s: &mut FillScratch) {
     std::mem::swap(&mut s.region, &mut s.grown);
 }
 
+/// The core pixel nearest to `seed` along `region` (U): a 4-connected walk
+/// inside it of at most `reach` steps, so it never crosses a wall (the
+/// straight-line nearest core is often the big region on the far side of
+/// a thin line). Ties go to the first found, in a fixed order.
+fn nearest_core(
+    g: &Geom,
+    seed: (i32, i32),
+    reach: u32,
+    region: &BitGrid,
+    core_at: &dyn Fn(i32, i32) -> bool,
+) -> Option<(i32, i32)> {
+    let in_u = |x: i32, y: i32| g.pixel(x, y).is_some_and(|(i, ry, rx)| region.get(i)[ry] >> rx & 1 == 1);
+    let side = 2 * reach as i32 + 1;
+    let mut seen = vec![false; (side * side) as usize];
+    let slot = |x: i32, y: i32| ((y - seed.1 + reach as i32) * side + (x - seed.0 + reach as i32)) as usize;
+    let mut queue = VecDeque::from([(seed, 0u32)]);
+    seen[slot(seed.0, seed.1)] = true;
+    while let Some(((x, y), d)) = queue.pop_front() {
+        if core_at(x, y) {
+            return Some((x, y));
+        }
+        if d == reach {
+            continue;
+        }
+        for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
+            if (nx - seed.0).unsigned_abs() + (ny - seed.1).unsigned_abs() > reach {
+                continue;
+            }
+            let k = slot(nx, ny);
+            if !seen[k] && in_u(nx, ny) {
+                seen[k] = true;
+                queue.push_back(((nx, ny), d + 1));
+            }
+        }
+    }
+    None
+}
+
 // ----- coverage ----------------------------------------------------------------
 
 /// The region as a selection: 255 inside; with `aa`, wall pixels next to
 /// it get `1 − strength` (when stronger than the seed); times `sel`.
+/// `known`: strengths already built, per tile slot (may be empty).
+#[allow(clippy::too_many_arguments)]
 fn coverage(
     g: &Geom,
     src: &Source,
@@ -523,6 +551,7 @@ fn coverage(
     pass: &BitGrid,
     aa: bool,
     sel: Option<&Selection>,
+    known: &[Option<scale::Strengths>],
     seen: &mut [u8],
 ) -> Selection {
     let mut tiles = Vec::new();
@@ -582,8 +611,14 @@ fn coverage(
                 }
             }
             if any_edge {
-                let mut st = [[0u16; TILE_SIZE]; TILE_SIZE];
-                with_tls(|tls| src.strengths(c, tls, &mut st));
+                let mut own = [[0u16; TILE_SIZE]; TILE_SIZE];
+                let st = match known.get(i).and_then(Option::as_deref) {
+                    Some(st) => st,
+                    None => {
+                        with_tls(|tls| src.strengths(c, tls, &mut own));
+                        &own
+                    }
+                };
                 for (y, bits) in edge.iter().enumerate() {
                     let mut b = *bits;
                     while b != 0 {

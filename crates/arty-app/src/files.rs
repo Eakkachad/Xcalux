@@ -528,6 +528,13 @@ impl FileController {
         }
     }
 
+    /// The Save button of the "Save changes?" dialog. Like every save, it
+    /// takes the transformed pixels (spec §5.3): a session is committed.
+    fn save_then(&mut self, then: Then, studio: &mut Studio) {
+        studio.commit_transform();
+        self.save(Some(then), studio);
+    }
+
     fn save_as(&mut self, then: Option<Then>, studio: &Studio) {
         if self.io_or_report().is_none() {
             return;
@@ -747,7 +754,7 @@ impl FileController {
                     ui.horizontal(|ui| {
                         if ui.button(RichText::new("Save").strong()).clicked() {
                             keep = false;
-                            self.save(Some(*then), studio);
+                            self.save_then(*then, studio);
                         }
                         if ui.button("Don't Save").clicked() {
                             keep = false;
@@ -1199,6 +1206,39 @@ mod tests {
         assert!(r.at(2.0).close);
         assert!(r.fc.modal.is_none());
         assert!(!r.frame(close).cancel_close);
+    }
+
+    /// Quit → "Save changes?" → Save during a transform session saves the
+    /// committed result, not the preview.
+    #[test]
+    fn saving_on_quit_commits_a_transform_session() {
+        let close = FrameInput { now: 1.0, focused: true, close_requested: true, ..Default::default() };
+        let mut r = Rig::new("close-transform");
+        let a = r.dir.join("a.arty");
+        r.answers.borrow_mut().save = vec![a.clone()];
+        let id = r.studio.doc.active();
+        let (g, _) = r.studio.doc.paint_target(id).unwrap();
+        g.get_mut_or_create(TileCoord::new(0, 0))[10][10] = [0, 0, 0, 0x8000];
+        let mut sel = arty_core::Selection::new();
+        sel.insert_tile(TileCoord::new(0, 0), arty_core::selection::full_mask().clone());
+        r.studio.set_selection(sel);
+        let steps = r.studio.history.undo_len();
+        assert!(r.studio.begin_transform(false));
+        let p = r.studio.transform.as_ref().unwrap().session.params();
+        r.studio.transform.as_mut().unwrap().request(arty_core::transform::XfParams { t: [64.0, 0.0], ..p });
+        assert!(r.frame(close).cancel_close);
+        assert!(matches!(r.fc.modal, Some(Modal::Unsaved(Then::Quit))));
+        r.fc.modal = None;
+        r.fc.save_then(Then::Quit, &mut r.studio); // the dialog's Save button
+        assert!(r.studio.transform.is_none(), "the session was committed first");
+        assert_eq!(r.studio.history.undo_len(), steps + 1);
+        let sel = r.studio.doc.selection();
+        assert!(matches!(sel.get(TileCoord::new(1, 0)), arty_core::MaskView::Full), "the selection moved");
+        assert!(matches!(sel.get(TileCoord::new(0, 0)), arty_core::MaskView::Empty));
+        r.settle(1.0);
+        assert!(a.exists());
+        assert!(!r.fc.is_dirty(&r.studio.doc), "what was saved is the committed state");
+        assert!(r.shell.quit_requested);
     }
 
     /// A recovery file left by an earlier session, as the scan offers it.

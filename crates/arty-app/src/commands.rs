@@ -245,8 +245,11 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::Quit => shell.quit_requested = true,
         Command::Undo => studio.undo(),
         Command::Redo => studio.redo(),
-        // In Frame Edit with a panel selected, Delete removes the panel.
-        Command::ClearLayer if studio.tool == Tool::Frame(FrameMode::Edit) && studio.frame_sel.is_some() => {
+        // In Frame Edit with a panel of the active frame folder selected,
+        // Delete removes the panel.
+        Command::ClearLayer
+            if studio.tool == Tool::Frame(FrameMode::Edit) && tools::frame::active_panel_sel(studio).is_some() =>
+        {
             execute(Command::DeletePanel, studio, shell)
         }
         Command::ClearLayer => studio.clear_active_layer(),
@@ -475,16 +478,34 @@ mod tests {
     fn delete_in_frame_edit_targets_the_panel() {
         let mut studio = Studio::new(Document::new(64, 64, 72));
         let mut shell = Shell::new(ThemeKind::Dark);
+        let base = studio.doc.active();
+        execute(Command::NewFrameFolder, &mut studio, &mut shell);
+        let folder = tools::frame::target_folder(&studio).unwrap();
         let id = studio.doc.active();
-        studio.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1, 1, 1, 1];
+        let paint = |s: &mut Studio, id| s.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1, 1, 1, 1];
         let painted = |s: &Studio| !s.doc.active_layer().raster().unwrap().is_empty();
+        let panels = |s: &Studio| s.doc.frame(folder).unwrap().shape().panels.len();
+        paint(&mut studio, id);
         execute(Command::SelectTool(Tool::Frame(FrameMode::Edit)), &mut studio, &mut shell);
-        studio.frame_sel = Some((id, 0));
+        studio.frame_sel = Some((folder, 0));
         execute(Command::ClearLayer, &mut studio, &mut shell);
         assert!(painted(&studio));
+        assert_eq!(panels(&studio), 0, "the panel was deleted");
+        studio.undo();
         studio.frame_sel = None;
         execute(Command::ClearLayer, &mut studio, &mut shell);
         assert!(!painted(&studio), "without a selected panel Delete clears the layer");
+
+        // A panel of a folder that is no longer active (not drawn) is not
+        // what Delete or Delete Panel act on.
+        studio.doc.set_active(base);
+        paint(&mut studio, base);
+        studio.frame_sel = Some((folder, 0));
+        execute(Command::ClearLayer, &mut studio, &mut shell);
+        assert!(!painted(&studio), "the active layer was cleared");
+        assert_eq!(panels(&studio), 1, "the hidden selection's panel stays");
+        execute(Command::DeletePanel, &mut studio, &mut shell);
+        assert_eq!(panels(&studio), 1);
     }
 
     /// Enter and Esc stay with egui (menus, popups) unless a transform session runs.

@@ -8,11 +8,12 @@
 //! the region is the rest of the page. Each case reports the median and
 //! minimum of 9 runs of `fill_region` (3 on the 31-layer page) on an
 //! 8-thread pool, the median of 3 single-thread runs for the plain cases,
-//! and the median of 3 `apply_fill` runs.
+//! and the median of 3 `apply_fill` runs. The "+n darkest" rows add area
+//! scaling by n px with "To darkest pixel".
 
 use std::time::Instant;
 
-use arty_core::fill::{FillBlend, FillParams, FillRef, FillScratch, apply_fill, fill_region};
+use arty_core::fill::{FillBlend, FillParams, FillRef, FillScratch, ScaleMode, apply_fill, fill_region};
 use arty_core::fix15::ONE_U16;
 use arty_core::{Document, LayerId, Selection, TileCoord};
 use arty_testkit::synthetic::{Page, synthetic_manga_page};
@@ -126,7 +127,7 @@ fn time_region(doc: &Document, seed: (i32, i32), p: &FillParams, runs: usize) ->
 fn case(doc: &mut Document, layer: LayerId, name: &str, seed: (i32, i32), p: FillParams, one: &rayon::ThreadPool) {
     let runs = if p.reference == FillRef::AllVisible && doc.layer_count() > 3 { 3 } else { 9 };
     let ((med, min), r) = time_region(doc, seed, &p, runs);
-    let single = if p.gap_px == 0 && p.reference != FillRef::AllVisible {
+    let single = if p.gap_px == 0 && p.area_scale == 0 && p.reference != FillRef::AllVisible {
         let ((m, _), _) = one.install(|| time_region(doc, seed, &p, 3));
         format!("{m:8.1}")
     } else {
@@ -188,6 +189,11 @@ fn main() {
             }
         }
     }
+    doc.set_active(lines);
+    for n in [2i8, 10] {
+        let p = FillParams { area_scale: n, scale_mode: ScaleMode::ToDarkest, ..FillParams::default() };
+        case(&mut doc, lines, &format!("Active, full leak, +{n} darkest"), outside, p, &one);
+    }
 
     // AllVisible on the 30-layer reference page with the line art on top.
     let t = Instant::now();
@@ -208,5 +214,9 @@ fn main() {
     for r in [0u8, 8, 16] {
         let p = FillParams { reference: FillRef::AllVisible, gap_px: r, ..FillParams::default() };
         case(&mut page, top, &format!("AllVisible 35 layers, largest, R {r}"), outside, p, &one);
+    }
+    for n in [2i8, 10] {
+        let p = FillParams { reference: FillRef::AllVisible, area_scale: n, scale_mode: ScaleMode::ToDarkest, ..FillParams::default() };
+        case(&mut page, top, &format!("AllVisible 35 layers, largest, +{n} darkest"), outside, p, &one);
     }
 }

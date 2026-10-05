@@ -167,6 +167,35 @@ fn fl02_gap_closing_stops_the_leak_at_the_mouth() {
     }
 }
 
+/// A click in the ring of a strand too narrow for a core of its own does
+/// not adopt the big region's core across the line: the nearest core is
+/// looked for along the region, not in a straight line.
+#[test]
+fn fl02_gap_fallback_does_not_cross_a_line() {
+    let mut doc = Document::new(256, 256, 600);
+    let id = doc.active();
+    // A 12 px strand (x 103..115, y 20..236) between 3 px lines, open to
+    // the background through a 6 px gap in its left line far down.
+    rect(&mut doc, id, 100, 17, 103, 239, INK);
+    rect(&mut doc, id, 115, 17, 118, 239, INK);
+    rect(&mut doc, id, 100, 17, 118, 20, INK);
+    rect(&mut doc, id, 100, 236, 118, 239, INK);
+    rect(&mut doc, id, 100, 200, 103, 206, [0; 4]);
+    let p = FillParams { gap_px: 8, ..exact() };
+    // 1 px from the line, the background core (x ≤ 91) is 13 px away in a
+    // straight line, within 2R = 16; along the region it is ~140 px.
+    for seed in [(104, 60), (109, 60), (113, 60)] {
+        let r = region(&doc, seed, &p).unwrap();
+        assert_eq!(r.value(30, 30), 0, "seed {seed:?}: the background was filled");
+        assert_eq!(r.value(200, 100), 0, "seed {seed:?}");
+        assert_eq!(r.value(109, 30), 255, "seed {seed:?}: the strand was not filled");
+        assert_eq!(r.value(seed.0, seed.1), 255);
+    }
+    // A seed in the background's ring still finds the background core.
+    let r = region(&doc, (97, 60), &p).unwrap();
+    assert_eq!(r.value(30, 30), 255);
+}
+
 #[test]
 fn fl03_gap_closing_reaches_acute_corners() {
     let mut doc = Document::new(512, 256, 600);

@@ -174,8 +174,12 @@ impl Studio {
     /// Commit the session as one history step; no-op without one.
     pub fn commit_transform(&mut self) {
         let Some(st) = self.transform.take() else { return };
+        let moved = (st.session.target() == XfTarget::Selection).then(|| st.session.affine());
         if let Some(edit) = st.session.commit(&mut self.doc, self.opts.transform.filter) {
             self.record_edit(edit);
+            if let Some(xf) = moved {
+                self.ants_carry = Some(((self.doc_epoch, self.doc.selection_rev()), xf));
+            }
         }
     }
 
@@ -510,12 +514,7 @@ impl CanvasTool for TransformTool {
         }
         match self.drag.as_ref().map(|d| d.handle).or(self.hover) {
             Some(Handle::Move) => CursorIcon::Move,
-            Some(Handle::Corner(i)) => {
-                if i.is_multiple_of(2) { CursorIcon::ResizeNwSe } else { CursorIcon::ResizeNeSw }
-            }
-            Some(Handle::Edge(i)) => {
-                if i.is_multiple_of(2) { CursorIcon::ResizeVertical } else { CursorIcon::ResizeHorizontal }
-            }
+            Some(h @ (Handle::Corner(_) | Handle::Edge(_))) => resize_cursor(studio, h),
             Some(Handle::Rotate) => CursorIcon::AllScroll,
             Some(Handle::Pivot) | None => CursorIcon::Crosshair,
         }
@@ -523,6 +522,37 @@ impl CanvasTool for TransformTool {
 
     fn gesture_active(&self) -> bool {
         self.drag.is_some()
+    }
+}
+
+/// The resize cursor along the screen direction from the box centre to
+/// corner or edge handle `h`, as `paint` places it (box rotation, mirroring
+/// and the view's rotation and flip included).
+fn resize_cursor(studio: &Studio, h: Handle) -> CursorIcon {
+    let Some(st) = studio.transform.as_ref() else { return CursorIcon::Crosshair };
+    let (p, r) = (st.session.params(), st.session.src_bounds());
+    let pts = handle_points(&p, r, 0.0);
+    let at = match h {
+        Handle::Corner(i) => pts.corners[i % 4],
+        Handle::Edge(i) => pts.mids[i % 4],
+        _ => return CursorIcon::Crosshair,
+    };
+    let centre = p.affine().apply([(r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64]);
+    // A translation does not change directions: any origin will do.
+    let m = studio.view.doc_to_screen([0.0, 0.0]);
+    let (a, b) = (m.apply([centre[0] as f32, centre[1] as f32]), m.apply([at[0] as f32, at[1] as f32]));
+    resize_icon(b[0] - a[0], b[1] - a[1])
+}
+
+/// The resize cursor for a screen direction (y down), to the nearest 45°.
+fn resize_icon(dx: f32, dy: f32) -> CursorIcon {
+    let step = std::f32::consts::FRAC_PI_4;
+    match (dy.atan2(dx).rem_euclid(std::f32::consts::PI) / step).round() as i32 % 4 {
+        0 => CursorIcon::ResizeHorizontal,
+        // Down-right and up-left.
+        1 => CursorIcon::ResizeNwSe,
+        2 => CursorIcon::ResizeVertical,
+        _ => CursorIcon::ResizeNeSw,
     }
 }
 
@@ -881,6 +911,40 @@ mod tests {
         ctx.studio.select_tool(Tool::Hand);
         tool.press(&mut ctx, input(60.0, 50.0));
         assert!(!tool.gesture_active() && ctx.studio.transform.is_none());
+    }
+
+    /// Resize cursors follow the handle on screen: box rotation, mirroring
+    /// and the view's flip and rotation.
+    #[test]
+    fn resize_cursors_follow_the_handles_on_screen() {
+        use CursorIcon::{ResizeHorizontal as H, ResizeNeSw as NE, ResizeNwSe as NW, ResizeVertical as V};
+        let (mut s, mut shell, _) = studio();
+        run(Command::Transform, &mut s, &mut shell);
+        let mut tool = TransformTool::default();
+        let mut at = |s: &Studio, h: Handle| {
+            tool.hover = Some(h);
+            tool.cursor(s)
+        };
+        let cursors = |s: &Studio, at: &mut dyn FnMut(&Studio, Handle) -> CursorIcon| {
+            [Handle::Corner(0), Handle::Corner(1), Handle::Edge(0), Handle::Edge(1)].map(|h| at(s, h))
+        };
+        assert_eq!(cursors(&s, &mut at), [NW, NE, V, H]);
+        // A quarter turn of the box: the right edge now runs across.
+        let st = s.transform.as_mut().unwrap();
+        st.request(XfParams { theta: FRAC_PI_2, ..st.session.params() });
+        assert_eq!(cursors(&s, &mut at), [NE, NW, H, V]);
+        // A mirrored box swaps the diagonals.
+        let st = s.transform.as_mut().unwrap();
+        st.request(XfParams { theta: 0.0, s: [-1.0, 1.0], ..st.session.params() });
+        assert_eq!(cursors(&s, &mut at), [NE, NW, V, H]);
+        // So does a flipped view; a 45° view turns edges into diagonals.
+        let st = s.transform.as_mut().unwrap();
+        st.request(XfParams { s: [1.0, 1.0], ..st.session.params() });
+        s.view.toggle_flip();
+        assert_eq!(cursors(&s, &mut at), [NE, NW, V, H]);
+        s.view.toggle_flip();
+        s.view.rotation = std::f32::consts::FRAC_PI_4;
+        assert_eq!(cursors(&s, &mut at)[2..], [NE, NW]);
     }
 
     #[test]

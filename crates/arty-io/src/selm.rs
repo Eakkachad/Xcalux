@@ -306,6 +306,9 @@ fn decode_body(b: &[u8], w: u32, h: u32) -> Result<Selection, &'static str> {
         }
         sel.insert_tile(c, Arc::new(m));
     }
+    // Files from before edge tiles were canonical may select only pixels
+    // past the page.
+    sel.clip_to_page(w, h);
     Ok(sel)
 }
 

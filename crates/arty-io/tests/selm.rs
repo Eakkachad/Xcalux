@@ -17,7 +17,7 @@ use common::*;
 const T: usize = TILE_SIZE;
 
 /// Every tile kind: full, soft (U8), hard-edged (BIT), plus edge tiles
-/// whose off-page pixels hold data.
+/// whose off-page pixels hold data (read back cleared, see [`on_page`]).
 fn mixed(w: u32, h: u32, seed: u64) -> Selection {
     let mut rng = Rng(seed);
     let (tw, th) = (w.div_ceil(64) as i32, h.div_ceil(64) as i32);
@@ -51,6 +51,14 @@ fn mixed(w: u32, h: u32, seed: u64) -> Selection {
             s.insert_tile(c, Arc::new(m));
         }
     }
+    s
+}
+
+/// `s` as it reads back: past the page is "don't care", so edge tiles are
+/// decided on their page pixels and cleared past them.
+fn on_page(s: &Selection, w: u32, h: u32) -> Selection {
+    let mut s = s.clone();
+    s.clip_to_page(w, h);
     s
 }
 
@@ -105,14 +113,14 @@ fn sc11_full_u8_and_bit_tiles_round_trip_bit_exact() {
         let mut warn = Vec::new();
         let back = selm::decode(&body.unwrap(), w, h, &mut warn).unwrap();
         assert!(warn.is_empty());
-        assert_same_selection(&back, &sel);
+        assert_same_selection(&back, &on_page(&sel, w, h));
         assert!(back.tiles().all(|(c, m)| !matches!(sel.get(c), MaskView::Full) || Arc::ptr_eq(m, full_mask())));
 
         // Through a whole file.
         let mut doc = Document::new(w, h, 350);
         doc.swap_selection(sel.clone());
         let l = read(&write(&doc, &SaveExtras::default(), &pool), &pool);
-        assert_same_selection(l.doc.selection(), &sel);
+        assert_same_selection(l.doc.selection(), &on_page(&sel, w, h));
         assert_eq!(l.read_only_reason, None);
         assert!(l.warnings.is_empty(), "{:?}", l.warnings);
         assert_ne!(l.doc.selection_rev(), 0, "loaded through the unrecorded setter");
@@ -124,6 +132,25 @@ fn sc11_full_u8_and_bit_tiles_round_trip_bit_exact() {
     assert_eq!(encode(&Selection::new(), 300, 200), (None, SelectionSave::None));
     let file = write(&Document::new(300, 200, 350), &SaveExtras::default(), &pool);
     assert!(sections(&file).iter().all(|s| s.0 != TAG_SELM));
+}
+
+/// A file holding edge tiles selected only past the page (written before
+/// selections were canonical on the page) opens with no selection.
+#[test]
+fn sc11_off_page_only_tiles_open_as_no_selection() {
+    let (w, h) = (300, 130);
+    let mut m: MaskPixels = [[0; T]; T];
+    for row in m.iter_mut() {
+        row[300 - 256..].fill(255);
+    }
+    let mut sel = Selection::new();
+    for ty in 0..3 {
+        sel.insert_tile(TileCoord::new(4, ty), Arc::new(m));
+    }
+    assert!(!sel.is_empty());
+    let (body, _) = encode(&sel, w, h);
+    let back = selm::decode(&body.unwrap(), w, h, &mut Vec::new()).unwrap();
+    assert!(back.is_empty(), "no page pixel was selected");
 }
 
 #[test]
@@ -301,7 +328,7 @@ fn sc11_old_reader_keeps_selm_byte_identical() {
     assert_eq!((kept[0].1, &kept[0].2), (flags, &body), "byte-identical");
     // And this build reads it again in full.
     let mut warn = Vec::new();
-    assert_same_selection(&selm::decode(&kept[0].2, w, h, &mut warn).unwrap(), &sel);
+    assert_same_selection(&selm::decode(&kept[0].2, w, h, &mut warn).unwrap(), &on_page(&sel, w, h));
 
     // A stale SELM in the extras is never written next to the fresh one.
     let stale = SaveExtras { sections: vec![AppSection { tag: TAG_SELM, flags, bytes: b"stale".to_vec() }], ..Default::default() };

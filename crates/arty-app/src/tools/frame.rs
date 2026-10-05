@@ -240,6 +240,12 @@ pub fn target_folder(studio: &Studio) -> Option<LayerId> {
     studio.doc.frame_folder_of(studio.doc.active())
 }
 
+/// The selected panel, while it belongs to the active layer's frame folder
+/// (the only one whose panels are drawn).
+pub fn active_panel_sel(studio: &Studio) -> Option<(LayerId, usize)> {
+    studio.frame_sel.filter(|s| Some(s.0) == target_folder(studio))
+}
+
 impl Studio {
     /// Replace the frame of folder `id` with `f(current)` as one
     /// `Edit::Frame`; no-op when `f` returns `None` or the same shape, and
@@ -314,7 +320,9 @@ pub fn cut_frame(studio: &mut Studio, a: Pt, b: Pt) {
     let Some(frame) = studio.doc.frame(id) else { return };
     let (gap_h, gap_v) = studio.opts.frame.gaps(studio.doc.dpi());
     let Some((shape, bs)) = frame.shape().cut(a, b, gap_h, gap_v) else {
-        studio.notice = Some("Drag across a panel to divide it".into());
+        let crossed = frame.shape().panels.iter().any(|p| p.crossed_by(a, b));
+        studio.notice =
+            Some(if crossed { "The gutter is wider than the panel" } else { "Drag across a panel to divide it" }.into());
         return;
     };
     if studio.opts.frame.divide_into_folders && !bs.is_empty() && bs.len() < shape.panels.len() {
@@ -354,7 +362,7 @@ pub fn new_frame_folder(studio: &mut Studio) {
 
 /// Delete the selected panel (Frame Edit).
 pub fn delete_panel(studio: &mut Studio) {
-    let Some((id, i)) = studio.frame_sel else { return };
+    let Some((id, i)) = active_panel_sel(studio) else { return };
     studio.edit_frame(id, |s| {
         (i < s.panels.len()).then(|| {
             let mut s = s.clone();
@@ -679,9 +687,11 @@ impl CanvasTool for FrameTool {
 
     fn tick(&mut self, ctx: &mut ToolCtx, _now: f64) {
         self.ppp = ctx.ppp;
-        // A panel selection that undo took away.
+        // A panel selection that undo took away, or of a folder that is no
+        // longer the active one (its panels are not drawn).
         if let Some((id, i)) = ctx.studio.frame_sel
-            && ctx.studio.doc.frame(id).is_none_or(|f| i >= f.shape().panels.len())
+            && (ctx.studio.doc.frame(id).is_none_or(|f| i >= f.shape().panels.len())
+                || target_folder(ctx.studio) != Some(id))
         {
             ctx.studio.frame_sel = None;
         }
@@ -773,12 +783,13 @@ impl CanvasTool for FrameTool {
 
 /// Change the active frame folder's border: previewed while a pointer
 /// button is down (a slider or colour drag), recorded at once otherwise.
+/// A drag's last change, on the frame its button is released, is still a
+/// preview: [`finish_style_drag`] then records the drag as one step.
 fn style_change(ui: &egui::Ui, studio: &mut Studio, id: LayerId, shape: FrameShape) {
     let key = egui::Id::new(("frame-style-start", id.0));
-    if ui.input(|i| i.pointer.any_down()) {
-        if ui.data(|d| d.get_temp::<Arc<Frame>>(key)).is_none()
-            && let Some(start) = studio.doc.frame(id).cloned()
-        {
+    let dragging = ui.data(|d| d.get_temp::<Arc<Frame>>(key)).is_some();
+    if dragging || ui.input(|i| i.pointer.any_down()) {
+        if !dragging && let Some(start) = studio.doc.frame(id).cloned() {
             ui.data_mut(|d| d.insert_temp(key, start));
         }
         studio.preview_frame(id, shape);
@@ -861,27 +872,40 @@ pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: 
     let mut on = shape.border.width > 0.0;
     let mut w_mm = shape.border.width / dpi as f32 * MM_PER_IN;
     let mut rgb = fix15_to_rgb(shape.border.color);
-    egui::Grid::new("frame-border").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Border");
-        ui.checkbox(&mut on, "");
-        ui.end_row();
-        ui.label("Width");
-        ui.add_enabled(on, egui::Slider::new(&mut w_mm, 0.05..=5.0).logarithmic(true).max_decimals(2).suffix(" mm"));
-        ui.end_row();
-        ui.label("Colour");
-        ui.color_edit_button_rgb(&mut rgb);
-        ui.end_row();
-    });
-    let width = match (on, shape.border.width > 0.0) {
-        (false, _) => 0.0,
+    // Only a widget the user changed changes the border: a slider clamps
+    // and rounds the value it shows, which is no edit.
+    let (on_r, w_r, c_r) = egui::Grid::new("frame-border")
+        .num_columns(2)
+        .spacing([8.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Border");
+            let on_r = ui.checkbox(&mut on, "");
+            ui.end_row();
+            ui.label("Width");
+            let w_r = ui.add_enabled(
+                on,
+                egui::Slider::new(&mut w_mm, 0.05..=10.0)
+                    .clamping(egui::SliderClamping::Never)
+                    .logarithmic(true)
+                    .max_decimals(2)
+                    .suffix(" mm"),
+            );
+            ui.end_row();
+            ui.label("Colour");
+            let c_r = ui.color_edit_button_rgb(&mut rgb);
+            ui.end_row();
+            (on_r, w_r, c_r)
+        })
+        .inner;
+    let width = if on_r.changed() {
         // Turned back on: the tool's width.
-        (true, false) => studio.opts.frame.border(dpi).width.max(1.0),
-        (true, true) => mm_px(w_mm, dpi),
+        if on { studio.opts.frame.border(dpi).width.max(1.0) } else { 0.0 }
+    } else if w_r.changed() {
+        mm_px(w_mm, dpi).max(0.0)
+    } else {
+        shape.border.width
     };
-    let border = BorderStyle {
-        width,
-        color: if rgb == fix15_to_rgb(shape.border.color) { shape.border.color } else { rgb_to_fix15(rgb) },
-    };
+    let border = BorderStyle { width, color: if c_r.changed() { rgb_to_fix15(rgb) } else { shape.border.color } };
     if border != shape.border {
         let mut s = shape.clone();
         s.border = border;
@@ -1115,6 +1139,124 @@ mod tests {
         // A drag that ends where it started records nothing.
         s.commit_frame_preview(id, start);
         assert_eq!(steps(&s), n);
+    }
+
+    /// Each Rectangle Frame (and New Frame Border Folder) is a sibling of
+    /// the frame folder the active layer is in, never nested in it, where
+    /// the first panel would mask it.
+    #[test]
+    fn new_frame_folders_are_siblings_not_nested() {
+        let (mut s, mut sh, mut t) = setup(FrameMode::Rect);
+        gesture(&mut t, &mut s, &mut sh, &[[20.0, 20.0], [280.0, 380.0]], Modifiers::NONE);
+        let a = target_folder(&s).unwrap();
+        assert_eq!(s.doc.frame_folder_of(s.doc.active()), Some(a), "the new child is active");
+        gesture(&mut t, &mut s, &mut sh, &[[320.0, 20.0], [580.0, 380.0]], Modifiers::NONE);
+        let b = target_folder(&s).unwrap();
+        assert_ne!(a, b);
+        let (pa, pb) = (s.doc.location(a).unwrap(), s.doc.location(b).unwrap());
+        assert_eq!(pa.0, pb.0, "same parent");
+        assert_eq!(pb.1, pa.1 + 1, "directly above");
+        // The second border shows outside the first panel.
+        let mut out = arty_core::tile::new_tile_box();
+        let c = arty_core::TileCoord::from_pixel(320, 100);
+        s.doc.composite_tile(c, &mut out, &mut arty_core::CompositeScratch::new());
+        let (ox, oy) = c.origin();
+        assert!(out[(100 - oy) as usize][(321 - ox) as usize][3] > 0, "b's border is drawn");
+
+        // Layer ▸ New Frame Border Folder from inside b.
+        execute(Command::NewFrameFolder, &mut s, &mut sh);
+        let c = target_folder(&s).unwrap();
+        assert_eq!(s.doc.location(c).unwrap().0, pa.0);
+        assert_eq!(s.doc.location(c).unwrap().1, pb.1 + 1);
+    }
+
+    /// Showing the FRAME BORDER section changes nothing, even for widths
+    /// the slider cannot show exactly.
+    #[test]
+    fn border_section_records_nothing_by_being_shown() {
+        for (dpi, width) in [(254, 80.0), (600, 4.0), (600, 0.5)] {
+            let mut s = Studio::new(Document::new(600, 800, dpi));
+            let mut sh = Shell::new(ThemeKind::Dark);
+            s.opts.frame.border_mm = width / dpi as f32 * MM_PER_IN;
+            execute(Command::NewFrameFolder, &mut s, &mut sh);
+            let id = target_folder(&s).unwrap();
+            let width = s.doc.frame(id).unwrap().shape().border.width;
+            let (n, rev) = (steps(&s), s.doc.revision());
+            let ctx = egui::Context::default();
+            for _ in 0..3 {
+                ctx.run_ui(egui::RawInput::default(), |ui| border_ui(ui, &mut s, &mut sh, id)).drop_without_applying_deltas();
+            }
+            assert_eq!((steps(&s), s.doc.revision()), (n, rev), "{width} px at {dpi} dpi");
+            assert_eq!(s.doc.frame(id).unwrap().shape().border.width, width);
+        }
+    }
+
+    /// A style drag whose last change lands on the release frame is still
+    /// one step.
+    #[test]
+    fn a_style_drag_released_mid_change_is_one_step() {
+        let (mut s, mut sh, _) = setup(FrameMode::Edit);
+        execute(Command::NewFrameFolder, &mut s, &mut sh);
+        let id = target_folder(&s).unwrap();
+        let start = s.doc.frame(id).unwrap().clone();
+        let n = steps(&s);
+        let with_width = |w: f32| {
+            let mut shape = start.shape().clone();
+            shape.border.width = w;
+            shape
+        };
+        let ctx = egui::Context::default();
+        let pos = egui::pos2(10.0, 10.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        for (events, w) in [(vec![egui::Event::PointerMoved(pos), button(true)], 9.0), (vec![], 11.0), (vec![button(false)], 13.0)] {
+            ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+                style_change(ui, &mut s, id, with_width(w));
+                finish_style_drag(ui, &mut s, id);
+            })
+            .drop_without_applying_deltas();
+        }
+        assert_eq!(s.doc.frame(id).unwrap().shape().border.width, 13.0);
+        assert_eq!(steps(&s), n + 1, "one step");
+        s.undo();
+        assert!(Arc::ptr_eq(s.doc.frame(id).unwrap(), &start), "undo goes back to before the drag");
+    }
+
+    /// Divide Frame with a gutter wider than the panel leaves it whole.
+    #[test]
+    fn a_cut_with_a_gutter_wider_than_the_panel_is_refused() {
+        let (mut s, mut sh, mut t) = setup(FrameMode::Rect);
+        gesture(&mut t, &mut s, &mut sh, &[[100.0, 100.0], [500.0, 140.0]], Modifiers::NONE);
+        let a = target_folder(&s).unwrap();
+        let before = s.doc.frame(a).unwrap().clone();
+        let n = steps(&s);
+        s.select_tool(Tool::Frame(FrameMode::Cut));
+        s.notice = None;
+        // 5 mm at 254 dpi is 50 px, wider than the 40 px panel.
+        gesture(&mut t, &mut s, &mut sh, &[[50.0, 120.0], [550.0, 120.0]], Modifiers::NONE);
+        assert_eq!(steps(&s), n);
+        assert!(Arc::ptr_eq(s.doc.frame(a).unwrap(), &before));
+        assert_eq!(s.notice.as_deref(), Some("The gutter is wider than the panel"));
+    }
+
+    /// A selected panel of a folder that is no longer active is dropped.
+    #[test]
+    fn switching_layers_drops_the_panel_selection() {
+        let (mut s, mut sh, mut t) = setup(FrameMode::Edit);
+        let base = s.doc.active();
+        execute(Command::NewFrameFolder, &mut s, &mut sh);
+        let a = target_folder(&s).unwrap();
+        s.frame_sel = Some((a, 0));
+        let mut ctx = ToolCtx { studio: &mut s, shell: &mut sh, origin: [0.0; 2], ppp: 1.0 };
+        t.tick(&mut ctx, 0.0);
+        assert_eq!(ctx.studio.frame_sel, Some((a, 0)));
+        ctx.studio.doc.set_active(base);
+        t.tick(&mut ctx, 0.0);
+        assert_eq!(ctx.studio.frame_sel, None);
     }
 
     #[test]
