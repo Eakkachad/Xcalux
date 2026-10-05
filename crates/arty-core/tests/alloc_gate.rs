@@ -37,3 +37,57 @@ fn composite_tile_is_allocation_free() {
     });
     assert_eq!(n, 0, "composite_tile allocated {n} times");
 }
+
+#[test]
+fn frame_composite_is_allocation_free() {
+    use arty_core::{BorderStyle, Cov, Frame, FrameShape, Panel, RectF};
+    let mut doc = Document::new(320, 320, 350);
+    let base = doc.active();
+    // [base, frame folder {art}, clip], plus a pass-through frame folder
+    // that is itself a clip.
+    let folder = doc.add_folder().unwrap();
+    let art = doc.add_raster_layer().unwrap();
+    doc.move_layer(art, Some(folder), 0);
+    doc.set_active(folder);
+    let clip = doc.add_raster_layer().unwrap();
+    let clip_folder = doc.add_folder().unwrap();
+    let inner = doc.add_raster_layer().unwrap();
+    doc.move_layer(inner, Some(clip_folder), 0);
+    for id in [clip, clip_folder] {
+        let mut p = doc.layer(id).unwrap().props.clone();
+        p.clip = true;
+        doc.set_props(id, p);
+    }
+    for id in [base, art, clip, inner] {
+        let (grid, _) = doc.paint_target(id).unwrap();
+        for y in 0..5 {
+            for x in 0..5 {
+                grid.get_mut_or_create(TileCoord::new(x, y)).as_flattened_mut().fill([1000, 2000, 3000, 8000]);
+            }
+        }
+    }
+    let shape = |r: RectF| FrameShape {
+        panels: vec![Panel::rect(r).unwrap()],
+        border: BorderStyle { width: 5.0, color: [0, 0, 0, 1 << 15] },
+    };
+    let f = Frame::build(shape(RectF { x: 10.5, y: 10.0, w: 230.0, h: 200.0 }), 320, 320);
+    // Partial, Full and Outside tiles are all composited below.
+    assert!(matches!(f.content(TileCoord::new(0, 0)), Cov::Partial(_)));
+    assert_eq!(f.content(TileCoord::new(1, 1)), Cov::Full);
+    assert_eq!(f.content(TileCoord::new(4, 4)), Cov::None);
+    doc.set_frame(folder, Some(f));
+    doc.set_frame(clip_folder, Some(Frame::build(shape(RectF { x: 30.0, y: 40.0, w: 100.0, h: 100.0 }), 320, 320)));
+
+    let mut scratch = CompositeScratch::new();
+    let mut out = new_tile_box();
+    doc.composite_tile(TileCoord::new(1, 1), &mut out, &mut scratch);
+
+    let n = arty_testkit::count_allocs(|| {
+        for y in 0..5 {
+            for x in 0..5 {
+                doc.composite_tile(TileCoord::new(x, y), &mut out, &mut scratch);
+            }
+        }
+    });
+    assert_eq!(n, 0, "frame compositing allocated {n} times");
+}

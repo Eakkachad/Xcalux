@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use arty_core::tile::{clear_tile, new_tile};
 use arty_core::{
-    BlendMode, CompositeScratch, Document, LayerContent, LayerId, TILE_SIZE, TileCoord, TileGrid, TilePixels, TileRef,
-    fix15,
+    BlendMode, CompositeScratch, Document, Frame, LayerContent, LayerId, TILE_SIZE, TileCoord, TileGrid, TilePixels,
+    TileRef, fix15,
 };
 use egui::{Color32, ColorImage, TextureHandle, TextureId, TextureOptions};
 use rayon::prelude::*;
@@ -224,7 +224,7 @@ impl ThumbCache {
                 if self.entries.get(&id).is_some_and(|t| t.seen == seen && t.size == size && t.page == page) {
                     continue;
                 }
-                let mini = self.mirror(doc, children, size);
+                let mini = self.mirror(doc, id, children, size);
                 let t = self.entries.entry(id).or_insert_with(|| Thumb::new(size, page));
                 mini.composite_tile(TileCoord::new(0, 0), Arc::make_mut(&mut t.px), &mut self.scratch);
                 // An id that was a raster layer must not pin its old tiles.
@@ -239,14 +239,16 @@ impl ThumbCache {
     /// A thumbnail-sized document holding `children` (with their settings
     /// and current thumbnails) inside one Normal folder, on transparent
     /// paper: compositing its tile renders the folder's content in
-    /// isolation, exactly as the page compositor would.
-    fn mirror(&self, doc: &Document, children: &[LayerId], size: [usize; 2]) -> Document {
+    /// isolation, exactly as the page compositor would. A frame folder's
+    /// mirror carries its frame, scaled to the thumbnail.
+    fn mirror(&self, doc: &Document, folder: LayerId, children: &[LayerId], size: [usize; 2]) -> Document {
         let mut mini = Document::new(size[0] as u32, size[1] as u32, doc.dpi());
         mini.set_paper(None);
         let group = mini.add_folder().expect("a new document has free ids");
         let mut props = mini.layer(group).expect("just added").props.clone();
         props.blend = BlendMode::Normal;
         mini.set_props(group, props);
+        mirror_frame(doc, folder, group, &mut mini);
         self.mirror_into(doc, children, group, &mut mini);
         mini
     }
@@ -264,7 +266,10 @@ impl ThumbCache {
                         grid.replace(TileCoord::new(0, 0), Some(t.px.clone()));
                     }
                 }
-                LayerContent::Folder { children, .. } => self.mirror_into(doc, children, copy, mini),
+                LayerContent::Folder { children, .. } => {
+                    mirror_frame(doc, *id, copy, mini);
+                    self.mirror_into(doc, children, copy, mini);
+                }
             }
         }
     }
@@ -287,6 +292,15 @@ impl ThumbCache {
     #[cfg(test)]
     fn pixels(&self, id: LayerId) -> Option<&TilePixels> {
         self.entries.get(&id).map(|t| &*t.px)
+    }
+}
+
+/// Give `copy` in the thumbnail document `mini` the frame of `id`, scaled
+/// to the thumbnail.
+fn mirror_frame(doc: &Document, id: LayerId, copy: LayerId, mini: &mut Document) {
+    if let Some(f) = doc.frame(id) {
+        let s = (mini.width() as f32 / doc.width() as f32).min(mini.height() as f32 / doc.height() as f32);
+        mini.set_frame(copy, Some(Frame::build(f.shape().scaled(s), mini.width(), mini.height())));
     }
 }
 
@@ -578,6 +592,24 @@ mod tests {
         let half = cache.pixels(folder).unwrap()[0][0];
         assert!((half[3] as i32 - O as i32 / 2).abs() <= 1, "{half:?}");
         assert_eq!(cache.pixels(inner).unwrap()[0][0], RED, "a layer's own thumbnail ignores its settings");
+    }
+
+    #[test]
+    fn frame_folder_thumbnail_is_masked_by_its_panels() {
+        use arty_core::{BorderStyle, FrameShape, Panel, RectF};
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let panel = Panel::rect(RectF { x: 0.0, y: 0.0, w: 32.0, h: 64.0 }).unwrap();
+        let shape = FrameShape { panels: vec![panel], border: BorderStyle { width: 0.0, color: [0, 0, 0, O] } };
+        s.edit_structure(|d| arty_core::frame::add_frame_folder(d, shape).is_some());
+        let inner = s.doc.active();
+        let folder = s.doc.frame_folder_of(inner).unwrap();
+        paint(&mut s, inner, RED);
+        let mut cache = ThumbCache::default();
+        refresh(&mut cache, &s);
+        let px = cache.pixels(folder).unwrap();
+        assert_eq!(px[3][1], RED, "inside the panel");
+        assert_eq!(px[3][6], [0; 4], "outside the panel");
+        assert_eq!(cache.pixels(inner).unwrap()[3][6], RED, "the child's own thumbnail is not masked");
     }
 
     fn ms(n: u32, mut f: impl FnMut()) -> f64 {
