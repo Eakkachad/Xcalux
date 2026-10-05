@@ -13,13 +13,14 @@
 use std::sync::{Arc, LazyLock};
 
 use ahash::AHashMap;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::document::Document;
 use crate::geom::TileRect;
 use crate::history::Edit;
 use crate::layer::LayerId;
-use crate::tile::{TILE_SIZE, TileCoord};
+use crate::tile::{TILE_SIZE, TileCoord, TileRef, is_tile_empty};
 
 /// `[y][x]` coverage, 0 (unselected) ..= 255 (selected). 4 KiB.
 pub type MaskPixels = [[u8; TILE_SIZE]; TILE_SIZE];
@@ -143,31 +144,256 @@ impl Selection {
     }
 
     /// Every page tile of a `w`×`h` page selected.
-    pub fn all(_w: u32, _h: u32) -> Selection {
-        // SEL-CORE: insert a `full_mask()` clone per page tile.
-        Selection::default()
-    }
-
-    /// The complement within a `w`×`h` page.
-    pub fn inverted(&self, _w: u32, _h: u32) -> Selection {
-        // SEL-CORE: absent → FULL, FULL → removed, partial → 255 − v.
-        self.clone()
-    }
-
-    /// Combine `shape` into this selection.
-    pub fn combine(&mut self, shape: &Selection, op: SelectOp) {
-        // SEL-CORE: Add / Subtract / Intersect per tile.
-        if op == SelectOp::Replace {
-            *self = shape.clone();
+    pub fn all(w: u32, h: u32) -> Selection {
+        let (tw, th) = page_tiles(w, h);
+        if tw == 0 || th == 0 {
+            return Selection::default();
         }
+        let mut map = AHashMap::with_capacity((tw * th) as usize);
+        for ty in 0..th {
+            for tx in 0..tw {
+                map.insert(TileCoord::new(tx, ty), full_mask().clone());
+            }
+        }
+        Selection { tiles: Arc::new(map), bounds: Some(TileRect { x0: 0, y0: 0, x1: tw, y1: th }) }
+    }
+
+    /// The complement within a `w`×`h` page: absent tiles become full, full
+    /// tiles are removed and partial ones become `255 − v`.
+    pub fn inverted(&self, w: u32, h: u32) -> Selection {
+        let (tw, th) = page_tiles(w, h);
+        let mut map = AHashMap::with_capacity((tw * th) as usize);
+        let mut partial = Vec::new();
+        for ty in 0..th {
+            for tx in 0..tw {
+                let c = TileCoord::new(tx, ty);
+                match self.tiles.get(&c) {
+                    None => {
+                        map.insert(c, full_mask().clone());
+                    }
+                    Some(m) if is_full(m) => {}
+                    Some(m) => partial.push((c, m.clone())),
+                }
+            }
+        }
+        let mut out = Selection { tiles: Arc::new(map), bounds: None };
+        for (c, m) in par_map(&partial, |(c, m)| (*c, map_tile(m, |v| 255 - v))) {
+            out.set(c, m);
+        }
+        out.bounds = out.tight_bounds();
+        out
+    }
+
+    /// Combine `shape` into this selection, per pixel: Add is `max`,
+    /// Subtract `min(m, 255 − s)` and Intersect `min(m, s)` (so tiles the
+    /// shape lacks are dropped). Full and absent tiles take fast paths.
+    pub fn combine(&mut self, shape: &Selection, op: SelectOp) {
+        match op {
+            SelectOp::Replace => *self = shape.clone(),
+            SelectOp::Add => self.add(shape),
+            SelectOp::Subtract => self.subtract(shape),
+            SelectOp::Intersect => self.intersect(shape),
+        }
+    }
+
+    fn add(&mut self, shape: &Selection) {
+        if self.is_empty() {
+            *self = shape.clone();
+            return;
+        }
+        let mut direct = Vec::new();
+        let mut jobs = Vec::new();
+        for (c, s) in shape.tiles() {
+            match self.tiles.get(&c) {
+                None => direct.push((c, s.clone())),
+                Some(m) if is_full(m) => {}
+                Some(_) if is_full(s) => direct.push((c, s.clone())),
+                Some(m) => jobs.push((c, m.clone(), s.clone())),
+            }
+        }
+        for (c, m) in direct {
+            self.put(c, m);
+        }
+        for (c, m) in par_map(&jobs, |(c, m, s)| (*c, zip_tiles(m, s, u8::max))) {
+            self.set(c, m);
+        }
+    }
+
+    fn subtract(&mut self, shape: &Selection) {
+        let mut removed = Vec::new();
+        let mut jobs = Vec::new();
+        for (c, s) in shape.tiles() {
+            match self.tiles.get(&c) {
+                None => {}
+                Some(_) if is_full(s) => removed.push(c),
+                Some(m) => jobs.push((c, m.clone(), s.clone())),
+            }
+        }
+        for c in removed {
+            self.remove_tile(c);
+        }
+        for (c, m) in par_map(&jobs, |(c, m, s)| (*c, zip_tiles(m, s, |a, b| a.min(255 - b)))) {
+            self.set(c, m);
+        }
+    }
+
+    fn intersect(&mut self, shape: &Selection) {
+        let mut out = Selection::default();
+        let mut jobs = Vec::new();
+        for (c, m) in self.tiles() {
+            match shape.tiles.get(&c) {
+                None => {}
+                Some(s) if is_full(s) => out.put(c, m.clone()),
+                Some(s) if is_full(m) => out.put(c, s.clone()),
+                Some(s) => jobs.push((c, m.clone(), s.clone())),
+            }
+        }
+        for (c, m) in par_map(&jobs, |(c, m, s)| (*c, zip_tiles(m, s, u8::min))) {
+            out.set(c, m);
+        }
+        *self = out;
+    }
+
+    /// Store a tile already in canonical form (never all-0; all-255 only as
+    /// the shared [`full_mask`]), without the scan of [`Self::insert_tile`].
+    pub(crate) fn put(&mut self, c: TileCoord, m: MaskRef) {
+        debug_assert!(classify(&m) != Class::Empty, "all-0 tile stored");
+        debug_assert!(classify(&m) != Class::Full || is_full(&m), "all-255 tile not shared");
+        let one = TileRect { x0: c.x, y0: c.y, x1: c.x + 1, y1: c.y + 1 };
+        self.bounds = Some(self.bounds.map_or(one, |b| b.union(one)));
+        Arc::make_mut(&mut self.tiles).insert(c, m);
+    }
+
+    /// [`Self::put`] a canonical tile, or remove the tile (`None`).
+    pub(crate) fn set(&mut self, c: TileCoord, m: Option<MaskRef>) {
+        match m {
+            Some(m) => self.put(c, m),
+            None => {
+                self.remove_tile(c);
+            }
+        }
+    }
+
+    /// The exact tile bbox of the stored tiles.
+    fn tight_bounds(&self) -> Option<TileRect> {
+        self.tiles.keys().map(|c| TileRect { x0: c.x, y0: c.y, x1: c.x + 1, y1: c.y + 1 }).reduce(TileRect::union)
     }
 }
 
-/// Clear the selected pixels of a raster layer (`dst *= 1 − m/255`) as one
-/// `Edit::Pixels`. `None` when nothing changed or the layer is locked.
-pub fn erase_selected(_doc: &mut Document, _layer: LayerId) -> Option<Edit> {
-    // SEL-CORE
-    None
+/// Page size in tiles.
+pub(crate) fn page_tiles(w: u32, h: u32) -> (i32, i32) {
+    (w.div_ceil(TILE_SIZE as u32) as i32, h.div_ceil(TILE_SIZE as u32) as i32)
+}
+
+/// What a mask tile holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Class {
+    Empty,
+    Full,
+    Partial,
+}
+
+pub(crate) fn classify(m: &MaskPixels) -> Class {
+    let flat = m.as_flattened();
+    match flat[0] {
+        0 if flat.iter().all(|&v| v == 0) => Class::Empty,
+        255 if flat.iter().all(|&v| v == 255) => Class::Full,
+        _ => Class::Partial,
+    }
+}
+
+#[inline]
+pub(crate) fn is_full(m: &MaskRef) -> bool {
+    Arc::ptr_eq(m, full_mask())
+}
+
+/// `m` in canonical form: `None` when all-0, the shared tile when all-255.
+pub(crate) fn canonical(m: &MaskPixels) -> Option<MaskRef> {
+    match classify(m) {
+        Class::Empty => None,
+        Class::Full => Some(full_mask().clone()),
+        Class::Partial => Some(Arc::new(*m)),
+    }
+}
+
+/// `f(v)` per pixel, canonical.
+fn map_tile(m: &MaskPixels, f: impl Fn(u8) -> u8) -> Option<MaskRef> {
+    let mut out = *m;
+    for v in out.as_flattened_mut() {
+        *v = f(*v);
+    }
+    canonical(&out)
+}
+
+/// `f(a, b)` per pixel, canonical.
+fn zip_tiles(a: &MaskPixels, b: &MaskPixels, f: impl Fn(u8, u8) -> u8) -> Option<MaskRef> {
+    let mut out = *a;
+    for (o, &s) in out.as_flattened_mut().iter_mut().zip(b.as_flattened()) {
+        *o = f(*o, s);
+    }
+    canonical(&out)
+}
+
+/// Below this many tiles, per-tile work stays on the calling thread.
+const PAR_MIN_TILES: usize = 32;
+
+/// `items.map(f)`, spread over the rayon pool when there are enough items.
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync + Send) -> Vec<R> {
+    if items.len() < PAR_MIN_TILES { items.iter().map(f).collect() } else { items.par_iter().map(f).collect() }
+}
+
+/// Clear the selected pixels of a raster layer (`dst *= 1 − m/255` on all
+/// four channels, so `c ≤ a` still holds) as one `Edit::Pixels`. Tiles left
+/// fully transparent are removed. `None` when nothing changed, there is no
+/// selection, or the layer is a folder or locked.
+pub fn erase_selected(doc: &mut Document, layer: LayerId) -> Option<Edit> {
+    let l = doc.layer(layer)?;
+    let grid = l.raster()?;
+    let sel = doc.selection();
+    if l.props.locked || sel.is_empty() || grid.is_empty() {
+        return None;
+    }
+    // Walk whichever side has fewer tiles.
+    let jobs: Vec<(TileCoord, &TileRef, MaskView<'_>)> = if grid.len() <= sel.tile_count() {
+        grid.iter().map(|(c, t)| (c, t, sel.get(c))).filter(|j| !matches!(j.2, MaskView::Empty)).collect()
+    } else {
+        sel.tiles().filter_map(|(c, _)| grid.get_ref(c).map(|t| (c, t, sel.get(c)))).collect()
+    };
+    let changes: Vec<(TileCoord, Option<TileRef>)> =
+        par_map(&jobs, |&(c, t, m)| erase_tile(t, m).map(|t| (c, t))).into_iter().flatten().collect();
+    if changes.is_empty() {
+        return None;
+    }
+    let (grid, dirty) = doc.paint_target(layer)?;
+    let mut tiles = Vec::with_capacity(changes.len());
+    for (c, t) in changes {
+        tiles.push((c, grid.replace(c, t)));
+        dirty.mark(c);
+    }
+    Some(Edit::Pixels { layer, tiles })
+}
+
+/// The tile after erasing under `m`: `None` when it does not change,
+/// `Some(None)` when it becomes fully transparent.
+fn erase_tile(t: &TileRef, m: MaskView<'_>) -> Option<Option<TileRef>> {
+    let m = match m {
+        MaskView::Empty => return None,
+        MaskView::Full => return Some(None),
+        MaskView::Partial(m) => m,
+    };
+    let mut out: Option<TileRef> = None;
+    for y in 0..TILE_SIZE {
+        for x in 0..TILE_SIZE {
+            let k = u32::from(255 - m[y][x]);
+            if k == 255 || t[y][x][3] == 0 {
+                continue;
+            }
+            let px = t[y][x].map(|v| ((u32::from(v) * k + 127) / 255) as u16);
+            Arc::make_mut(out.get_or_insert_with(|| t.clone()))[y][x] = px;
+        }
+    }
+    let out = out?;
+    Some((!is_tile_empty(&out)).then_some(out))
 }
 
 #[cfg(test)]
