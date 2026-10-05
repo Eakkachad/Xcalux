@@ -58,24 +58,9 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 
-# Step 3 (E14): opt-level = "s" ONLY for UI / windowing / font / icon crates
-[profile.release.package.egui]
-opt-level = "s"
-[profile.release.package.epaint]
-opt-level = "s"
-[profile.release.package.eframe]
-opt-level = "s"
-[profile.release.package.egui-winit]
-opt-level = "s"
-[profile.release.package.egui-wgpu]
-opt-level = "s"
-[profile.release.package.egui_dock]
-opt-level = "s"
+# E14: size over speed only for crates that do not run every frame (per-frame UI
+# work in egui/epaint/vello/skrifa stays at opt-level 3; plans/bench/B018).
 [profile.release.package.egui-phosphor]
-opt-level = "s"
-[profile.release.package.emath]
-opt-level = "s"
-[profile.release.package.ecolor]
 opt-level = "s"
 [profile.release.package.winit]
 opt-level = "s"
@@ -89,27 +74,9 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.epaint_default_fonts]
 opt-level = "s"
-[profile.release.package.font-types]
-opt-level = "s"
-[profile.release.package.read-fonts]
-opt-level = "s"
-[profile.release.package.skrifa]
-opt-level = "s"
-[profile.release.package.harfrust]
-opt-level = "s"
-[profile.release.package.kurbo]
-opt-level = "s"
-[profile.release.package.peniko]
-opt-level = "s"
-[profile.release.package.vello_cpu]
-opt-level = "s"
-[profile.release.package.vello_common]
-opt-level = "s"
 [profile.release.package.polycool]
 opt-level = "s"
 [profile.release.package.linebender_resource_handle]
-opt-level = "s"
-[profile.release.package.guillotiere]
 opt-level = "s"
 [profile.release.package.image]
 opt-level = "s"
@@ -119,5 +86,3 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.rfd]
 opt-level = "s"
-
-
