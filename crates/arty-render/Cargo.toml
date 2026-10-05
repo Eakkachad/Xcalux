@@ -13,5 +13,8 @@ egui-wgpu.workspace = true
 rayon.workspace = true
 wgpu.workspace = true
 
+[dev-dependencies]
+arty-testkit.workspace = true
+
 [lints]
 workspace = true
