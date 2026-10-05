@@ -379,6 +379,10 @@ impl Document {
         Some((grid, &mut self.dirty, mask))
     }
 
+    pub fn dirty(&self) -> &DirtyRegion {
+        &self.dirty
+    }
+
     pub fn dirty_mut(&mut self) -> &mut DirtyRegion {
         &mut self.dirty
     }
@@ -509,23 +513,7 @@ impl Document {
     /// Clipped layers only show inside their base's pixels, so this also
     /// covers changes to a clip group's base.
     pub fn mark_layer_dirty(&mut self, id: LayerId) {
-        let Some(layer) = self.layers.get(&id) else { return };
-        match &layer.content {
-            LayerContent::Raster(grid) => {
-                for c in grid.coords() {
-                    self.dirty.mark(c);
-                }
-            }
-            LayerContent::Folder { children, frame, .. } => {
-                // A frame's border shows even where no child has pixels.
-                for c in frame.iter().flat_map(|f| f.touched_tiles()) {
-                    self.dirty.mark(c);
-                }
-                for c in children.clone() {
-                    self.mark_layer_dirty(c);
-                }
-            }
-        }
+        mark_subtree(&self.layers, &mut self.dirty, id);
     }
 
     /// Toggling `id`'s clip flag regroups the clip run around it: the clip
@@ -534,19 +522,18 @@ impl Document {
     /// base renders). Invalidate all of them.
     fn mark_clip_change_dirty(&mut self, id: LayerId) {
         let Some((parent, index)) = self.location(id) else { return };
-        let siblings = match parent {
-            None => &self.root,
-            Some(p) => self.layers[&p].children().expect("folder"),
-        };
-        let is_clip = |s: &LayerId| self.layers[s].props.clip;
-        // The bottom sibling is always a base, even when flagged as clip.
-        let base = siblings[..index].iter().rposition(|s| !is_clip(s)).or((index > 0).then_some(0));
-        let mut affected: Vec<LayerId> = base.map(|b| siblings[b]).into_iter().collect();
-        affected.push(id);
-        affected.extend(siblings[index + 1..].iter().take_while(|s| is_clip(s)));
-        for l in affected {
-            self.mark_layer_dirty(l);
-        }
+        mark_clip_run(&self.layers, siblings_of(&self.layers, &self.root, parent), index, &mut self.dirty);
+    }
+
+    /// Invalidate what inserting or removing `id` (at its current place)
+    /// changes: its own tiles, or its clip run's when it is in one.
+    fn mark_placed_dirty(&mut self, id: LayerId) {
+        let Some((parent, index)) = self.location(id) else { return };
+        mark_placed(&self.layers, siblings_of(&self.layers, &self.root, parent), index, &mut self.dirty);
+    }
+
+    fn has_clips_above(&self, id: LayerId) -> bool {
+        self.location(id).is_some_and(|(p, i)| clips_above(&self.layers, siblings_of(&self.layers, &self.root, p), i))
     }
 
     pub fn set_folder_expanded(&mut self, id: LayerId, open: bool) {
@@ -634,15 +621,96 @@ impl Document {
 
     /// Swap the layer tree with `snap`, returning the previous tree.
     pub(crate) fn swap_structure(&mut self, snap: StructureSnapshot) -> StructureSnapshot {
+        self.diff_structure(&snap);
         let old = StructureSnapshot {
             layers: std::mem::replace(&mut self.layers, snap.layers),
             root: std::mem::replace(&mut self.root, snap.root),
             active: std::mem::replace(&mut self.active, snap.active),
             next_id: std::mem::replace(&mut self.next_id, snap.next_id),
         };
-        self.dirty.mark_all();
         self.bump();
         old
+    }
+
+    /// Invalidate what swapping to `snap` changes (structure undo/redo):
+    /// layers that come or go (as an insert or delete would), settings,
+    /// content, frames, parents, clip bases and sibling order.
+    fn diff_structure(&mut self, snap: &StructureSnapshot) {
+        let trees = [(&self.layers, &self.root[..]), (&snap.layers, &snap.root[..])];
+        let [old_loc, new_loc] = trees.map(|(l, r)| locations(l, r));
+        let [(old, old_root), (new, new_root)] = trees;
+        let dirty = &mut self.dirty;
+        let both = |dirty: &mut DirtyRegion, id| {
+            mark_subtree(old, dirty, id);
+            mark_subtree(new, dirty, id);
+        };
+        for ((from, root), loc, other) in [(trees[0], &old_loc, new), (trees[1], &new_loc, old)] {
+            for (&id, &(p, i)) in loc {
+                if !other.contains_key(&id) {
+                    mark_placed(from, siblings_of(from, root, p), i, dirty);
+                }
+            }
+        }
+        for (&id, &(op, oi)) in &old_loc {
+            let Some(&(np, ni)) = new_loc.get(&id) else { continue };
+            let (a, b) = (&old[&id], &new[&id]);
+            let (os, ns) = (siblings_of(old, old_root, op), siblings_of(new, new_root, np));
+            match (&a.content, &b.content) {
+                (LayerContent::Raster(g0), LayerContent::Raster(g1)) => {
+                    if !g0.shares_storage(g1) {
+                        for c in g0.coords().chain(g1.coords()) {
+                            if !matches!((g0.get_ref(c), g1.get_ref(c)), (Some(x), Some(y)) if Arc::ptr_eq(x, y)) {
+                                dirty.mark(c);
+                            }
+                        }
+                    }
+                }
+                (LayerContent::Folder { frame: f0, .. }, LayerContent::Folder { frame: f1, .. }) => {
+                    let same = match (f0, f1) {
+                        (None, None) => true,
+                        (Some(x), Some(y)) => Arc::ptr_eq(x, y) || x.shape() == y.shape(),
+                        _ => false,
+                    };
+                    if !same {
+                        for c in f0.iter().chain(f1).flat_map(|f| f.touched_tiles()) {
+                            dirty.mark(c);
+                        }
+                    }
+                    if f0.is_some() != f1.is_some() {
+                        both(dirty, id); // masking starts or stops
+                    }
+                }
+                _ => both(dirty, id),
+            }
+            if op != np || a.props.clip != b.props.clip {
+                mark_placed(old, os, oi, dirty);
+                mark_placed(new, ns, ni, dirty);
+            } else if a.props.visible != b.props.visible
+                || a.props.opacity != b.props.opacity
+                || a.props.blend != b.props.blend
+            {
+                both(dirty, id);
+            }
+            let (b0, b1) = (clip_base(old, os, oi), clip_base(new, ns, ni));
+            if b0 != b1 {
+                both(dirty, id);
+                b0.filter(|b| isolates(old, b)).into_iter().for_each(|b| mark_subtree(old, dirty, b));
+                b1.filter(|b| isolates(new, b)).into_iter().for_each(|b| mark_subtree(new, dirty, b));
+            }
+        }
+        // Survivors that kept their parent but moved among their siblings.
+        let lists = std::iter::once((old_root, new_root))
+            .chain(old_loc.keys().filter_map(|id| Some((old.get(id)?.children()?, new.get(id)?.children()?))));
+        for (s0, s1) in lists {
+            let keep = |s: &[LayerId], other: &[LayerId]| -> Vec<LayerId> {
+                s.iter().copied().filter(|id| other.contains(id)).collect()
+            };
+            let (k0, k1) = (keep(s0, s1), keep(s1, s0));
+            let moved = reordered(&k0, &k1);
+            if !mark_crossing([(old, s0, &k0), (new, s1, &k1)], &moved, dirty) {
+                moved.into_iter().for_each(|id| both(dirty, id));
+            }
+        }
     }
 
     fn insert_above_active(&mut self, layer: Layer) -> LayerId {
@@ -653,7 +721,7 @@ impl Document {
         let at = (index + 1).min(siblings.len());
         siblings.insert(at, id);
         self.active = id;
-        self.dirty.mark_all();
+        self.mark_placed_dirty(id);
         self.bump();
         id
     }
@@ -704,6 +772,7 @@ impl Document {
         if self.count_rasters() == rasters_removed {
             return false;
         }
+        self.mark_placed_dirty(id);
         self.siblings_mut(parent).remove(index);
         for d in &doomed {
             self.layers.remove(d);
@@ -719,7 +788,6 @@ impl Document {
                 siblings[index.saturating_sub(1).min(siblings.len() - 1)]
             };
         }
-        self.dirty.mark_all();
         self.bump();
         true
     }
@@ -727,15 +795,16 @@ impl Document {
     /// Move a layer one step up (`delta = 1`) or down (`-1`) among its siblings.
     pub fn shift_layer(&mut self, id: LayerId, delta: i32) -> bool {
         let Some((parent, index)) = self.location(id) else { return false };
-        let siblings = self.siblings_mut(parent);
+        let siblings_len = match parent {
+            None => self.root.len(),
+            Some(p) => self.layers[&p].children().map_or(0, |c| c.len()),
+        };
         let target = index as i64 + delta as i64;
-        if target < 0 || target >= siblings.len() as i64 {
+        if target < 0 || target >= siblings_len as i64 {
             return false;
         }
-        siblings.swap(index, target as usize);
-        self.dirty.mark_all();
-        self.bump();
-        true
+        let target_idx = if delta > 0 { index + 1 + delta as usize } else { (index as i64 + delta as i64) as usize };
+        self.move_layer(id, parent, target_idx)
     }
 
     fn is_descendant(&self, folder: LayerId, maybe_child: LayerId) -> bool {
@@ -791,6 +860,10 @@ impl Document {
             return false;
         }
         let Some((old_parent, old_index)) = self.location(id) else { return false };
+        let old = (old_parent == parent).then(|| siblings_of(&self.layers, &self.root, parent).to_vec());
+        if old.is_none() {
+            self.mark_placed_dirty(id);
+        }
         self.siblings_mut(old_parent).remove(old_index);
         let siblings = self.siblings_mut(parent);
         let mut at = index;
@@ -798,7 +871,16 @@ impl Document {
             at -= 1;
         }
         siblings.insert(at.min(siblings.len()), id);
-        self.dirty.mark_all();
+        match old {
+            Some(s0) => {
+                let s1 = siblings_of(&self.layers, &self.root, parent);
+                if !mark_crossing([(&self.layers, &s0, &s0), (&self.layers, s1, s1)], &[id], &mut self.dirty) {
+                    mark_placed(&self.layers, &s0, old_index, &mut self.dirty);
+                    self.mark_placed_dirty(id);
+                }
+            }
+            None => self.mark_placed_dirty(id),
+        }
         self.bump();
         true
     }
@@ -821,7 +903,9 @@ impl Document {
         let siblings = self.siblings_mut(parent);
         siblings.insert(index + 1, copy);
         self.active = copy;
-        self.dirty.mark_all();
+        // The copy has the original's pixels, so a clip run it splits only
+        // changes inside them.
+        self.mark_layer_dirty(copy);
         self.bump();
         Some(copy)
     }
@@ -879,10 +963,16 @@ impl Document {
                 blend_tile(dst.get_mut_or_create(c), tile, opacity, upper.props.blend);
             }
         }
+        if self.has_clips_above(id) {
+            self.mark_clip_change_dirty(id);
+        } else {
+            for c in src.coords() {
+                self.dirty.mark(c);
+            }
+        }
         self.siblings_mut(parent).remove(index);
         self.layers.remove(&id);
         self.active = below;
-        self.dirty.mark_all();
         self.bump();
         true
     }
@@ -896,6 +986,173 @@ impl Document {
         grid.clear();
         true
     }
+}
+
+type Layers = AHashMap<LayerId, Layer>;
+
+/// The sibling list under `parent` (`None` = top level).
+fn siblings_of<'a>(layers: &'a Layers, root: &'a [LayerId], parent: Option<LayerId>) -> &'a [LayerId] {
+    match parent {
+        None => root,
+        Some(p) => layers.get(&p).and_then(|l| l.children()).unwrap_or(&[]),
+    }
+}
+
+type Locations = AHashMap<LayerId, (Option<LayerId>, usize)>;
+
+/// `(parent, index)` of every layer.
+fn locations(layers: &Layers, root: &[LayerId]) -> Locations {
+    fn walk(layers: &Layers, ids: &[LayerId], parent: Option<LayerId>, out: &mut Locations) {
+        for (i, &id) in ids.iter().enumerate() {
+            out.insert(id, (parent, i));
+            if let Some(c) = layers.get(&id).and_then(|l| l.children()) {
+                walk(layers, c, Some(id), out);
+            }
+        }
+    }
+    let mut out = AHashMap::with_capacity(layers.len());
+    walk(layers, root, None, &mut out);
+    out
+}
+
+fn is_clip(layers: &Layers, id: &LayerId) -> bool {
+    layers.get(id).is_some_and(|l| l.props.clip)
+}
+
+fn clips_above(layers: &Layers, sibs: &[LayerId], index: usize) -> bool {
+    sibs.get(index + 1).is_some_and(|s| is_clip(layers, s))
+}
+
+/// The base `sibs[index]` clips to; `None` for a base.
+fn clip_base(layers: &Layers, sibs: &[LayerId], index: usize) -> Option<LayerId> {
+    if index == 0 || !is_clip(layers, &sibs[index]) {
+        return None;
+    }
+    // The bottom sibling is always a base, even when flagged as clip.
+    Some(sibs[sibs[..index].iter().rposition(|s| !is_clip(layers, s)).unwrap_or(0)])
+}
+
+fn mark_subtree(layers: &Layers, dirty: &mut DirtyRegion, id: LayerId) {
+    subtree_tiles(layers, id, &mut |c| dirty.mark(c));
+}
+
+/// Every tile where `id` may draw; elsewhere it composites as a no-op.
+fn subtree_tiles(layers: &Layers, id: LayerId, f: &mut impl FnMut(TileCoord)) {
+    let Some(layer) = layers.get(&id) else { return };
+    match &layer.content {
+        LayerContent::Raster(grid) => grid.coords().for_each(&mut *f),
+        LayerContent::Folder { children, frame, .. } => {
+            // A frame's border shows even where no child has pixels.
+            frame.iter().flat_map(|x| x.touched_tiles()).for_each(&mut *f);
+            for &c in children {
+                subtree_tiles(layers, c, f);
+            }
+        }
+    }
+}
+
+/// Invalidate what reordering `moved` among the same siblings changes: two
+/// layers' order matters only where both draw, so mark each moved layer's
+/// tiles that a sibling it crossed may draw in too. `trees` is (layers,
+/// siblings, surviving siblings) before and after. Marks nothing and
+/// returns false when a clip run is involved (or too many layers moved).
+fn mark_crossing(trees: [(&Layers, &[LayerId], &[LayerId]); 2], moved: &[LayerId], dirty: &mut DirtyRegion) -> bool {
+    if moved.len() > 8 {
+        return false;
+    }
+    let index = |s: &[LayerId]| -> AHashMap<LayerId, usize> { s.iter().enumerate().map(|(i, &id)| (id, i)).collect() };
+    let [(l0, s0, k0), (l1, s1, k1)] = trees;
+    let (i0, i1, p1) = (index(s0), index(s1), &index(k1));
+    let crossed = |m: LayerId| {
+        let (a, b) = (k0.iter().position(|&x| x == m).unwrap_or(0), p1[&m]);
+        k0.iter().enumerate().filter(move |&(i, y)| *y != m && (i < a) != (p1[y] < b)).map(|(_, &y)| y)
+    };
+    let clean = |id: LayerId| {
+        [(l0, s0, &i0), (l1, s1, &i1)].iter().all(|&(l, s, ix)| !is_clip(l, &id) && !clips_above(l, s, ix[&id]))
+    };
+    if !moved.iter().all(|&m| clean(m) && crossed(m).all(clean)) {
+        return false;
+    }
+    let mut near = AHashSet::default();
+    for &m in moved {
+        near.clear();
+        for y in crossed(m) {
+            for l in [l0, l1] {
+                subtree_tiles(l, y, &mut |c| {
+                    near.insert(c);
+                });
+            }
+        }
+        for l in [l0, l1] {
+            subtree_tiles(l, m, &mut |c| {
+                if near.contains(&c) {
+                    dirty.mark(c);
+                }
+            });
+        }
+    }
+    true
+}
+
+/// Whether gaining or losing clips changes how `id` renders outside the
+/// clips' tiles: a pass-through folder base turns isolated in every tile.
+/// Other bases look the same wherever no clip has pixels.
+fn isolates(layers: &Layers, id: &LayerId) -> bool {
+    layers.get(id).is_some_and(|l| l.is_folder() && l.props.blend == BlendMode::PassThrough)
+}
+
+/// `sibs[index]`, the clip layers above it and, when it [`isolates`], the
+/// base below it.
+fn mark_clip_run(layers: &Layers, sibs: &[LayerId], index: usize, dirty: &mut DirtyRegion) {
+    let base = sibs[..index].iter().rposition(|s| !is_clip(layers, s)).or((index > 0).then_some(0));
+    let base = base.map(|b| &sibs[b]).filter(|b| isolates(layers, b));
+    let above = sibs[index + 1..].iter().take_while(|s| is_clip(layers, s));
+    for &l in base.into_iter().chain([&sibs[index]]).chain(above) {
+        mark_subtree(layers, dirty, l);
+    }
+}
+
+/// What inserting or removing `sibs[index]` changes: its own tiles, or its
+/// clip run when it is a clip or has clips on it.
+fn mark_placed(layers: &Layers, sibs: &[LayerId], index: usize, dirty: &mut DirtyRegion) {
+    if is_clip(layers, &sibs[index]) || clips_above(layers, sibs, index) {
+        mark_clip_run(layers, sibs, index, dirty);
+    } else {
+        mark_subtree(layers, dirty, sibs[index]);
+    }
+}
+
+/// Ids of `a` (a permutation of `b`) outside a longest common subsequence
+/// of the two: the ones that moved. A long reordered middle counts as all
+/// moved rather than fill a large table.
+fn reordered(a: &[LayerId], b: &[LayerId]) -> Vec<LayerId> {
+    let pre = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let suf = a[pre..].iter().rev().zip(b[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
+    let (a, b) = (&a[pre..a.len() - suf], &b[pre..b.len() - suf]);
+    let (m, n) = (a.len(), b.len());
+    if m == 0 || m * n > 1 << 16 {
+        return a.to_vec();
+    }
+    // dp[i * w + j] = LCS length of a[i..] and b[j..].
+    let w = n + 1;
+    let mut dp = vec![0u16; (m + 1) * w];
+    for i in (0..m).rev() {
+        for j in (0..n).rev() {
+            dp[i * w + j] = if a[i] == b[j] { dp[(i + 1) * w + j + 1] + 1 } else { dp[(i + 1) * w + j].max(dp[i * w + j + 1]) };
+        }
+    }
+    let (mut i, mut j, mut moved) = (0, 0, Vec::new());
+    while i < m {
+        if j < n && a[i] == b[j] {
+            (i, j) = (i + 1, j + 1);
+        } else if j < n && dp[i * w + j + 1] >= dp[(i + 1) * w + j] {
+            j += 1;
+        } else {
+            moved.push(a[i]);
+            i += 1;
+        }
+    }
+    moved
 }
 
 #[cfg(test)]

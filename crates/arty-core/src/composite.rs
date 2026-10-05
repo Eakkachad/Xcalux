@@ -114,7 +114,7 @@ impl Document {
                 }
                 let pass_through = layer.props.blend == BlendMode::PassThrough;
                 let (tmp, rest) = scratch.split_first_mut().expect("scratch depth");
-                let has_children = cov != Cov::None && !children.is_empty();
+                let has_children = cov != Cov::None && children.iter().any(|id| self.contributes(&self.layers[id], c));
                 if pass_through && op >= 1.0 {
                     // Straight into `dst`; a partial tile keeps the backdrop
                     // where the mask is not full, or (mostly outside the
@@ -158,7 +158,9 @@ impl Document {
                 }
             }
             LayerContent::Folder { children, .. } => {
-                if children.is_empty() || op <= 0.0 {
+                // As with clips: an empty or blank folder is skipped, so
+                // moving layers in or out of it changes only their tiles.
+                if op <= 0.0 || !children.iter().any(|id| self.contributes(&self.layers[id], c)) {
                     return;
                 }
                 if layer.props.blend == BlendMode::PassThrough {
@@ -229,7 +231,10 @@ impl Document {
         }
         for id in clips {
             let clip = &self.layers[id];
-            if !clip.props.visible {
+            // Skip a clip with nothing here rather than draw it: drawing
+            // nothing is not always bit-exact (the pass-through round trip),
+            // and structure edits only redraw the tiles they change.
+            if !self.contributes(clip, c) {
                 continue;
             }
             match &clip.content {
@@ -242,9 +247,6 @@ impl Document {
                 // group of its own).
                 LayerContent::Folder { children, frame: None, .. } if clip.props.blend == BlendMode::PassThrough => {
                     let op = clip.props.opacity;
-                    if children.is_empty() || op <= 0.0 {
-                        continue;
-                    }
                     // The children blend against the group itself. Since
                     // atop(s, d) = αd·over(s, d/αd), composite them over the
                     // un-premultiplied (opaque) group, then restore its alpha.
