@@ -2,10 +2,11 @@
 //! selected (tool, brush, colors, view). UI code reads and mutates it only
 //! through these methods so history and brush state stay consistent.
 
-use arty_brush::{BrushGroup, BrushPreset, StrokeEngine, StrokeRefused, default_presets};
+use arty_brush::{BrushGroup, BrushPreset, Reshape, StrokeEngine, StrokeRefused, default_presets};
 use arty_core::{CompositeScratch, Document, Edit, History, LayerId, LayerProps, TileCoord, fix15, tile::new_tile_box};
 use std::collections::HashMap;
 
+use arty_pen::PenEnd;
 use arty_render::View;
 use serde::{Deserialize, Serialize};
 
@@ -127,16 +128,21 @@ mod hsv_math {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InputSettings {
     /// `p' = p^gamma`: >1 needs a firmer press, <1 is lighter.
     pub pressure_gamma: f32,
     /// Pressure used for mouse strokes.
     pub mouse_pressure: f32,
+    /// Read Windows Ink directly: per-sample pressure, tilt, eraser end, OS timestamps.
+    pub native_pen: bool,
+    /// Flipping the pen to its eraser end switches to the eraser end's tool (CSP).
+    pub eraser_end_switch: bool,
 }
 
 impl Default for InputSettings {
     fn default() -> Self {
-        Self { pressure_gamma: 1.0, mouse_pressure: 1.0 }
+        Self { pressure_gamma: 1.0, mouse_pressure: 1.0, native_pen: true, eraser_end_switch: true }
     }
 }
 
@@ -200,6 +206,8 @@ pub struct Studio {
     /// Last preset used per brush group (index into `presets`).
     group_memory: Vec<(BrushGroup, usize)>,
     pub tool: Tool,
+    pen_end: PenEnd,
+    pen_tools: [Tool; 2],
     pub color: ColorState,
     pub view: View,
     pub input: InputSettings,
@@ -226,6 +234,8 @@ impl Studio {
             active_preset: 0,
             presets,
             tool: Tool::Brush(BrushGroup::Pen),
+            pen_end: PenEnd::Tip,
+            pen_tools: [Tool::Brush(BrushGroup::Pen), Tool::Brush(BrushGroup::Eraser)],
             color: ColorState::default(),
             view: View::default(),
             input: InputSettings::default(),
@@ -271,6 +281,21 @@ impl Studio {
             None => self.group_memory.push((group, i)),
         }
         self.brush_dirty = true;
+    }
+
+    pub fn pen_end(&self) -> PenEnd {
+        self.pen_end
+    }
+
+    /// Remember the current tool for the pen end in use, then switch to `end`'s tool.
+    /// No-op while stroking or when `end` is already current.
+    pub fn switch_pen_end(&mut self, end: PenEnd) {
+        if self.engine.is_stroking() || end == self.pen_end {
+            return;
+        }
+        self.pen_tools[self.pen_end as usize] = self.tool;
+        self.pen_end = end;
+        self.select_tool(self.pen_tools[end as usize]);
     }
 
     pub fn preset(&self) -> &BrushPreset {
@@ -407,6 +432,7 @@ impl Studio {
             self.engine.configure(&preset, self.color.main);
             self.brush_dirty = false;
         }
+        self.engine.set_view_zoom(self.view.zoom);
         match self.engine.begin(&mut self.doc, s) {
             Ok(()) => true,
             Err(why) => {
@@ -437,6 +463,9 @@ impl Studio {
             if !self.preset().eraser {
                 self.remember_color();
             }
+        }
+        if self.engine.last_reshape() == Reshape::TooLong {
+            self.notice = Some("Stroke too long to reshape; kept as drawn".into());
         }
     }
 

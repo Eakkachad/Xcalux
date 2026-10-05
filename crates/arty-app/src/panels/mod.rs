@@ -2,8 +2,10 @@
 
 mod brush_size;
 mod color;
+mod curve_editor;
 mod layers;
 mod navigator;
+mod pen_settings;
 mod property;
 mod subtool;
 mod thumbs;

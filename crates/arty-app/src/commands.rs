@@ -46,6 +46,7 @@ pub enum Command {
     SelectTool(Tool),
     ToggleTheme,
     ResetLayout,
+    PenEnd(arty_pen::PenEnd),
 }
 
 impl Command {
@@ -85,6 +86,8 @@ impl Command {
             Command::SelectTool(t) => t.label(),
             Command::ToggleTheme => "Toggle Light/Dark",
             Command::ResetLayout => "Reset Panel Layout",
+            Command::PenEnd(arty_pen::PenEnd::Tip) => "Pen Tip",
+            Command::PenEnd(arty_pen::PenEnd::Eraser) => "Pen Eraser End",
         }
     }
 }
@@ -226,6 +229,7 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::SelectTool(t) => studio.select_tool(t),
         Command::ToggleTheme => shell.toggle_theme(),
         Command::ResetLayout => shell.reset_layout_requested = true,
+        Command::PenEnd(end) => studio.switch_pen_end(end),
     }
 }
 

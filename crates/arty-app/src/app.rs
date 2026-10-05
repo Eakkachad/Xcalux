@@ -84,11 +84,12 @@ impl ArtyApp {
         let files = FileController::new(io, Box::new(NativeDialogs), &studio);
         let mut shell = Shell::new(theme_kind);
         shell.autosave = autosave;
+        let pen = arty_pen::install(cc);
 
         Self {
             studio,
             shell,
-            canvas: CanvasPane::new(cc.wgpu_render_state.clone()),
+            canvas: CanvasPane::new(cc.wgpu_render_state.clone(), pen),
             previews: PreviewCache::default(),
             thumbs: ThumbCache::default(),
             dock,

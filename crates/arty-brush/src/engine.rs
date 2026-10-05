@@ -19,6 +19,16 @@ pub enum StrokeRefused {
     AlphaLocked,
 }
 
+/// What `end()` did to shape the finished stroke (exit taper / post correction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reshape {
+    #[default]
+    Skipped,
+    TooLong,
+    Tail { tiles: u32 },
+    Full,
+}
+
 pub struct StrokeEngine {
     brush: hokusai::Brush,
     state: BrushState,
@@ -32,6 +42,7 @@ pub struct StrokeEngine {
     painted: bool,
     /// Highest pressure fed this stroke, for the dot a tap leaves.
     peak_pressure: f32,
+    reshape: Reshape,
 }
 
 impl Default for StrokeEngine {
@@ -53,6 +64,7 @@ impl StrokeEngine {
             eraser: false,
             painted: false,
             peak_pressure: 0.0,
+            reshape: Reshape::Skipped,
         }
     }
 
@@ -65,6 +77,15 @@ impl StrokeEngine {
 
     pub fn set_stabilizer(&mut self, level: u8) {
         self.stabilizer.set_level(level);
+    }
+
+    /// Screen pixels per document pixel at stroke start (post correction is screen-relative).
+    pub fn set_view_zoom(&mut self, zoom: f32) {
+        let _ = zoom;
+    }
+
+    pub fn last_reshape(&self) -> Reshape {
+        self.reshape
     }
 
     pub fn is_stroking(&self) -> bool {

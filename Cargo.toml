@@ -17,6 +17,7 @@ license = "MIT OR Apache-2.0"
 arty-core = { path = "crates/arty-core" }
 arty-brush = { path = "crates/arty-brush" }
 arty-io = { path = "crates/arty-io" }
+arty-pen = { path = "crates/arty-pen" }
 arty-render = { path = "crates/arty-render" }
 arty-testkit = { path = "crates/arty-testkit" }
 hokusai = { path = "hokusai-0.2.0/hokusai-0.2.0/hokusai", default-features = false }
@@ -32,6 +33,7 @@ log = "0.4"
 env_logger = "0.11"
 png = "0.18"
 rayon = "1"
+raw-window-handle = "0.6"
 rfd = "0.17"
 serde = { version = "1", features = ["derive"] }
 wgpu = "30"

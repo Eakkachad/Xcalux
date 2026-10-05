@@ -6,7 +6,10 @@
 //! events are ignored for painting so the pen's simulated mouse doesn't
 //! double-feed the stroke.
 
+use std::rc::Rc;
+
 use arty_brush::InputSample;
+use arty_pen::{PenQueue, PenStats};
 use arty_render::{CanvasGpu, CanvasSync, View};
 use egui::{Color32, CursorIcon, Event, PointerButton, Pos2, Rect, Sense, Shape, Stroke, TouchDeviceId, TouchId, TouchPhase, Vec2};
 
@@ -40,12 +43,31 @@ pub struct CanvasPane {
     nav: Option<Nav>,
     last_input_time: f64,
     events: Vec<Event>,
+    #[allow(dead_code)] // TRACK PEN
+    pen: Option<Rc<PenQueue>>,
+    #[allow(dead_code)] // TRACK PEN
+    pen_stats: PenStats,
 }
 
 impl CanvasPane {
-    pub fn new(render: Option<egui_wgpu::RenderState>) -> Self {
+    pub fn new(render: Option<egui_wgpu::RenderState>, pen: Option<Rc<PenQueue>>) -> Self {
         let gpu = render.as_ref().map(|r| CanvasGpu::new(&r.device, r.target_format));
-        Self { gpu, render, sync: CanvasSync::default(), stroke: None, nav: None, last_input_time: 0.0, events: Vec::new() }
+        Self {
+            gpu,
+            render,
+            sync: CanvasSync::default(),
+            stroke: None,
+            nav: None,
+            last_input_time: 0.0,
+            events: Vec::new(),
+            pen,
+            pen_stats: PenStats::default(),
+        }
+    }
+
+    #[allow(dead_code)] // TRACK CURVE: status bar overlay
+    pub fn pen_stats(&self) -> PenStats {
+        self.pen_stats
     }
 
     pub fn is_busy(&self) -> bool {
@@ -400,7 +422,7 @@ mod tests {
         fn new() -> Self {
             let mut h = Self {
                 ctx: egui::Context::default(),
-                pane: CanvasPane::new(None),
+                pane: CanvasPane::new(None, None),
                 studio: Studio::new(Document::new(512, 512, 72)),
                 shell: Shell::new(ThemeKind::Dark),
                 time: 0.0,
