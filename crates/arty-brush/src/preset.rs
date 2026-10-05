@@ -68,6 +68,12 @@ pub struct BrushPreset {
     pub eraser: bool,
     /// Stabilizer strength 0..=15 (SAI "S-levels").
     pub stabilizer: u8,
+    /// Entry taper length in document px (CSP "Starting"); 0 = off. Applied live.
+    pub taper_in: f32,
+    /// Exit taper length in document px (CSP "Ending"); 0 = off. Applied at pen-up by replay.
+    pub taper_out: f32,
+    /// Post correction strength 0..=shape::MAX_CORRECTION; 0 = off.
+    pub post_correction: u8,
 }
 
 impl Default for BrushPreset {
@@ -86,6 +92,9 @@ impl Default for BrushPreset {
             jitter: 0.0,
             eraser: false,
             stabilizer: 3,
+            taper_in: 0.0,
+            taper_out: 0.0,
+            post_correction: 0,
         }
     }
 }
@@ -140,6 +149,18 @@ fn pressure_curve(b: &mut hokusai::Brush, s: BrushSetting, base: f32, f: impl Fn
 }
 
 impl BrushPreset {
+    /// Upper bound of any dab's radius (px): the full-pressure radius
+    /// `to_hokusai` sets (after its optical floor), grown by the largest size
+    /// jitter hokusai's Gaussian (sum of 4 uniforms, ≤ √12 σ) can draw, plus
+    /// a margin for the anti-aliasing bake (≤ 0.5 px).
+    pub(crate) fn max_dab_radius(&self) -> f32 {
+        let hardness = self.hardness.clamp(0.02, 1.0);
+        let r_base = (self.size.clamp(MIN_BRUSH_SIZE, MAX_BRUSH_SIZE) * 0.5)
+            .max(0.2)
+            .max(MIN_OPTICAL_RADIUS / (0.5 + 0.5 * hardness));
+        r_base * (3.4642 * self.jitter.clamp(0.0, 1.0) * 0.4).exp() + 1.5
+    }
+
     /// Compile to a hokusai brush painting `color` (sRGB, 0..=1).
     pub fn to_hokusai(&self, color: [f32; 3]) -> hokusai::Brush {
         let mut b = hokusai::Brush::new();
@@ -232,6 +253,16 @@ pub fn default_presets() -> Vec<BrushPreset> {
             b.hardness = 0.92;
             b.density = 6.0;
             b.stabilizer = 4;
+        }),
+        p("Inking Pen", BrushGroup::Pen, &|b| {
+            b.size = 8.0;
+            b.min_size = 0.12;
+            b.hardness = 0.92;
+            b.density = 6.0;
+            b.stabilizer = 4;
+            b.taper_in = 40.0;
+            b.taper_out = 80.0;
+            b.post_correction = 3;
         }),
         p("Mapping Pen", BrushGroup::Pen, &|b| {
             b.size = 3.5;
@@ -333,4 +364,78 @@ pub fn default_presets() -> Vec<BrushPreset> {
             b.stabilizer = 0;
         }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+    use serde::de::value::{Error, MapDeserializer};
+
+    use super::*;
+
+    #[test]
+    fn presets_saved_before_shaping_load_with_shaping_off() {
+        // A preset as stored before taper / post correction existed.
+        let old = MapDeserializer::<_, Error>::new([("size", 12.0f32), ("opacity", 0.5)].into_iter());
+        let p = BrushPreset::deserialize(old).unwrap();
+        assert_eq!((p.size, p.opacity), (12.0, 0.5));
+        assert_eq!((p.taper_in, p.taper_out, p.post_correction), (0.0, 0.0, 0));
+    }
+
+    #[test]
+    fn only_inking_pen_shapes_by_default() {
+        let names: Vec<_> = default_presets().into_iter().map(|p| p.name).collect();
+        let shaped: Vec<_> = default_presets()
+            .into_iter()
+            .filter(|p| p.taper_in > 0.0 || p.taper_out > 0.0 || p.post_correction > 0)
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(shaped, ["Inking Pen"]);
+        let g = names.iter().position(|n| n == "G-Pen").unwrap();
+        assert_eq!(names[g + 1], "Inking Pen");
+    }
+
+    /// Largest radius among the dabs a brush draws (paints nothing).
+    struct MaxDab {
+        discard: Box<arty_core::TilePixels>,
+        max: f32,
+    }
+
+    impl hokusai::TiledSurface for MaxDab {
+        fn tile_request_start(&mut self, _tx: i32, _ty: i32) -> &mut hokusai::TilePixels {
+            &mut self.discard
+        }
+
+        fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
+
+        fn draw_dab(&mut self, dab: &hokusai::Dab) -> bool {
+            self.max = self.max.max(dab.radius);
+            false
+        }
+    }
+
+    /// `max_dab_radius` bounds every dab, including thin brushes the optical
+    /// floor widens (the Tail replay's clip relies on it).
+    #[test]
+    fn max_dab_radius_bounds_every_dab() {
+        for size in [0.5, 1.0, 3.0, 40.0] {
+            for hardness in [0.0, 0.5, 0.92, 1.0] {
+                for jitter in [0.0, 0.5, 1.0] {
+                    for min_size in [0.05, 1.0] {
+                        let p = BrushPreset { size, hardness, jitter, min_size, ..Default::default() };
+                        let brush = p.to_hokusai([0.0; 3]);
+                        let mut state = hokusai::BrushState::default();
+                        let mut surface = MaxDab { discard: arty_core::tile::new_tile_box(), max: 0.0 };
+                        for i in 0..400 {
+                            let t = i as f32;
+                            let pressure = 0.5 + 0.5 * (t * 0.05).sin();
+                            brush.stroke_to(&mut state, &mut surface, 20.0 + t, 60.0 + 10.0 * (t * 0.03).sin(), pressure, 0.0, 0.0, 0.005);
+                        }
+                        assert!(surface.max > 0.0, "{p:?} drew nothing");
+                        assert!(surface.max <= p.max_dab_radius(), "{size} {hardness} {jitter} {min_size}: dab {} > bound {}", surface.max, p.max_dab_radius());
+                    }
+                }
+            }
+        }
+    }
 }

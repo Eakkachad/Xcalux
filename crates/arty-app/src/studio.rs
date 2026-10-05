@@ -2,10 +2,12 @@
 //! selected (tool, brush, colors, view). UI code reads and mutates it only
 //! through these methods so history and brush state stay consistent.
 
-use arty_brush::{BrushGroup, BrushPreset, StrokeEngine, StrokeRefused, default_presets};
+use arty_brush::pressure::PressureCurve;
+use arty_brush::{BrushGroup, BrushPreset, Reshape, StrokeEngine, StrokeRefused, default_presets};
 use arty_core::{CompositeScratch, Document, Edit, History, LayerId, LayerProps, TileCoord, fix15, tile::new_tile_box};
 use std::collections::HashMap;
 
+use arty_pen::PenEnd;
 use arty_render::View;
 use serde::{Deserialize, Serialize};
 
@@ -127,16 +129,136 @@ mod hsv_math {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(from = "InputSettingsRepr")]
 pub struct InputSettings {
-    /// `p' = p^gamma`: >1 needs a firmer press, <1 is lighter.
-    pub pressure_gamma: f32,
+    /// Maps raw pen pressure to brush pressure (CSP "Adjust pen pressure").
+    pub pressure_curve: PressureCurve,
     /// Pressure used for mouse strokes.
     pub mouse_pressure: f32,
+    /// Read Windows Ink directly: per-sample pressure, tilt, eraser end, OS timestamps.
+    pub native_pen: bool,
+    /// Flipping the pen to its eraser end switches to the eraser end's tool (CSP).
+    pub eraser_end_switch: bool,
+    pub display_sync: DisplaySync,
+    /// Show pen rate / input age / frame time in the status bar.
+    pub show_latency: bool,
 }
 
 impl Default for InputSettings {
     fn default() -> Self {
-        Self { pressure_gamma: 1.0, mouse_pressure: 1.0 }
+        Self {
+            pressure_curve: PressureCurve::linear(),
+            mouse_pressure: 1.0,
+            native_pen: true,
+            eraser_end_switch: true,
+            display_sync: DisplaySync::default(),
+            show_latency: false,
+        }
+    }
+}
+
+/// Deserialization view that also accepts saves from before the pressure curve.
+///
+/// No `Option` fields: eframe stores RON without `implicit_some`, so an old bare
+/// value would fail to load, and a failed `input` discards the whole saved state.
+/// The rule is unambiguous because new saves never write `pressure_gamma` (it
+/// reads as 1.0) and old saves never contain `pressure_curve`.
+#[derive(Deserialize)]
+#[serde(default)]
+struct InputSettingsRepr {
+    /// Legacy (≤ v2 @ 0b27b25c). Never written any more.
+    pressure_gamma: f32,
+    pressure_curve: PressureCurve,
+    mouse_pressure: f32,
+    native_pen: bool,
+    eraser_end_switch: bool,
+    display_sync: DisplaySync,
+    show_latency: bool,
+}
+
+impl Default for InputSettingsRepr {
+    fn default() -> Self {
+        let d = InputSettings::default();
+        Self {
+            pressure_gamma: 1.0,
+            pressure_curve: d.pressure_curve,
+            mouse_pressure: d.mouse_pressure,
+            native_pen: d.native_pen,
+            eraser_end_switch: d.eraser_end_switch,
+            display_sync: d.display_sync,
+            show_latency: d.show_latency,
+        }
+    }
+}
+
+impl From<InputSettingsRepr> for InputSettings {
+    fn from(r: InputSettingsRepr) -> Self {
+        let pressure_curve =
+            if (r.pressure_gamma - 1.0).abs() > 1e-6 { PressureCurve::from_gamma(r.pressure_gamma) } else { r.pressure_curve };
+        Self {
+            pressure_curve,
+            mouse_pressure: r.mouse_pressure,
+            native_pen: r.native_pen,
+            eraser_end_switch: r.eraser_end_switch,
+            display_sync: r.display_sync,
+            show_latency: r.show_latency,
+        }
+    }
+}
+
+/// How finished frames wait for the display: smoothness against input lag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DisplaySync {
+    /// Vsync, two frames queued.
+    Smooth,
+    /// Vsync, one frame queued (eframe's own default).
+    #[default]
+    LowLatency,
+    /// Mailbox: the newest frame replaces a queued one, no tearing.
+    FastVsync,
+    /// No vsync: may tear.
+    Off,
+}
+
+impl DisplaySync {
+    pub const ALL: [DisplaySync; 4] = [DisplaySync::Smooth, DisplaySync::LowLatency, DisplaySync::FastVsync, DisplaySync::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DisplaySync::Smooth => "Smooth",
+            DisplaySync::LowLatency => "Low latency",
+            DisplaySync::FastVsync => "Fast vsync",
+            DisplaySync::Off => "Off",
+        }
+    }
+
+    /// `fast_vsync_ok`: Mailbox is supported (DX12). Without it, FastVsync falls
+    /// back to LowLatency, since configuring an unsupported present mode panics.
+    pub fn surface_config(self, fast_vsync_ok: bool) -> egui_wgpu::SurfaceConfig {
+        use egui_wgpu::wgpu::PresentMode;
+        let (present_mode, latency) = match self {
+            DisplaySync::Smooth => (PresentMode::AutoVsync, 2),
+            DisplaySync::LowLatency => (PresentMode::AutoVsync, 1),
+            DisplaySync::FastVsync if fast_vsync_ok => (PresentMode::Mailbox, 1),
+            DisplaySync::FastVsync => return DisplaySync::LowLatency.surface_config(false),
+            DisplaySync::Off => (PresentMode::AutoNoVsync, 1),
+        };
+        egui_wgpu::SurfaceConfig { present_mode, desired_maximum_frame_latency: Some(latency) }
+    }
+
+    /// The mode whose surface config is `cfg` (what the painter was started
+    /// with), if any. Fast vsync without Mailbox support reads as Low latency.
+    pub fn from_surface_config(cfg: egui_wgpu::SurfaceConfig, fast_vsync_ok: bool) -> Option<DisplaySync> {
+        DisplaySync::ALL.into_iter().find(|s| s.surface_config(fast_vsync_ok) == cfg)
+    }
+
+    /// The `display_sync` value inside eframe's saved state (`app.ron`, where our
+    /// settings are an escaped RON string), read before eframe opens the window.
+    pub fn from_saved(app_ron: &str) -> Option<DisplaySync> {
+        let key = "display_sync:";
+        let rest = &app_ron[app_ron.find(key)? + key.len()..];
+        let name = &rest[..rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len())];
+        DisplaySync::ALL.into_iter().find(|s| format!("{s:?}") == name)
     }
 }
 
@@ -200,9 +322,13 @@ pub struct Studio {
     /// Last preset used per brush group (index into `presets`).
     group_memory: Vec<(BrushGroup, usize)>,
     pub tool: Tool,
+    pen_end: PenEnd,
+    pen_tools: [Tool; 2],
     pub color: ColorState,
     pub view: View,
     pub input: InputSettings,
+    /// The renderer supports [`DisplaySync::FastVsync`] (DX12 backend). Runtime only.
+    pub fast_vsync_ok: bool,
     /// Fit the page to the canvas on the next frame.
     pub fit_pending: bool,
     brush_dirty: bool,
@@ -226,9 +352,12 @@ impl Studio {
             active_preset: 0,
             presets,
             tool: Tool::Brush(BrushGroup::Pen),
+            pen_end: PenEnd::Tip,
+            pen_tools: [Tool::Brush(BrushGroup::Pen), Tool::Brush(BrushGroup::Eraser)],
             color: ColorState::default(),
             view: View::default(),
             input: InputSettings::default(),
+            fast_vsync_ok: false,
             fit_pending: true,
             brush_dirty: true,
             preset_rev: 0,
@@ -271,6 +400,34 @@ impl Studio {
             None => self.group_memory.push((group, i)),
         }
         self.brush_dirty = true;
+    }
+
+    pub fn pen_end(&self) -> PenEnd {
+        self.pen_end
+    }
+
+    /// Remember the current tool for the pen end in use, then switch to `end`'s tool.
+    /// No-op while stroking or when `end` is already current.
+    pub fn switch_pen_end(&mut self, end: PenEnd) {
+        if self.engine.is_stroking() || end == self.pen_end {
+            return;
+        }
+        self.pen_tools[self.pen_end as usize] = self.tool;
+        self.pen_end = end;
+        self.select_tool(self.pen_tools[end as usize]);
+    }
+
+    /// Stop tracking pen ends (eraser-end switching or the native pen is
+    /// off): the pen counts as its tip again. When the eraser end was in use,
+    /// its tool is filed under the eraser end and the tip's tool comes back,
+    /// so turning switching back on never loses or swaps either end's tool.
+    pub fn reset_pen_end(&mut self) {
+        if self.engine.is_stroking() || self.pen_end == PenEnd::Tip {
+            return;
+        }
+        self.pen_tools[PenEnd::Eraser as usize] = self.tool;
+        self.pen_end = PenEnd::Tip;
+        self.select_tool(self.pen_tools[PenEnd::Tip as usize]);
     }
 
     pub fn preset(&self) -> &BrushPreset {
@@ -397,8 +554,9 @@ impl Studio {
 
     // ----- strokes ---------------------------------------------------------
 
+    /// Raw pen pressure 0..=1 through the user's curve. Mouse pressure is not shaped.
     pub fn shape_pressure(&self, raw: f32) -> f32 {
-        raw.clamp(0.0, 1.0).powf(self.input.pressure_gamma.clamp(0.2, 5.0))
+        self.input.pressure_curve.eval(raw)
     }
 
     pub fn begin_stroke(&mut self, s: arty_brush::InputSample) -> bool {
@@ -407,6 +565,7 @@ impl Studio {
             self.engine.configure(&preset, self.color.main);
             self.brush_dirty = false;
         }
+        self.engine.set_view_zoom(self.view.zoom);
         match self.engine.begin(&mut self.doc, s) {
             Ok(()) => true,
             Err(why) => {
@@ -437,6 +596,9 @@ impl Studio {
             if !self.preset().eraser {
                 self.remember_color();
             }
+        }
+        if self.engine.last_reshape() == Reshape::TooLong {
+            self.notice = Some("Stroke too long to reshape; kept as drawn".into());
         }
     }
 
@@ -541,6 +703,28 @@ impl Studio {
     }
 }
 
+/// In-memory `eframe::Storage`, so tests go through eframe's real RON encoding.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MemStorage(pub HashMap<String, String>);
+
+#[cfg(test)]
+impl eframe::Storage for MemStorage {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+
+    fn flush(&mut self) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +827,103 @@ mod tests {
         let settled = e(&s);
         s.undo(); // nothing left: no bump
         assert_eq!(e(&s), settled);
+    }
+
+    fn load_input(ron: &str) -> InputSettings {
+        let mut st = MemStorage::default();
+        eframe::Storage::set_string(&mut st, "input", ron.to_owned());
+        eframe::get_value(&st, "input").expect("input settings load")
+    }
+
+    #[test]
+    fn input_settings_ron_round_trip() {
+        let custom = InputSettings {
+            pressure_curve: PressureCurve::from_points(&[[0.0, 0.05], [0.3, 0.1], [0.7, 0.8], [1.0, 1.0]]),
+            mouse_pressure: 0.6,
+            native_pen: false,
+            eraser_end_switch: false,
+            display_sync: DisplaySync::Off,
+            show_latency: true,
+        };
+        for s in [InputSettings::default(), custom] {
+            let mut st = MemStorage::default();
+            eframe::set_value(&mut st, "input", &s);
+            let text = st.0["input"].clone();
+            assert!(!text.contains("pressure_gamma"), "legacy field written: {text}");
+            assert_eq!(eframe::get_value::<InputSettings>(&st, "input"), Some(s), "{text}");
+        }
+        // A save with only some of the fields fills the rest from the defaults.
+        let partial = load_input("(display_sync:Smooth)");
+        assert_eq!(partial, InputSettings { display_sync: DisplaySync::Smooth, ..Default::default() });
+    }
+
+    #[test]
+    fn legacy_gamma_save_migrates() {
+        let s = load_input("(pressure_gamma:1.5,mouse_pressure:0.8)");
+        assert_eq!(s.mouse_pressure, 0.8);
+        assert_eq!(s.pressure_curve, PressureCurve::from_gamma(1.5));
+        for i in 0..=1000 {
+            let x = i as f32 / 1000.0;
+            let err = (s.pressure_curve.eval_exact(x) - x.powf(1.5)).abs();
+            assert!(err <= 0.003, "x = {x}: off x^1.5 by {err}");
+        }
+        let d = InputSettings::default();
+        assert_eq!((s.native_pen, s.eraser_end_switch, s.display_sync, s.show_latency), (d.native_pen, d.eraser_end_switch, d.display_sync, d.show_latency));
+
+        let s = load_input("(pressure_gamma:1.0,mouse_pressure:1.0)");
+        assert!(s.pressure_curve.is_linear());
+        assert_eq!(s, InputSettings::default());
+    }
+
+    #[test]
+    fn shape_pressure_uses_curve() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        // Default: linear, bit-identical to the old gamma 1.0 path (`p.powf(1.0)`).
+        for i in 0..=4096 {
+            let p = i as f32 / 4096.0;
+            assert_eq!(s.shape_pressure(p), p.clamp(0.0, 1.0).powf(1.0));
+        }
+        assert_eq!(s.shape_pressure(-0.5), 0.0);
+        assert_eq!(s.shape_pressure(1.5), 1.0);
+        assert_eq!(s.shape_pressure(f32::NAN), 0.0);
+
+        s.input.pressure_curve = PressureCurve::from_points(&[[0.0, 0.0], [0.5, 0.2], [1.0, 1.0]]);
+        assert!((s.shape_pressure(0.5) - 0.2).abs() <= 2e-3);
+        for i in 0..=100 {
+            let p = i as f32 / 100.0;
+            assert_eq!(s.shape_pressure(p), s.input.pressure_curve.eval(p));
+        }
+    }
+
+    #[test]
+    fn display_sync_surface_configs() {
+        use egui_wgpu::wgpu::PresentMode;
+        let cfg = |m, l| egui_wgpu::SurfaceConfig { present_mode: m, desired_maximum_frame_latency: Some(l) };
+        for ok in [false, true] {
+            assert_eq!(DisplaySync::Smooth.surface_config(ok), cfg(PresentMode::AutoVsync, 2));
+            assert_eq!(DisplaySync::LowLatency.surface_config(ok), cfg(PresentMode::AutoVsync, 1));
+            assert_eq!(DisplaySync::Off.surface_config(ok), cfg(PresentMode::AutoNoVsync, 1));
+        }
+        assert_eq!(DisplaySync::FastVsync.surface_config(true), cfg(PresentMode::Mailbox, 1));
+        assert_eq!(DisplaySync::FastVsync.surface_config(false), DisplaySync::LowLatency.surface_config(false));
+        // The default is exactly what eframe used before the setting existed.
+        assert_eq!(InputSettings::default().display_sync, DisplaySync::LowLatency);
+        assert_eq!(DisplaySync::LowLatency.surface_config(false), egui_wgpu::SurfaceConfig::LOW_LATENCY);
+    }
+
+    #[test]
+    fn display_sync_reads_from_saved_state() {
+        for sync in DisplaySync::ALL {
+            let mut st = MemStorage::default();
+            eframe::set_value(&mut st, "input", &InputSettings { display_sync: sync, ..Default::default() });
+            // eframe's app.ron holds each value as an escaped string.
+            let app_ron = format!("{{\"arty-v2\":{:?}}}", format!("(theme:Dark,input:{})", st.0["input"]));
+            assert_eq!(DisplaySync::from_saved(&app_ron), Some(sync), "{app_ron}");
+        }
+        assert_eq!(DisplaySync::from_saved(""), None);
+        assert_eq!(DisplaySync::from_saved("(input:(pressure_gamma:1.5))"), None);
+        assert_eq!(DisplaySync::from_saved("display_sync:Sometimes"), None);
+        assert_eq!(DisplaySync::from_saved("display_sync:"), None);
     }
 
     #[test]

@@ -269,6 +269,7 @@ dependencies = [
  "arty-brush",
  "arty-core",
  "arty-io",
+ "arty-pen",
  "arty-render",
  "arty-testkit",
  "eframe",
@@ -321,6 +322,16 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "arty-pen"
+version = "0.2.0"
+dependencies = [
+ "arty-testkit",
+ "log",
+ "raw-window-handle",
  "windows-sys 0.61.2",
 ]
 

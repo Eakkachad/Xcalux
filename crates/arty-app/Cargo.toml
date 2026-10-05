@@ -13,6 +13,7 @@ path = "src/main.rs"
 arty-brush.workspace = true
 arty-core.workspace = true
 arty-io.workspace = true
+arty-pen.workspace = true
 arty-render.workspace = true
 eframe.workspace = true
 egui.workspace = true

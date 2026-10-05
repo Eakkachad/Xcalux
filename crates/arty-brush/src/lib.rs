@@ -8,10 +8,12 @@
 pub mod engine;
 pub mod input;
 pub mod preset;
+pub mod pressure;
 pub mod preview;
+pub mod shape;
 pub mod surface;
 
-pub use engine::{StrokeEngine, StrokeRefused};
+pub use engine::{Reshape, StrokeEngine, StrokeRefused};
 pub use input::{InputSample, Stabilizer};
 pub use preset::{BrushGroup, BrushPreset, MAX_BRUSH_SIZE, MIN_BRUSH_SIZE, default_presets};
 pub use preview::render_preview;

@@ -16,7 +16,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             Tool::Zoom => "Click to zoom in, Alt+click to zoom out, drag to zoom smoothly.",
             Tool::Brush(_) => "",
         });
-        input_settings(ui, studio);
+        super::pen_settings::ui(ui, studio);
         return;
     }
 
@@ -76,6 +76,22 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             ui.checkbox(&mut p.eraser, "");
             ui.end_row();
         });
+
+        section(ui, "STARTING AND ENDING");
+        egui::Grid::new("brush-shape").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("Taper in");
+            ui.add(Slider::new(&mut p.taper_in, 0.0..=500.0).suffix(" px").max_decimals(0))
+                .on_hover_text("Uses this sub tool's pressure settings (Min size / Min opacity)");
+            ui.end_row();
+            ui.label("Taper out");
+            ui.add(Slider::new(&mut p.taper_out, 0.0..=500.0).suffix(" px").max_decimals(0))
+                .on_hover_text("Applied when the pen lifts. Uses Min size / Min opacity");
+            ui.end_row();
+            ui.label("Post correction");
+            ui.add(Slider::new(&mut p.post_correction, 0..=arty_brush::shape::MAX_CORRECTION))
+                .on_hover_text("Smooths the finished line when the pen lifts, relative to the current zoom");
+            ui.end_row();
+        });
     });
 
     if p != *studio.preset() {
@@ -83,25 +99,11 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
     }
 
     ui.add_space(6.0);
-    input_settings(ui, studio);
+    super::pen_settings::ui(ui, studio);
 }
 
-fn percent(v: &mut f32) -> Slider<'_> {
+pub(super) fn percent(v: &mut f32) -> Slider<'_> {
     Slider::new(v, 0.0..=1.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)).custom_parser(|s| {
         s.trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)
     })
-}
-
-fn input_settings(ui: &mut egui::Ui, studio: &mut Studio) {
-    egui::CollapsingHeader::new("Pen & mouse").default_open(false).show(ui, |ui| {
-        egui::Grid::new("input-settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("Pressure curve");
-            ui.add(Slider::new(&mut studio.input.pressure_gamma, 0.3..=3.0).logarithmic(true).max_decimals(2))
-                .on_hover_text("Above 1 needs a firmer press; below 1 is more sensitive");
-            ui.end_row();
-            ui.label("Mouse pressure");
-            ui.add(percent(&mut studio.input.mouse_pressure));
-            ui.end_row();
-        });
-    });
 }
