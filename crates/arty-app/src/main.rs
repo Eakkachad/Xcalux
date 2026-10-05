@@ -22,15 +22,6 @@ mod tools;
 static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 
 fn main() -> eframe::Result<()> {
-    #[cfg(windows)]
-    unsafe {
-        #[link(name = "imm32")]
-        unsafe extern "system" {
-            fn ImmDisableIME(id: u32) -> i32;
-        }
-        let _ = ImmDisableIME(0);
-    }
-
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     init_rayon();
 
