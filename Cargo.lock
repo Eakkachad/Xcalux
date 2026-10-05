@@ -345,6 +345,7 @@ dependencies = [
  "bytemuck",
  "egui",
  "egui-wgpu",
+ "log",
  "rayon",
  "wgpu",
 ]
