@@ -281,9 +281,20 @@ impl FileController {
         self.saved_rev != Some(doc.revision())
     }
 
+    /// Bench hooks (bench.rs): the next close drops unsaved changes (and the
+    /// recovery file) without asking.
+    pub fn discard_on_close(&mut self) {
+        self.allow_close = true;
+    }
+
     /// A dialog of this controller is open (document shortcuts are off).
     pub fn has_modal(&self) -> bool {
         self.modal.is_some()
+    }
+
+    /// The open dialog is the loading one (bench.rs).
+    pub fn is_loading(&self) -> bool {
+        matches!(self.modal, Some(Modal::Loading(_)))
     }
 
     #[cfg(test)]

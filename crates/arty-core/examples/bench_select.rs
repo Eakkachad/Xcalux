@@ -72,8 +72,9 @@ fn tone() -> Selection {
 }
 
 fn main() {
-    let threads = [1usize, 8, std::thread::available_parallelism().map_or(8, |n| n.get())];
-    println!("B4 600 dpi: {W} × {H} px, {} tiles; logical cores {}", W.div_ceil(64) * H.div_ceil(64), threads[2]);
+    // The global pool's size: RAYON_NUM_THREADS when set (plans/bench/B013), else the logical cores.
+    let threads = [1usize, 8, rayon::current_num_threads()];
+    println!("B4 600 dpi: {W} × {H} px, {} tiles; global pool {} threads", W.div_ceil(64) * H.div_ceil(64), threads[2]);
 
     let typical = lasso(3000.0, 4300.0, 2200.0, 3000.0, 0.15);
     let other = lasso(3600.0, 3600.0, 1800.0, 2000.0, 0.2);

@@ -680,7 +680,11 @@ fn markdown(a: &Args, page: Page, tiles: usize, unique: usize, raw: u64, gen_ms:
         gen_ms / 1000.0
     );
     s += &format!("- First full save: {:.0} MB main file.\n", main_len as f64 / 1e6);
-    s += &format!("- Machine: {cpu}, {threads} hardware threads; io pool {} threads below normal priority.\n", a.threads);
+    s += &format!(
+        "- Machine: {cpu}, {threads} hardware threads (rayon global pool {}); io pool {} threads below normal priority.\n",
+        rayon::current_num_threads(),
+        a.threads
+    );
     s += &format!(
         "- Reproduce: `cargo run --release -p arty-io --example io_bench -- --preset {} --threads {} --out <file>`\n\n",
         a.preset, a.threads
