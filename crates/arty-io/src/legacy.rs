@@ -463,6 +463,7 @@ fn props_of(l: &MetaLayer, id: LayerId, warnings: &mut Vec<LoadWarning>) -> Laye
         clip: l.is_clipping,
         lock_alpha: l.lock_alpha,
         locked: false,
+        reference: false,
     }
 }
 
@@ -645,6 +646,7 @@ pub fn import_v1<R: ReadAt + Sync + ?Sized>(
             Kind::Folder => LayerContent::Folder {
                 children: children.get_mut(i).map(std::mem::take).unwrap_or_default(),
                 expanded: true,
+                frame: None,
             },
             Kind::Raster | Kind::Vector => {
                 LayerContent::Raster(grids.get_mut(i).and_then(Option::take).unwrap_or_default())

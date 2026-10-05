@@ -19,9 +19,55 @@ use egui::{Color32, CursorIcon, Event, PointerButton, Pos2, Rect, Sense, Shape, 
 use crate::commands::{self, Command};
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+use crate::tools::{self, CanvasTool, ToolCtx, ToolInput, ToolStates};
 
 /// Pen samples drained per frame without reallocating (~5 s at 200 Hz).
 const PEN_BUF_CAP: usize = 1024;
+/// A second press this soon and this close (points) is a double click (egui's values).
+const DOUBLE_CLICK_SECS: f64 = 0.3;
+const DOUBLE_CLICK_DIST: f32 = 6.0;
+
+/// The tool state that takes canvas input for a page tool.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ToolSlot {
+    Select,
+    Fill,
+    Transform,
+    Frame,
+}
+
+/// The transform handles while a session runs, whatever the tool;
+/// otherwise the page tool `tool` is, if any.
+fn tool_slot(studio: &Studio, tool: Tool) -> Option<ToolSlot> {
+    if studio.transform.is_some() {
+        return Some(ToolSlot::Transform);
+    }
+    match tool {
+        Tool::Select | Tool::MagicWand => Some(ToolSlot::Select),
+        Tool::Fill => Some(ToolSlot::Fill),
+        Tool::Move => Some(ToolSlot::Transform),
+        Tool::Frame(_) => Some(ToolSlot::Frame),
+        Tool::Brush(_) | Tool::Eyedropper | Tool::Hand | Tool::Rotate | Tool::Zoom => None,
+    }
+}
+
+fn slot_tool(tools: &mut ToolStates, slot: ToolSlot) -> &mut dyn CanvasTool {
+    match slot {
+        ToolSlot::Select => &mut tools.select,
+        ToolSlot::Fill => &mut tools.fill,
+        ToolSlot::Transform => &mut tools.transform,
+        ToolSlot::Frame => &mut tools.frame,
+    }
+}
+
+fn slot_tool_ref(tools: &ToolStates, slot: ToolSlot) -> &dyn CanvasTool {
+    match slot {
+        ToolSlot::Select => &tools.select,
+        ToolSlot::Fill => &tools.fill,
+        ToolSlot::Transform => &tools.transform,
+        ToolSlot::Frame => &tools.frame,
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Nav {
@@ -58,11 +104,32 @@ pub struct CanvasPane {
     pen_buf: Vec<PenSample>,
     pen_meter: PenMeter,
     pen_stats: PenStats,
+    /// Selection, fill, transform and frame tool state.
+    pub tools: ToolStates,
+    /// The page tool, as of the last frame. Holding Space keeps it (and its
+    /// gesture, e.g. a half-drawn polygon) while navigation takes the input.
+    slot: Option<ToolSlot>,
+    /// Space navigation is held: the page tool gets no input.
+    space: bool,
+    /// A Backspace that ended a polygon is still held: its key repeats are
+    /// swallowed (and the global shortcuts wait) so they do not go on to
+    /// Clear Layer.
+    swallow_backspace: bool,
+    /// The primary button went down on the canvas for the page tool.
+    tool_down: bool,
+    /// Time and position of the last page-tool press (double clicks).
+    last_press: Option<(f64, Pos2)>,
+    /// The window had focus last frame.
+    focused: bool,
 }
 
 impl CanvasPane {
     pub fn new(render: Option<egui_wgpu::RenderState>, pen: Option<Rc<PenQueue>>) -> Self {
         let gpu = render.as_ref().map(|r| CanvasGpu::new(&r.device, r.target_format));
+        let mut tools = ToolStates::default();
+        if let Some(r) = &render {
+            tools.select.attach_gpu(r);
+        }
         Self {
             gpu,
             render,
@@ -75,6 +142,13 @@ impl CanvasPane {
             pen_buf: Vec::with_capacity(PEN_BUF_CAP),
             pen_meter: PenMeter::new(),
             pen_stats: PenStats::default(),
+            tools,
+            slot: None,
+            space: false,
+            swallow_backspace: false,
+            tool_down: false,
+            last_press: None,
+            focused: true,
         }
     }
 
@@ -82,8 +156,13 @@ impl CanvasPane {
         self.pen_stats
     }
 
+    /// A stroke, a navigation drag or a page tool gesture is in progress
+    /// (global shortcuts wait).
     pub fn is_busy(&self) -> bool {
-        self.stroke.is_some() || self.nav.is_some()
+        self.stroke.is_some()
+            || self.nav.is_some()
+            || self.swallow_backspace
+            || self.slot.is_some_and(|s| slot_tool_ref(&self.tools, s).gesture_active())
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
@@ -122,7 +201,30 @@ impl CanvasPane {
             studio.reset_pen_end();
         }
 
-        let tool = self.effective_tool(ui, studio.tool);
+        if self.swallow_backspace {
+            let _ = ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace));
+            if !ui.input(|i| i.key_down(egui::Key::Backspace)) {
+                self.swallow_backspace = false;
+            }
+        }
+
+        // Space navigation keeps priority; otherwise a transform session
+        // takes the input whatever the tool (so Alt is not the eyedropper).
+        let space = !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_down(egui::Key::Space));
+        let tool = if studio.transform.is_some() && !space { studio.tool } else { self.effective_tool(ui, studio.tool) };
+        // Space only suspends the page tool's input; its gesture stays.
+        let slot = tool_slot(studio, if space { studio.tool } else { tool });
+        let focused = ui.input(|i| i.focused);
+        if slot != self.slot || (self.focused && !focused) {
+            // Tool switch or focus loss: the old gesture is abandoned.
+            if let Some(old) = self.slot {
+                slot_tool(&mut self.tools, old).cancel(&mut ToolCtx { studio, shell, origin, ppp });
+            }
+            self.tool_down = false;
+        }
+        self.slot = slot;
+        self.space = space;
+        self.focused = focused;
         self.handle_input(ui, &response, rect, ppp, origin, tool, studio, shell);
 
         // Upload whatever the input changed, then draw it this same frame.
@@ -196,7 +298,7 @@ impl CanvasPane {
         };
 
         // ----- brush strokes ------------------------------------------------
-        if let Tool::Brush(_) = tool {
+        if self.slot.is_none() && matches!(tool, Tool::Brush(_)) {
             // Native pen first: each sample keeps its own pressure, tilt and OS time.
             let m = studio.view.screen_to_doc(origin);
             for s in &pen_buf {
@@ -306,10 +408,78 @@ impl CanvasPane {
         }
         self.pen_buf = pen_buf;
 
+        // ----- page tools (selection, fill, transform, frames) -----------------
+        if let Some(slot) = self.slot {
+            let m = studio.view.screen_to_doc(origin);
+            let input = |p: Pos2, mods: egui::Modifiers, double: bool| {
+                let screen = [p.x * ppp, p.y * ppp];
+                ToolInput { screen, doc: m.apply(screen), mods, double }
+            };
+            let (mods_now, primary_down, latest) = ui.input(|i| (i.modifiers, i.pointer.primary_down(), i.pointer.latest_pos()));
+            let t = slot_tool(&mut self.tools, slot);
+            let mut ctx = ToolCtx { studio: &mut *studio, shell: &mut *shell, origin, ppp };
+            // While Space is held, navigation takes the pointer and the keys.
+            let space = self.space;
+            for e in self.events.iter().filter(|_| !space) {
+                match *e {
+                    Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, modifiers }
+                        if !self.tool_down && self.nav.is_none() && hovered && rect.contains(pos) =>
+                    {
+                        let double = self
+                            .last_press
+                            .is_some_and(|(at, p)| now - at <= DOUBLE_CLICK_SECS && p.distance(pos) <= DOUBLE_CLICK_DIST);
+                        // A third press starts a new pair.
+                        self.last_press = (!double).then_some((now, pos));
+                        self.tool_down = true;
+                        t.press(&mut ctx, input(pos, modifiers, double));
+                    }
+                    Event::PointerMoved(pos) if self.tool_down => t.drag(&mut ctx, input(pos, mods_now, false)),
+                    Event::PointerButton { pos, button: PointerButton::Primary, pressed: false, modifiers } if self.tool_down => {
+                        self.tool_down = false;
+                        t.release(&mut ctx, input(pos, modifiers, false));
+                    }
+                    _ => {}
+                }
+            }
+            // Release can be lost (e.g. focus change): never leave a gesture
+            // pressed. Space ends a drag the same way (as it ends a brush
+            // stroke); a multi-click gesture, such as a polygon, waits.
+            if self.tool_down && (!primary_down || space) {
+                self.tool_down = false;
+                t.release(&mut ctx, input(latest.unwrap_or(rect.center()), mods_now, false));
+            }
+            if !self.tool_down
+                && !space
+                && let Some(p) = response.hover_pos()
+            {
+                t.hover(ctx.studio, input(p, mods_now, false));
+            }
+            // Enter, Esc and Backspace belong to the gesture while it runs,
+            // unless a text field or a modal dialog has the keyboard.
+            let keys_free = !ui.ctx().egui_wants_keyboard_input() && ui.ctx().memory(|m| m.top_modal_layer().is_none());
+            if !space && keys_free && t.gesture_active() {
+                for key in [egui::Key::Enter, egui::Key::Escape, egui::Key::Backspace] {
+                    if !ui.ctx().input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                        continue;
+                    }
+                    if t.key(&mut ctx, key) {
+                        // Popped the last vertex: the held key's repeats
+                        // must not go on to Clear Layer.
+                        if key == egui::Key::Backspace && !t.gesture_active() {
+                            self.swallow_backspace = true;
+                        }
+                    } else if key == egui::Key::Escape {
+                        t.cancel(&mut ctx);
+                    }
+                }
+            }
+            t.tick(&mut ctx, now);
+        }
+
         // ----- navigation ---------------------------------------------------
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let primary_pressed = response.drag_started_by(PointerButton::Primary) || response.clicked();
-        if self.stroke.is_none() && primary_pressed && self.nav.is_none() {
+        if self.stroke.is_none() && primary_pressed && self.nav.is_none() && (self.slot.is_none() || self.space) {
             let press = response.interact_pointer_pos().unwrap_or(rect.center());
             self.nav = match tool {
                 Tool::Hand => Some(Nav::Pan),
@@ -320,7 +490,7 @@ impl CanvasPane {
                 }),
                 Tool::Zoom => Some(Nav::Zoom { anchor: press, start_x: press.x, start_zoom: studio.view.zoom, moved: false }),
                 Tool::Eyedropper => Some(Nav::Pick),
-                Tool::Brush(_) => None,
+                Tool::Brush(_) | Tool::Select | Tool::MagicWand | Tool::Fill | Tool::Move | Tool::Frame(_) => None,
             };
         }
         if let (Some(nav), Some(p)) = (self.nav.as_mut(), pointer) {
@@ -404,14 +574,14 @@ impl CanvasPane {
             }
 
         self.last_input_time = now;
-        if self.stroke.is_some() || self.nav.is_some() {
+        if self.stroke.is_some() || self.nav.is_some() || self.tool_down {
             ui.ctx().request_repaint();
         }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn paint(
-        &self,
+        &mut self,
         ui: &egui::Ui,
         rect: Rect,
         ppp: f32,
@@ -448,9 +618,20 @@ impl CanvasPane {
         }
         painter.add(Shape::closed_line(corners, Stroke::new(1.0, Color32::from_black_alpha(70))));
 
+        // Overlays: page guides, the selection outline, then the page tool's own.
+        tools::page::paint_guides(&painter, studio, &studio.opts.page, origin, ppp);
+        tools::select::paint_ants(&mut self.tools.select, &painter, studio, origin, ppp);
+        if let Some(slot) = self.slot {
+            slot_tool_ref(&self.tools, slot).paint(studio, &painter, origin, ppp);
+        }
+
         // Cursor.
         if let Some(hover) = response.hover_pos() {
             let ctx = ui.ctx();
+            if let Some(slot) = self.slot.filter(|_| self.nav.is_none() && !self.space) {
+                ctx.set_cursor_icon(slot_tool_ref(&self.tools, slot).cursor(studio));
+                return;
+            }
             match tool {
                 Tool::Brush(_) if self.nav.is_none() => {
                     ctx.set_cursor_icon(CursorIcon::None);
@@ -609,6 +790,46 @@ mod tests {
             ctx.run_ui(input, |ui| pane.ui(ui, studio, shell)).drop_without_applying_deltas();
         }
 
+        /// A frame as the app runs it: the global shortcuts first, unless
+        /// the canvas is busy, then the canvas.
+        fn app_frame(&mut self, events: Vec<Event>, modal: bool) {
+            self.time += 1.0 / 60.0;
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let Self { ctx, pane, studio, shell, .. } = self;
+            ctx.run_ui(input, |ui| {
+                if !pane.is_busy() {
+                    commands::handle_shortcuts(ui.ctx(), studio, shell);
+                }
+                pane.ui(ui, studio, shell);
+                if modal {
+                    egui::Modal::new(egui::Id::new("test-modal")).show(ui.ctx(), |ui| ui.label("modal"));
+                }
+            })
+            .drop_without_applying_deltas();
+        }
+
+        /// Click at document point `doc` with the page tool.
+        fn click(&mut self, doc: [f32; 2]) {
+            let p = self.screen(doc);
+            self.frame(vec![Event::PointerMoved(p), primary(p, true, Modifiers::NONE)]);
+            self.frame(vec![primary(p, false, Modifiers::NONE)]);
+        }
+
+        /// A polygon selection with `pts` placed, not closed.
+        fn polygon(&mut self, pts: &[[f32; 2]]) {
+            self.studio.opts.select.shape = tools::select::SelShape::Polygon;
+            commands::execute(Command::SelectTool(Tool::Select), &mut self.studio, &mut self.shell);
+            for &p in pts {
+                self.click(p);
+            }
+            assert_eq!(self.pane.tools.select.polygon_len(), Some(pts.len()));
+        }
+
         fn screen(&self, doc: [f32; 2]) -> Pos2 {
             let [x, y] = self.studio.view.doc_to_screen(self.shell.canvas_center_px).apply(doc);
             pos2(x, y)
@@ -686,6 +907,47 @@ mod tests {
 
     fn primary(pos: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
         Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers }
+    }
+
+    /// A drag with a page tool goes to that tool: no brush stroke, no
+    /// navigation, and a release ends it.
+    #[test]
+    fn page_tools_take_pointer_input() {
+        use crate::studio::FrameMode;
+        for tool in [
+            Tool::Select,
+            Tool::MagicWand,
+            Tool::Fill,
+            Tool::Move,
+            Tool::Frame(FrameMode::Rect),
+            Tool::Frame(FrameMode::Cut),
+            Tool::Frame(FrameMode::Edit),
+        ] {
+            let mut h = Harness::new();
+            commands::execute(Command::SelectTool(tool), &mut h.studio, &mut h.shell);
+            let view = (h.studio.view.zoom, h.studio.view.rotation);
+            let (a, b) = (h.screen([100.0, 100.0]), h.screen([300.0, 260.0]));
+            h.frame(vec![Event::PointerMoved(a)]);
+            h.frame(vec![primary(a, true, Modifiers::NONE)]);
+            assert!(h.pane.tool_down, "{tool:?}: the press reached the tool");
+            h.frame(vec![Event::PointerMoved(a + Vec2::new(10.0, 0.0)), Event::PointerMoved(b)]);
+            assert!(!h.studio.engine.is_stroking(), "{tool:?} started a brush stroke");
+            assert!(h.pane.nav.is_none(), "{tool:?} started navigation");
+            h.frame(vec![primary(b, false, Modifiers::NONE)]);
+            assert!(!h.pane.tool_down);
+            assert_eq!((h.studio.view.zoom, h.studio.view.rotation), view);
+            assert!(!h.pane.is_busy());
+        }
+        // Brushes still paint.
+        let mut h = Harness::new();
+        let (a, b) = (h.screen([100.0, 100.0]), h.screen([300.0, 260.0]));
+        h.frame(vec![Event::PointerMoved(a)]);
+        h.frame(vec![primary(a, true, Modifiers::NONE)]);
+        h.frame(vec![Event::PointerMoved(b)]);
+        assert!(h.studio.engine.is_stroking());
+        assert!(!h.pane.tool_down);
+        h.frame(vec![primary(b, false, Modifiers::NONE)]);
+        assert!(!h.painted().is_empty());
     }
 
     #[test]
@@ -770,6 +1032,88 @@ mod tests {
         // The Rotate tool itself still snaps with Shift.
         let tool = drag_rotate(Tool::Rotate, false, Modifiers::SHIFT, 10.0);
         assert!((tool - 15.0).abs() < 0.01, "{tool}");
+    }
+
+    fn key(key: Key, pressed: bool, repeat: bool) -> Event {
+        Event::Key { key, physical_key: None, pressed, repeat, modifiers: Modifiers::NONE }
+    }
+
+    /// Holding Space to pan keeps an unfinished polygon: navigation takes
+    /// the pointer, and the polygon goes on after Space is released.
+    #[test]
+    fn space_pan_keeps_the_polygon() {
+        let mut h = Harness::new();
+        h.polygon(&[[100.0, 100.0], [300.0, 120.0], [250.0, 300.0]]);
+        let zoom = h.studio.view.zoom;
+        let (a, b) = (h.screen([200.0, 400.0]), h.screen([260.0, 430.0]));
+        h.frame(vec![key(Key::Space, true, false), Event::PointerMoved(a)]);
+        assert!(h.pane.space && h.pane.slot.is_some(), "the tool stays, without input");
+        h.frame(vec![primary(a, true, Modifiers::NONE)]);
+        h.frame(vec![Event::PointerMoved(a + Vec2::new(10.0, 0.0)), Event::PointerMoved(b)]);
+        assert!(h.pane.nav.is_some(), "Space pans");
+        h.frame(vec![primary(b, false, Modifiers::NONE)]);
+        h.frame(vec![key(Key::Space, false, false)]);
+        assert_eq!(h.pane.tools.select.polygon_len(), Some(3), "the vertices survived the pan");
+        assert_eq!(h.studio.view.zoom, zoom);
+        h.click([120.0, 280.0]);
+        assert_eq!(h.pane.tools.select.polygon_len(), Some(4), "and the polygon goes on");
+    }
+
+    /// While Space is held, a transform session keeps its handles and
+    /// preview refresh (the overlay is the tool's).
+    #[test]
+    fn space_keeps_the_transform_overlay() {
+        let mut h = Harness::new();
+        let id = h.studio.doc.active();
+        h.studio.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(1, 1))[3][3] = [0, 0, 0, 0x8000];
+        commands::execute(Command::Transform, &mut h.studio, &mut h.shell);
+        h.frame(vec![]);
+        assert_eq!(h.pane.slot, Some(ToolSlot::Transform));
+        h.frame(vec![key(Key::Space, true, false)]);
+        assert_eq!(h.pane.slot, Some(ToolSlot::Transform), "drawn and ticked during the pan");
+        assert!(h.studio.transform.is_some());
+        h.frame(vec![key(Key::Space, false, false)]);
+        assert!(h.studio.transform.is_some());
+    }
+
+    /// Holding Backspace to pop polygon vertices stops at the polygon: the
+    /// key's repeats do not go on to Clear Layer.
+    #[test]
+    fn held_backspace_stops_at_the_polygon() {
+        let mut h = Harness::new();
+        let id = h.studio.doc.active();
+        h.studio.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [0, 0, 0, 0x8000];
+        h.polygon(&[[100.0, 100.0]]);
+        let steps = h.studio.history.undo_len();
+        h.app_frame(vec![key(Key::Backspace, true, false)], false);
+        assert_eq!(h.pane.tools.select.polygon_len(), None);
+        for _ in 0..3 {
+            h.app_frame(vec![key(Key::Backspace, true, true)], false);
+        }
+        assert!(!h.painted().is_empty(), "the layer was not cleared");
+        assert_eq!(h.studio.history.undo_len(), steps);
+        // Once the key is up, Backspace clears the layer again.
+        h.app_frame(vec![key(Key::Backspace, false, false)], false);
+        h.app_frame(vec![key(Key::Backspace, true, false)], false);
+        assert!(h.painted().is_empty());
+    }
+
+    /// With a modal open, Enter, Esc and Backspace are the dialog's, not
+    /// the hidden polygon's.
+    #[test]
+    fn a_modal_keeps_its_keys_from_the_polygon() {
+        let mut h = Harness::new();
+        h.polygon(&[[100.0, 100.0], [300.0, 120.0], [250.0, 300.0]]);
+        h.app_frame(vec![], true);
+        for k in [Key::Backspace, Key::Escape, Key::Enter] {
+            h.app_frame(vec![key(k, true, false), key(k, false, false)], true);
+            assert_eq!(h.pane.tools.select.polygon_len(), Some(3), "{k:?} reached the polygon");
+        }
+        assert!(!h.studio.doc.has_selection());
+        h.app_frame(vec![], false);
+        h.app_frame(vec![key(Key::Enter, true, false)], false);
+        assert_eq!(h.pane.tools.select.polygon_len(), None, "closed once the modal is gone");
+        assert!(h.studio.doc.has_selection());
     }
 
     /// P17: the native samples feed the stroke; egui's Touch events for the

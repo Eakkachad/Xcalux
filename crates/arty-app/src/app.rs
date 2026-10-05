@@ -12,13 +12,14 @@ use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
 use crate::canvas::CanvasPane;
-use crate::commands::{self, Command};
+use crate::commands::{self, Command, SelModify};
 use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
 use crate::shell::{PAGE_PRESETS, Shell};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
 use crate::theme::{self, ThemeKind};
+use crate::tools::{self, ToolOptions};
 
 const STORAGE_KEY: &str = "arty-v2";
 /// Bump when the default dock layout changes so old layouts are replaced.
@@ -34,6 +35,8 @@ struct Persisted {
     swatches: Vec<Rgb>,
     #[serde(default)]
     autosave: AutosaveSettings,
+    #[serde(default)]
+    tool_opts: ToolOptions,
 }
 
 pub struct ArtyApp {
@@ -115,6 +118,7 @@ impl ArtyApp {
             if !p.swatches.is_empty() {
                 studio.color.swatches = p.swatches;
             }
+            studio.opts = p.tool_opts;
         }
         // What main.rs started the surface with (the render state is created from it).
         let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
@@ -182,7 +186,11 @@ impl ArtyApp {
             let studio = &mut self.studio;
             let shell = &mut self.shell;
             let item = |ui: &mut egui::Ui, cmd: Command, studio: &mut Studio, shell: &mut Shell| {
-                let mut b = egui::Button::new(cmd.label());
+                let label = match cmd {
+                    Command::ClearLayer if studio.doc.has_selection() => "Clear Selected Area",
+                    _ => cmd.label(),
+                };
+                let mut b = egui::Button::new(label);
                 if let Some(sc) = commands::shortcut_for(cmd) {
                     b = b.shortcut_text(ui.ctx().format_shortcut(&sc));
                 }
@@ -195,6 +203,8 @@ impl ArtyApp {
                 for cmd in [Command::NewDocument, Command::Open, Command::Save, Command::SaveAs, Command::ExportPng] {
                     item(ui, cmd, studio, shell);
                 }
+                ui.separator();
+                item(ui, Command::PageSetup, studio, shell);
                 ui.separator();
                 ui.menu_button("Autosave", |ui| {
                     if ui.selectable_label(shell.autosave.enabled, "Autosave enabled").clicked() {
@@ -210,7 +220,19 @@ impl ArtyApp {
                 item(ui, Command::Quit, studio, shell);
             });
             ui.menu_button("Edit", |ui| {
-                for cmd in [Command::Undo, Command::Redo, Command::ClearLayer] {
+                for cmd in [Command::Undo, Command::Redo, Command::ClearLayer, Command::FillSelection] {
+                    item(ui, cmd, studio, shell);
+                }
+                ui.separator();
+                for cmd in [
+                    Command::Transform,
+                    Command::CommitTransform,
+                    Command::CancelTransform,
+                    Command::FlipTransform { horizontal: true },
+                    Command::FlipTransform { horizontal: false },
+                    Command::RotateTransform90 { cw: true },
+                    Command::RotateTransform90 { cw: false },
+                ] {
                     item(ui, cmd, studio, shell);
                 }
             });
@@ -225,8 +247,22 @@ impl ArtyApp {
                     Command::LayerDown,
                     Command::ToggleClip,
                     Command::ToggleLockAlpha,
+                    Command::ToggleReferenceLayer,
                 ] {
                     item(ui, cmd, studio, shell);
+                }
+                ui.separator();
+                for cmd in [Command::NewFrameFolder, Command::DeletePanel] {
+                    item(ui, cmd, studio, shell);
+                }
+            });
+            ui.menu_button("Select", |ui| {
+                for cmd in [Command::SelectAll, Command::Deselect, Command::InvertSelection] {
+                    item(ui, cmd, studio, shell);
+                }
+                ui.separator();
+                for m in [SelModify::Grow, SelModify::Shrink, SelModify::Feather] {
+                    item(ui, Command::SelectionDialog(m), studio, shell);
                 }
             });
             ui.menu_button("View", |ui| {
@@ -242,6 +278,14 @@ impl ArtyApp {
                     Command::ToggleTheme,
                 ] {
                     item(ui, cmd, studio, shell);
+                }
+                ui.separator();
+                let page = &studio.opts.page;
+                for (cmd, on) in [(Command::TogglePageGuides, page.show_guides), (Command::ToggleTrimShade, page.shade_outside_trim)] {
+                    if ui.selectable_label(on, cmd.label()).clicked() {
+                        commands::execute(cmd, studio, shell);
+                        ui.close();
+                    }
                 }
             });
             ui.menu_button("Window", |ui| {
@@ -342,9 +386,16 @@ impl ArtyApp {
                         form.width = *w;
                         form.height = *h;
                         form.dpi = *dpi;
+                        // A plain preset has no page setup.
+                        self.shell.new_doc_page = None;
                     }
                 }
             });
+            if let Some((w, h, dpi)) = tools::page::new_doc_ui(ui, &mut self.shell) {
+                let form = &mut self.shell.new_doc;
+                (form.width, form.height, form.dpi) = (w, h, dpi);
+            }
+            let form = &mut self.shell.new_doc;
             ui.add_space(6.0);
             egui::Grid::new("new-doc-grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 let max = arty_render::gpu::MAX_PAGE_SIDE;
@@ -374,8 +425,13 @@ impl ArtyApp {
         if create {
             let f = &self.shell.new_doc;
             self.studio.new_document(f.width, f.height, f.dpi);
+            // A manuscript preset's guides come with the page (not an edit).
+            if let Some(page) = self.shell.new_doc_page.take() {
+                self.studio.doc.set_page_unrecorded(Some(page));
+            }
             self.shell.new_doc_open = false;
         } else if cancel || modal.should_close() {
+            self.shell.new_doc_page = None;
             self.shell.new_doc_open = false;
         }
     }
@@ -439,7 +495,11 @@ impl eframe::App for ArtyApp {
         self.thumbs.sync_doc(self.studio.doc_epoch);
         if self.shell.export_requested {
             self.shell.export_requested = false;
-            self.export_job = export::export_png(&self.studio.doc);
+            self.studio.commit_transform();
+            self.shell.export_dialog = true;
+        }
+        if let Some(crop) = tools::page::export_dialog(&ctx, &mut self.studio, &mut self.shell) {
+            self.export_job = export::export_png(&self.studio.doc, crop);
         }
         if self.shell.quit_requested {
             // The file controller may cancel the close to ask about changes.
@@ -470,6 +530,8 @@ impl eframe::App for ArtyApp {
         });
 
         self.new_document_dialog(&ctx);
+        tools::select::dialogs(&ctx, &mut self.studio, &mut self.shell);
+        tools::page::dialogs(&ctx, &mut self.studio, &mut self.shell);
         self.files.ui(&ctx, &mut self.studio, &mut self.shell);
         self.toasts(&ctx);
     }
@@ -483,6 +545,7 @@ impl eframe::App for ArtyApp {
             input: self.studio.input,
             swatches: self.studio.color.swatches.clone(),
             autosave: self.shell.autosave,
+            tool_opts: self.studio.opts.clone(),
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
     }
@@ -503,6 +566,7 @@ mod tests {
             input: InputSettings::default(),
             swatches: vec![[0.1, 0.2, 0.3]],
             autosave: AutosaveSettings::default(),
+            tool_opts: ToolOptions::default(),
         }
     }
 
@@ -543,6 +607,25 @@ mod tests {
         assert_eq!(p.input.mouse_pressure, 0.8);
         assert_eq!(p.input.pressure_curve, PressureCurve::from_gamma(1.5));
         assert_eq!(p.input.display_sync, DisplaySync::LowLatency);
+    }
+
+    /// Tool options round-trip; a blob from before them loads with the defaults.
+    #[test]
+    fn tool_options_persist() {
+        let mut st = MemStorage::default();
+        let mut p = default_persisted();
+        p.tool_opts.page.show_guides = false;
+        eframe::set_value(&mut st, STORAGE_KEY, &p);
+        let back: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("loads");
+        assert!(!back.tool_opts.page.show_guides);
+
+        let text = st.0[STORAGE_KEY].clone();
+        let start = text.find(",tool_opts:").expect("tool_opts written");
+        let old = format!("{})", &text[..start]);
+        st.0.insert(STORAGE_KEY.to_owned(), old);
+        let back: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without tool_opts loads");
+        assert!(back.tool_opts.page.show_guides && !back.tool_opts.page.shade_outside_trim, "defaults");
+        assert_eq!(back.theme, ThemeKind::Light);
     }
 
     #[test]

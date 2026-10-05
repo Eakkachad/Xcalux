@@ -56,7 +56,7 @@ use crate::limits::{LoadLimits, MAX_FALLBACK_COMMITS, MAX_LAYER_COUNT, MAX_MANIF
 use crate::manifest::{self, AppSection, LayerExt, ManifestView};
 use crate::names::blend_from_id;
 use crate::readat::ReadAt;
-use crate::{FileKind, Progress, phase, sniff, table};
+use crate::{FileKind, Progress, fram, phase, pset, refl, selm, sniff, table};
 
 /// Blobs closer than this are read in one run.
 const RUN_GAP: u64 = 64 << 10;
@@ -850,21 +850,26 @@ fn load_commit<R: ReadAt + Sync + ?Sized>(
 
     // Nodes line up with tables; an added missing raster comes last.
     let mut grids = grids.into_iter();
-    let layers = tree
+    let mut layers: Vec<Layer> = tree
         .nodes
         .into_iter()
         .map(|n| {
             let grid = grids.next().flatten();
             let content = match n.folder {
-                Some((children, expanded)) => LayerContent::Folder { children, expanded },
+                Some((children, expanded)) => LayerContent::Folder { children, expanded, frame: None },
                 None => LayerContent::Raster(grid.unwrap_or_default()),
             };
             Layer { id: n.id, props: n.props, content }
         })
         .collect();
-    let doc = Document::from_parts(DocParts {
-        width: m.doc.width,
-        height: m.doc.height,
+    // Decoded LEXT entries become document data; the rest are kept.
+    let (w, h) = (m.doc.width, m.doc.height);
+    let mut layer_ext = m.layer_ext;
+    fram::apply(&mut layers, &mut layer_ext, w, h, &mut warnings);
+    refl::apply(&mut layers, &mut layer_ext, &mut warnings);
+    let mut doc = Document::from_parts(DocParts {
+        width: w,
+        height: h,
         dpi: m.doc.dpi,
         paper,
         layers,
@@ -872,12 +877,18 @@ fn load_commit<R: ReadAt + Sync + ?Sized>(
         active: tree.active,
         next_id: tree.next_id,
     })?;
+    if let Some(sel) = m.selm.and_then(|b| selm::decode(b, w, h, &mut warnings)) {
+        doc.set_selection_unrecorded(sel);
+    }
+    if let Some(page) = m.pset.and_then(|b| pset::decode(b, w, h, &mut warnings)) {
+        doc.set_page_unrecorded(Some(page));
+    }
     Ok(Assembled {
         doc,
         warnings,
         lossy,
         extras: m.extras,
-        layer_ext: m.layer_ext,
+        layer_ext,
         view: m.view.map(<[u8]>::to_vec),
         meta: m.meta,
         thumb: m.thumb.map(|(w, h, px)| (w, h, px.to_vec())),
@@ -996,6 +1007,7 @@ fn layer_props(rec: &LayerRecord<'_>, warnings: &mut Vec<LoadWarning>, lossy: &m
         clip: rec.flags & LF_CLIP != 0,
         lock_alpha: rec.flags & LF_LOCK_ALPHA != 0,
         locked,
+        reference: false,
     }
 }
 

@@ -6,7 +6,16 @@ use arty_core::LayerId;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::shell::{FileRequest, Shell};
-use crate::studio::{Studio, Tool};
+use crate::studio::{FrameMode, Studio, Tool};
+use crate::tools;
+
+/// Which selection modal `Command::SelectionDialog` opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelModify {
+    Grow,
+    Shrink,
+    Feather,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -47,6 +56,29 @@ pub enum Command {
     ToggleTheme,
     ResetLayout,
     PenEnd(arty_pen::PenEnd),
+    SelectAll,
+    Deselect,
+    InvertSelection,
+    /// Open the Grow / Shrink / Feather modal.
+    SelectionDialog(SelModify),
+    /// Built by the Grow / Shrink / Feather modal.
+    GrowSelection { px: u16 },
+    ShrinkSelection { px: u16 },
+    FeatherSelection { px: u16 },
+    FillSelection,
+    ToggleReferenceLayer,
+    /// Free transform of the active layer (of the selected pixels when
+    /// there is a selection).
+    Transform,
+    CommitTransform,
+    CancelTransform,
+    FlipTransform { horizontal: bool },
+    RotateTransform90 { cw: bool },
+    PageSetup,
+    TogglePageGuides,
+    ToggleTrimShade,
+    NewFrameFolder,
+    DeletePanel,
 }
 
 impl Command {
@@ -88,6 +120,29 @@ impl Command {
             Command::ResetLayout => "Reset Panel Layout",
             Command::PenEnd(arty_pen::PenEnd::Tip) => "Pen Tip",
             Command::PenEnd(arty_pen::PenEnd::Eraser) => "Pen Eraser End",
+            Command::SelectAll => "Select All",
+            Command::Deselect => "Deselect",
+            Command::InvertSelection => "Invert Selection",
+            Command::SelectionDialog(SelModify::Grow) => "Grow Selection…",
+            Command::SelectionDialog(SelModify::Shrink) => "Shrink Selection…",
+            Command::SelectionDialog(SelModify::Feather) => "Feather Selection…",
+            Command::GrowSelection { .. } => "Grow Selection",
+            Command::ShrinkSelection { .. } => "Shrink Selection",
+            Command::FeatherSelection { .. } => "Feather Selection",
+            Command::FillSelection => "Fill Selection",
+            Command::ToggleReferenceLayer => "Reference Layer",
+            Command::Transform => "Transform",
+            Command::CommitTransform => "Commit Transform",
+            Command::CancelTransform => "Cancel Transform",
+            Command::FlipTransform { horizontal: true } => "Transform: Flip Horizontal",
+            Command::FlipTransform { horizontal: false } => "Transform: Flip Vertical",
+            Command::RotateTransform90 { cw: true } => "Transform: Rotate 90° CW",
+            Command::RotateTransform90 { cw: false } => "Transform: Rotate 90° CCW",
+            Command::PageSetup => "Page Setup…",
+            Command::TogglePageGuides => "Page Guides",
+            Command::ToggleTrimShade => "Shade Outside Trim",
+            Command::NewFrameFolder => "New Frame Border Folder",
+            Command::DeletePanel => "Delete Panel",
         }
     }
 }
@@ -107,6 +162,7 @@ pub const SHORTCUTS: &[(KeyboardShortcut, Command)] = &[
     (sc(CTRL_SHIFT, Key::Z), Command::Redo),
     (sc(CTRL_SHIFT, Key::N), Command::NewLayer),
     (sc(CTRL_SHIFT, Key::S), Command::SaveAs),
+    (sc(CTRL_SHIFT, Key::I), Command::InvertSelection),
     (sc(CTRL_ALT, Key::Num0), Command::Zoom100),
     (sc(CTRL, Key::Z), Command::Undo),
     (sc(CTRL, Key::Y), Command::Redo),
@@ -119,6 +175,9 @@ pub const SHORTCUTS: &[(KeyboardShortcut, Command)] = &[
     (sc(CTRL, Key::Equals), Command::ZoomIn),
     (sc(CTRL, Key::Minus), Command::ZoomOut),
     (sc(CTRL, Key::Q), Command::Quit),
+    (sc(CTRL, Key::A), Command::SelectAll),
+    (sc(CTRL, Key::D), Command::Deselect),
+    (sc(CTRL, Key::T), Command::Transform),
     (sc(CTRL_ALT, Key::G), Command::ToggleClip),
     (sc(NONE, Key::Delete), Command::ClearLayer),
     (sc(NONE, Key::Backspace), Command::ClearLayer),
@@ -132,6 +191,13 @@ pub const SHORTCUTS: &[(KeyboardShortcut, Command)] = &[
     (sc(NONE, Key::H), Command::SelectTool(Tool::Hand)),
     (sc(NONE, Key::R), Command::SelectTool(Tool::Rotate)),
     (sc(NONE, Key::Z), Command::SelectTool(Tool::Zoom)),
+    (sc(NONE, Key::M), Command::SelectTool(Tool::Select)),
+    (sc(NONE, Key::W), Command::SelectTool(Tool::MagicWand)),
+    (sc(NONE, Key::G), Command::SelectTool(Tool::Fill)),
+    (sc(NONE, Key::K), Command::SelectTool(Tool::Move)),
+    (sc(NONE, Key::O), Command::SelectTool(Tool::Frame(FrameMode::Edit))),
+    (sc(NONE, Key::Enter), Command::CommitTransform),
+    (sc(NONE, Key::Escape), Command::CancelTransform),
     (sc(NONE, Key::X), Command::SwapColors),
     (sc(NONE, Key::OpenBracket), Command::BrushSmaller),
     (sc(NONE, Key::CloseBracket), Command::BrushLarger),
@@ -150,10 +216,13 @@ pub fn handle_shortcuts(ctx: &egui::Context, studio: &mut Studio, shell: &mut Sh
     if ctx.egui_wants_keyboard_input() || ctx.memory(|m| m.top_modal_layer().is_some()) {
         return;
     }
+    // Enter and Esc stay with egui (menus, popups) unless a transform runs.
+    let transforming = studio.transform.is_some();
     let mut fired = Vec::new();
     ctx.input_mut(|i| {
         for (shortcut, cmd) in SHORTCUTS {
-            if i.consume_shortcut(shortcut) {
+            let session_only = matches!(cmd, Command::CommitTransform | Command::CancelTransform);
+            if (transforming || !session_only) && i.consume_shortcut(shortcut) {
                 fired.push(*cmd);
             }
         }
@@ -176,6 +245,13 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::Quit => shell.quit_requested = true,
         Command::Undo => studio.undo(),
         Command::Redo => studio.redo(),
+        // In Frame Edit with a panel of the active frame folder selected,
+        // Delete removes the panel.
+        Command::ClearLayer
+            if studio.tool == Tool::Frame(FrameMode::Edit) && tools::frame::active_panel_sel(studio).is_some() =>
+        {
+            execute(Command::DeletePanel, studio, shell)
+        }
         Command::ClearLayer => studio.clear_active_layer(),
         Command::NewLayer => {
             studio.edit_structure(|d| d.layer_count() < arty_core::MAX_LAYERS && d.add_raster_layer().is_some())
@@ -230,6 +306,23 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::ToggleTheme => shell.toggle_theme(),
         Command::ResetLayout => shell.reset_layout_requested = true,
         Command::PenEnd(end) => studio.switch_pen_end(end),
+        Command::SelectAll
+        | Command::Deselect
+        | Command::InvertSelection
+        | Command::SelectionDialog(_)
+        | Command::GrowSelection { .. }
+        | Command::ShrinkSelection { .. }
+        | Command::FeatherSelection { .. } => tools::select::execute(cmd, studio, shell),
+        Command::FillSelection | Command::ToggleReferenceLayer => tools::fill::execute(cmd, studio, shell),
+        Command::Transform
+        | Command::CommitTransform
+        | Command::CancelTransform
+        | Command::FlipTransform { .. }
+        | Command::RotateTransform90 { .. } => tools::transform::execute(cmd, studio, shell),
+        Command::PageSetup | Command::TogglePageGuides | Command::ToggleTrimShade => {
+            tools::page::execute(cmd, studio, shell)
+        }
+        Command::NewFrameFolder | Command::DeletePanel => tools::frame::execute(cmd, studio, shell),
     }
 }
 
@@ -324,5 +417,124 @@ mod tests {
         studio.end_stroke();
         execute(Command::PenEnd(PenEnd::Eraser), &mut studio, &mut shell);
         assert_eq!((studio.pen_end(), studio.tool), (PenEnd::Eraser, Tool::Hand));
+    }
+
+    /// Every page-tool command (M3) has a label and runs; the tool commands select their tool.
+    #[test]
+    fn page_tool_commands_run() {
+        let mut studio = Studio::new(Document::new(64, 64, 72));
+        let mut shell = Shell::new(ThemeKind::Dark);
+        let id = studio.doc.active();
+        studio.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1, 1, 1, 1];
+        let cmds = [
+            Command::SelectAll,
+            Command::Deselect,
+            Command::InvertSelection,
+            Command::SelectionDialog(SelModify::Grow),
+            Command::SelectionDialog(SelModify::Shrink),
+            Command::SelectionDialog(SelModify::Feather),
+            Command::GrowSelection { px: 4 },
+            Command::ShrinkSelection { px: 4 },
+            Command::FeatherSelection { px: 4 },
+            Command::FillSelection,
+            Command::ToggleReferenceLayer,
+            Command::Transform,
+            Command::FlipTransform { horizontal: true },
+            Command::FlipTransform { horizontal: false },
+            Command::RotateTransform90 { cw: true },
+            Command::RotateTransform90 { cw: false },
+            Command::CommitTransform,
+            Command::CancelTransform,
+            Command::PageSetup,
+            Command::TogglePageGuides,
+            Command::ToggleTrimShade,
+            Command::NewFrameFolder,
+            Command::DeletePanel,
+        ];
+        let mut labels: Vec<&str> = cmds.iter().map(|c| c.label()).collect();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), cmds.len(), "labels are distinct");
+        for cmd in cmds {
+            execute(cmd, &mut studio, &mut shell);
+        }
+        for tool in [
+            Tool::Select,
+            Tool::MagicWand,
+            Tool::Fill,
+            Tool::Move,
+            Tool::Frame(FrameMode::Rect),
+            Tool::Frame(FrameMode::Cut),
+            Tool::Frame(FrameMode::Edit),
+        ] {
+            execute(Command::SelectTool(tool), &mut studio, &mut shell);
+            assert_eq!(studio.tool, tool);
+            assert!(!Command::SelectTool(tool).label().is_empty());
+        }
+    }
+
+    /// Delete in Frame Edit with a panel selected deletes the panel, not the layer's pixels.
+    #[test]
+    fn delete_in_frame_edit_targets_the_panel() {
+        let mut studio = Studio::new(Document::new(64, 64, 72));
+        let mut shell = Shell::new(ThemeKind::Dark);
+        let base = studio.doc.active();
+        execute(Command::NewFrameFolder, &mut studio, &mut shell);
+        let folder = tools::frame::target_folder(&studio).unwrap();
+        let id = studio.doc.active();
+        let paint = |s: &mut Studio, id| s.doc.paint_target(id).unwrap().0.get_mut_or_create(TileCoord::new(0, 0))[0][0] = [1, 1, 1, 1];
+        let painted = |s: &Studio| !s.doc.active_layer().raster().unwrap().is_empty();
+        let panels = |s: &Studio| s.doc.frame(folder).unwrap().shape().panels.len();
+        paint(&mut studio, id);
+        execute(Command::SelectTool(Tool::Frame(FrameMode::Edit)), &mut studio, &mut shell);
+        studio.frame_sel = Some((folder, 0));
+        // The only panel is never deleted: an empty frame would hide the folder.
+        execute(Command::ClearLayer, &mut studio, &mut shell);
+        assert!(painted(&studio));
+        assert_eq!(panels(&studio), 1, "the last panel stays");
+        assert!(studio.notice.take().is_some());
+        studio.edit_frame(folder, |s| {
+            let mut s = s.clone();
+            s.panels.push(s.panels[0].clone());
+            Some(s)
+        });
+        studio.frame_sel = Some((folder, 1));
+        execute(Command::ClearLayer, &mut studio, &mut shell);
+        assert!(painted(&studio));
+        assert_eq!(panels(&studio), 1, "the panel was deleted");
+        studio.undo();
+        studio.undo();
+        studio.frame_sel = None;
+        execute(Command::ClearLayer, &mut studio, &mut shell);
+        assert!(!painted(&studio), "without a selected panel Delete clears the layer");
+
+        // A panel of a folder that is no longer active (not drawn) is not
+        // what Delete or Delete Panel act on.
+        studio.doc.set_active(base);
+        paint(&mut studio, base);
+        studio.frame_sel = Some((folder, 0));
+        execute(Command::ClearLayer, &mut studio, &mut shell);
+        assert!(!painted(&studio), "the active layer was cleared");
+        assert_eq!(panels(&studio), 1, "the hidden selection's panel stays");
+        execute(Command::DeletePanel, &mut studio, &mut shell);
+        assert_eq!(panels(&studio), 1);
+    }
+
+    /// Enter and Esc stay with egui (menus, popups) unless a transform session runs.
+    #[test]
+    fn enter_and_escape_are_left_alone_without_a_session() {
+        let ctx = egui::Context::default();
+        let mut studio = Studio::new(Document::new(64, 64, 72));
+        let mut shell = Shell::new(ThemeKind::Dark);
+        for key in [Key::Escape, Key::Enter] {
+            let press = Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: NONE };
+            let mut seen = false;
+            ctx.run_ui(RawInput { events: vec![press], ..Default::default() }, |ui| {
+                handle_shortcuts(ui.ctx(), &mut studio, &mut shell);
+                seen = ui.input(|i| i.key_pressed(key));
+            })
+            .drop_without_applying_deltas();
+            assert!(seen, "{key:?} was consumed");
+        }
     }
 }

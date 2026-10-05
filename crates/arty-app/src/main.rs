@@ -12,6 +12,7 @@ mod panels;
 mod shell;
 mod studio;
 mod theme;
+mod tools;
 
 // `files` tests check that an idle frame does not allocate.
 #[cfg(test)]

@@ -25,7 +25,8 @@ use crate::error::{IoError, LoadWarning, tag_str};
 use crate::format::{ByteReader, LayerRecord};
 use crate::limits::{
     MAX_DPI, MAX_EXTRA_TOTAL, MAX_LAYER_COUNT, MAX_LEXT_ENTRIES, MAX_LEXT_ENTRY, MAX_LEXT_TOTAL, MAX_MANIFEST_RAW,
-    MAX_META_ENTRIES, MAX_META_VALUE, MAX_PAGE_SIDE, MAX_SECTIONS, MAX_THUMB_SIDE, MAX_VIEW_BYTES, lz4_max_raw,
+    MAX_META_ENTRIES, MAX_META_VALUE, MAX_PAGE_SIDE, MAX_PSET_BYTES, MAX_SECTIONS, MAX_SELM_BYTES, MAX_THUMB_SIDE,
+    MAX_VIEW_BYTES, lz4_max_raw,
 };
 
 /// Section flag: a reader that does not know the tag must refuse the file.
@@ -44,8 +45,18 @@ pub const TAG_THUM: [u8; 4] = *b"THUM";
 pub const TAG_LEXT: [u8; 4] = *b"LEXT";
 /// Further pages of a book (reserved; v2.0 opens page 1 only).
 pub const TAG_PAGE: [u8; 4] = *b"PAGE";
+/// The selection (SAFE_TO_COPY).
+pub const TAG_SELM: [u8; 4] = *b"SELM";
+/// The page setup: trim, bleed, safe area, inner frame (SAFE_TO_COPY).
+pub const TAG_PSET: [u8; 4] = *b"PSET";
 /// Tags this version reads. Unknown-section rules apply to all others.
-pub const KNOWN_TAGS: [[u8; 4]; 7] = [TAG_DOC, TAG_LAYR, TAG_META, TAG_VIEW, TAG_THUM, TAG_LEXT, TAG_PAGE];
+pub const KNOWN_TAGS: [[u8; 4]; 9] =
+    [TAG_DOC, TAG_LAYR, TAG_META, TAG_VIEW, TAG_THUM, TAG_LEXT, TAG_PAGE, TAG_SELM, TAG_PSET];
+
+/// LEXT entry: the layer is a reference layer (empty body, flags 0).
+pub const LEXT_REFL: [u8; 4] = *b"REFL";
+/// LEXT entry: a folder's frame border panels (flags 0).
+pub const LEXT_FRAM: [u8; 4] = *b"FRAM";
 
 pub const MANIFEST_STORED: u32 = 0;
 pub const MANIFEST_LZ4: u32 = 1;
@@ -244,6 +255,10 @@ pub struct ManifestView<'a> {
     pub view: Option<&'a [u8]>,
     pub thumb: Option<Thumb<'a>>,
     pub layer_ext: Vec<LayerExt>,
+    /// `SELM` body, not yet decoded.
+    pub selm: Option<&'a [u8]>,
+    /// `PSET` body, not yet decoded.
+    pub pset: Option<&'a [u8]>,
     /// Unknown SAFE_TO_COPY sections.
     pub extras: Vec<AppSection>,
     pub warnings: Vec<LoadWarning>,
@@ -272,6 +287,8 @@ pub fn parse(raw: &[u8], at: u64, max_layers: u32) -> Result<ManifestView<'_>, I
         view: None,
         thumb: None,
         layer_ext: Vec::new(),
+        selm: None,
+        pset: None,
         extras: Vec::new(),
         warnings: Vec::new(),
         lossy: Vec::new(),
@@ -305,6 +322,13 @@ pub fn parse(raw: &[u8], at: u64, max_layers: u32) -> Result<ManifestView<'_>, I
                     out.lossy.push("it has layer data this version cannot read".into());
                 }
             }
+            // Optional data: an oversized body is skipped with a warning.
+            TAG_SELM if body.len() > MAX_SELM_BYTES => {
+                out.warnings.push(LoadWarning::SelectionDropped { reason: "too large" });
+            }
+            TAG_SELM => out.selm = Some(body),
+            TAG_PSET if body.len() > MAX_PSET_BYTES => out.warnings.push(LoadWarning::PageSetupDropped),
+            TAG_PSET => out.pset = Some(body),
             TAG_PAGE => {
                 let pages = count_pages(body);
                 out.warnings.push(LoadWarning::ExtraPagesIgnored(pages));
@@ -496,6 +520,27 @@ mod tests {
         assert!(m.lossy.is_empty(), "a kept section is not lossy");
 
         assert_eq!(decode_payload(&encode_payload(&raw), 0).unwrap().as_ref(), raw.as_slice());
+    }
+
+    #[test]
+    fn selection_and_page_sections_are_captured() {
+        let raw = minimal(|w| {
+            w.push(TAG_SELM, SEC_SAFE_TO_COPY, b"sel");
+            w.push(TAG_PSET, SEC_SAFE_TO_COPY, b"page");
+        });
+        let m = parse(&raw, 0, 100).unwrap();
+        assert_eq!((m.selm, m.pset), (Some(&b"sel"[..]), Some(&b"page"[..])));
+        assert!(m.extras.is_empty() && m.warnings.is_empty() && m.lossy.is_empty());
+
+        // Oversized: skipped with a warning, never an error or a lossy load.
+        let raw = minimal(|w| {
+            w.push(TAG_SELM, SEC_SAFE_TO_COPY, &vec![0; MAX_SELM_BYTES + 1]);
+            w.push(TAG_PSET, SEC_SAFE_TO_COPY, &vec![0; MAX_PSET_BYTES + 1]);
+        });
+        let m = parse(&raw, 0, 100).unwrap();
+        assert_eq!((m.selm, m.pset), (None, None));
+        assert_eq!(m.warnings, [LoadWarning::SelectionDropped { reason: "too large" }, LoadWarning::PageSetupDropped]);
+        assert!(m.extras.is_empty() && m.lossy.is_empty());
     }
 
     #[test]

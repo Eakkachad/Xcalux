@@ -4,12 +4,18 @@
 
 use arty_brush::pressure::PressureCurve;
 use arty_brush::{BrushGroup, BrushPreset, Reshape, StrokeEngine, StrokeRefused, default_presets};
-use arty_core::{CompositeScratch, Document, Edit, History, LayerId, LayerProps, TileCoord, fix15, tile::new_tile_box};
+use arty_core::{
+    CompositeScratch, Document, Edit, History, LayerId, LayerProps, PageSetup, Selection, TileCoord, Touch, fix15, selection,
+    Affine64, tile::new_tile_box,
+};
 use std::collections::HashMap;
 
 use arty_pen::PenEnd;
 use arty_render::View;
 use serde::{Deserialize, Serialize};
+
+use crate::tools::ToolOptions;
+use crate::tools::transform::TransformState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tool {
@@ -18,6 +24,14 @@ pub enum Tool {
     Hand,
     Rotate,
     Zoom,
+    /// Rect, ellipse, lasso or polygon: the shape is a tool option, so M
+    /// brings back the last one.
+    Select,
+    MagicWand,
+    Fill,
+    Move,
+    /// Rect, Cut and Edit are separate tools in CSP.
+    Frame(FrameMode),
 }
 
 impl Tool {
@@ -28,6 +42,28 @@ impl Tool {
             Tool::Hand => "Hand",
             Tool::Rotate => "Rotate",
             Tool::Zoom => "Zoom",
+            Tool::Select => "Selection",
+            Tool::MagicWand => "Magic Wand",
+            Tool::Fill => "Fill",
+            Tool::Move => "Move",
+            Tool::Frame(m) => m.label(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FrameMode {
+    Rect,
+    Cut,
+    Edit,
+}
+
+impl FrameMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameMode::Rect => "Rectangle Frame",
+            FrameMode::Cut => "Divide Frame",
+            FrameMode::Edit => "Frame Edit",
         }
     }
 }
@@ -339,6 +375,17 @@ pub struct Studio {
     pub doc_epoch: u64,
     scratch: CompositeScratch,
     epochs: ContentEpochs,
+    /// Page tool options (saved with the app settings).
+    pub opts: ToolOptions,
+    /// The free transform in progress; while it exists the canvas sends
+    /// input to its handles.
+    pub transform: Option<TransformState>,
+    /// The panel selected in Frame Edit: (frame folder, panel index).
+    pub frame_sel: Option<(LayerId, usize)>,
+    /// The last selection-target commit: the (document epoch, selection
+    /// revision) it made and its affine. Until that selection's outline is
+    /// extracted, the ants draw the old one moved by it.
+    pub ants_carry: Option<((u64, u64), Affine64)>,
 }
 
 impl Studio {
@@ -365,6 +412,10 @@ impl Studio {
             doc_epoch: 0,
             scratch: CompositeScratch::new(),
             epochs: ContentEpochs::default(),
+            opts: ToolOptions::default(),
+            transform: None,
+            frame_sel: None,
+            ants_carry: None,
         };
         s.select_tool(Tool::Brush(BrushGroup::Pen));
         s
@@ -376,6 +427,7 @@ impl Studio {
         if self.engine.is_stroking() {
             return;
         }
+        self.commit_transform();
         self.tool = tool;
         if let Tool::Brush(group) = tool {
             let remembered = self.group_memory.iter().find(|(g, _)| *g == group).map(|(_, i)| *i);
@@ -560,6 +612,7 @@ impl Studio {
     }
 
     pub fn begin_stroke(&mut self, s: arty_brush::InputSample) -> bool {
+        self.commit_transform();
         if self.brush_dirty {
             let preset = self.presets[self.active_preset].clone();
             self.engine.configure(&preset, self.color.main);
@@ -604,29 +657,73 @@ impl Studio {
 
     // ----- history ---------------------------------------------------------
 
+    /// Undo one step. During a transform session this cancels the session
+    /// instead (its preview was never recorded).
     pub fn undo(&mut self) {
-        if !self.engine.is_stroking() && self.history.can_undo() {
+        if self.engine.is_stroking() {
+            return;
+        }
+        if self.transform.is_some() {
+            self.cancel_transform();
+        } else if self.history.can_undo() {
             let touched = self.history.undo(&mut self.doc);
-            self.history_applied(touched);
+            self.history_applied(&touched);
         }
     }
 
+    /// Redo one step; nothing during a transform session.
     pub fn redo(&mut self) {
-        if !self.engine.is_stroking() && self.history.can_redo() {
+        if !self.engine.is_stroking() && self.transform.is_none() && self.history.can_redo() {
             let touched = self.history.redo(&mut self.doc);
-            self.history_applied(touched);
+            self.history_applied(&touched);
         }
     }
 
-    /// `touched` is the layer of a pixel or props entry; structure entries
-    /// report none.
-    fn history_applied(&mut self, touched: Option<LayerId>) {
-        match touched {
-            Some(id) => {
-                self.epochs.pixels_changed(id);
-                self.epochs.props_changed();
+    /// Update the caches derived from the document after history changed
+    /// the parts in `touched`.
+    pub fn history_applied(&mut self, touched: &[Touch]) {
+        for t in touched {
+            match *t {
+                Touch::Pixels(id) | Touch::Props(id) => {
+                    self.epochs.pixels_changed(id);
+                    self.epochs.props_changed();
+                }
+                Touch::Structure => self.epochs.structure_changed(),
+                // The ants follow `selection_rev`; page guides are drawn
+                // every frame.
+                Touch::Selection | Touch::Page => {}
             }
-            None => self.epochs.structure_changed(),
+        }
+    }
+
+    /// Record an edit already applied to the document as one undo step and
+    /// update the caches it affects.
+    pub fn record_edit(&mut self, edit: Edit) {
+        let mut touched = Vec::new();
+        edit.touched(&mut |t| touched.push(t));
+        self.history.push(edit);
+        self.history_applied(&touched);
+    }
+
+    /// Replace the selection as one undo step. Refused while stroking; a
+    /// transform session is committed first. No step when nothing changes.
+    pub fn set_selection(&mut self, s: Selection) {
+        if self.engine.is_stroking() {
+            return;
+        }
+        self.commit_transform();
+        let current = self.doc.selection();
+        if (current.is_empty() && s.is_empty()) || current.shares_storage(&s) {
+            return;
+        }
+        let old = self.doc.swap_selection(s);
+        self.record_edit(Edit::Selection(Box::new(old)));
+    }
+
+    /// Replace the page setup as one undo step when it changes.
+    pub fn set_page_setup(&mut self, s: Option<PageSetup>) {
+        if let Some(old) = self.doc.set_page_setup(s) {
+            self.record_edit(Edit::Page(old));
         }
     }
 
@@ -641,6 +738,7 @@ impl Studio {
         if self.engine.is_stroking() {
             return;
         }
+        self.commit_transform();
         let snap = self.doc.snapshot_structure();
         if f(&mut self.doc) {
             self.history.push(Edit::Structure(Box::new(snap)));
@@ -659,11 +757,20 @@ impl Studio {
         }
     }
 
+    /// Clear the active layer, or only its selected area when there is a
+    /// selection (CSP).
     pub fn clear_active_layer(&mut self) {
+        self.commit_transform();
         let id = self.doc.active();
         let Some(layer) = self.doc.layer(id) else { return };
         if layer.props.locked {
             self.notice = Some("Layer is locked".into());
+            return;
+        }
+        if self.doc.has_selection() {
+            if let Some(edit) = selection::erase_selected(&mut self.doc, id) {
+                self.record_edit(edit);
+            }
             return;
         }
         let Some(grid) = layer.raster() else { return };
@@ -681,6 +788,9 @@ impl Studio {
             return;
         }
         self.doc = Document::new(width, height, dpi);
+        // A session or panel of the old document means nothing here.
+        self.transform = None;
+        self.frame_sel = None;
         self.history.clear();
         self.epochs.structure_changed();
         self.fit_pending = true;
@@ -695,6 +805,8 @@ impl Studio {
         }
         self.doc = doc;
         self.doc.dirty_mut().mark_all();
+        self.transform = None;
+        self.frame_sel = None;
         self.history.clear();
         // Layer ids restart per document: thumbnails must not match old ones.
         self.epochs.structure_changed();
@@ -935,5 +1047,71 @@ mod tests {
         assert!(s.doc.active_layer().raster().unwrap().is_empty());
         s.undo();
         assert!(!s.doc.active_layer().raster().unwrap().is_empty());
+    }
+
+    fn full_tile_selection(x: i32) -> Selection {
+        let mut sel = Selection::new();
+        sel.insert_tile(TileCoord::new(x, 0), arty_core::selection::full_mask().clone());
+        sel
+    }
+
+    #[test]
+    fn set_selection_is_one_step_and_skips_no_ops() {
+        let mut s = Studio::new(Document::new(256, 64, 72));
+        let none = s.doc.selection().clone();
+        s.set_selection(Selection::new());
+        assert_eq!(s.history.undo_len(), 0, "empty to empty is no step");
+
+        let a = full_tile_selection(1);
+        let rev = s.doc.revision();
+        s.set_selection(a.clone());
+        assert_eq!(s.history.undo_len(), 1);
+        assert!(s.doc.selection().shares_storage(&a));
+        assert_ne!(s.doc.revision(), rev, "a selection change is a document change");
+        s.set_selection(a.clone());
+        assert_eq!(s.history.undo_len(), 1, "the same selection is no step");
+
+        s.undo();
+        assert!(s.doc.selection().shares_storage(&none));
+        s.redo();
+        assert!(s.doc.selection().shares_storage(&a));
+
+        // Refused while stroking.
+        let smp = arty_brush::InputSample { x: 10.0, y: 10.0, pressure: 1.0, ..Default::default() };
+        assert!(s.begin_stroke(smp));
+        s.set_selection(full_tile_selection(2));
+        assert!(s.doc.selection().shares_storage(&a));
+        s.end_stroke();
+    }
+
+    #[test]
+    fn set_page_setup_is_one_step() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let trim = arty_core::RectF { x: 2.0, y: 2.0, w: 60.0, h: 60.0 };
+        let page = PageSetup { trim, bleed: 2.0, safe: 4.0, inner: arty_core::RectF::default(), unit: 2 };
+        s.set_page_setup(Some(page));
+        s.set_page_setup(Some(page));
+        assert_eq!(s.history.undo_len(), 1);
+        s.undo();
+        assert_eq!(s.doc.page_setup(), None);
+        s.redo();
+        assert_eq!(s.doc.page_setup(), Some(&page));
+    }
+
+    #[test]
+    fn record_edit_marks_what_the_edit_touched() {
+        let mut s = Studio::new(Document::new(64, 64, 72));
+        let id = s.doc.active();
+        let c = TileCoord::new(0, 0);
+        let (grid, _) = s.doc.paint_target(id).unwrap();
+        let old = grid.get_ref(c).cloned();
+        grid.get_mut_or_create(c)[0][0] = [1, 1, 1, 1];
+        let before = s.epochs().pixels(id);
+        s.record_edit(Edit::Pixels { layer: id, tiles: vec![(c, old)] });
+        assert!(s.epochs().pixels(id) > before);
+        assert_eq!(s.history.undo_len(), 1);
+        s.frame_sel = Some((id, 0));
+        s.new_document(64, 64, 72);
+        assert_eq!(s.frame_sel, None, "a new document has no selected panel");
     }
 }

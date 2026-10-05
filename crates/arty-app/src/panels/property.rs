@@ -4,18 +4,34 @@ use arty_brush::{MAX_BRUSH_SIZE, MIN_BRUSH_SIZE, Stabilizer};
 use egui::Slider;
 
 use super::section;
+use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+use crate::tools;
 
-pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
+pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
+    // A transform session shows its own settings whatever the tool.
+    if studio.transform.is_some() {
+        ui.label(egui::RichText::new("Transform").strong());
+        tools::transform::property_ui(ui, studio, shell);
+        return;
+    }
     if !matches!(studio.tool, Tool::Brush(_)) {
         ui.label(egui::RichText::new(studio.tool.label()).strong());
-        ui.label(match studio.tool {
-            Tool::Eyedropper => "Click or drag on the canvas to pick the displayed color.",
-            Tool::Hand => "Drag to scroll. Middle mouse drags with any tool.",
-            Tool::Rotate => "Drag to rotate the view. Hold Shift to snap to 15° (Ctrl with Shift+Space).",
-            Tool::Zoom => "Click to zoom in, Alt+click to zoom out, drag to zoom smoothly.",
-            Tool::Brush(_) => "",
-        });
+        let hint = |text: &str, ui: &mut egui::Ui| {
+            ui.label(text);
+        };
+        match studio.tool {
+            Tool::Eyedropper => hint("Click or drag on the canvas to pick the displayed color.", ui),
+            Tool::Hand => hint("Drag to scroll. Middle mouse drags with any tool.", ui),
+            Tool::Rotate => hint("Drag to rotate the view. Hold Shift to snap to 15° (Ctrl with Shift+Space).", ui),
+            Tool::Zoom => hint("Click to zoom in, Alt+click to zoom out, drag to zoom smoothly.", ui),
+            Tool::Select | Tool::MagicWand => tools::select::property_ui(ui, studio, shell),
+            Tool::Fill => tools::fill::property_ui(ui, studio, shell),
+            Tool::Move => tools::transform::property_ui(ui, studio, shell),
+            Tool::Frame(_) => tools::frame::property_ui(ui, studio, shell),
+            Tool::Brush(_) => {}
+        }
+        frame_border(ui, studio, shell);
         super::pen_settings::ui(ui, studio);
         return;
     }
@@ -98,8 +114,18 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
         *studio.preset_mut() = p;
     }
 
+    frame_border(ui, studio, shell);
     ui.add_space(6.0);
     super::pen_settings::ui(ui, studio);
+}
+
+/// The active layer's border settings when it is a frame folder (the frame
+/// tools show them with their own options).
+fn frame_border(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
+    let id = studio.doc.active();
+    if !matches!(studio.tool, Tool::Frame(_)) && studio.doc.frame(id).is_some() {
+        tools::frame::border_ui(ui, studio, shell, id);
+    }
 }
 
 pub(super) fn percent(v: &mut f32) -> Slider<'_> {

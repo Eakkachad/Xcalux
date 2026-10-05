@@ -110,6 +110,11 @@ pub enum LoadWarning {
     LegacyDuplicateRef { layer: u32 },
     LegacyDeepFolders { count: u32 },
     LegacyDefaultDpi,
+    /// The saved selection could not be used; the document opened without one.
+    SelectionDropped { reason: &'static str },
+    PageSetupDropped,
+    FrameDropped { layer: u32, reason: &'static str },
+    FramePanelDropped { layer: u32, count: u32 },
 }
 
 impl fmt::Display for LoadWarning {
@@ -155,6 +160,14 @@ impl fmt::Display for LoadWarning {
                 "{count} folders nested deeper than 3 levels were invisible in the old version and are now shown."
             ),
             LoadWarning::LegacyDefaultDpi => f.write_str("The old file had no resolution; the default was used."),
+            LoadWarning::SelectionDropped { reason } => write!(f, "The saved selection was not loaded ({reason})."),
+            LoadWarning::PageSetupDropped => f.write_str("The saved page setup was not valid and was not loaded."),
+            LoadWarning::FrameDropped { layer, reason } => {
+                write!(f, "The frame border of layer {layer} was not loaded ({reason}).")
+            }
+            LoadWarning::FramePanelDropped { layer, count } => {
+                write!(f, "{count} invalid frame panels of layer {layer} were removed.")
+            }
         }
     }
 }

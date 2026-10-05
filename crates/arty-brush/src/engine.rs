@@ -10,7 +10,7 @@ use crate::shape::{
     self, DabStats, MAX_FULL_REPLAY_PX, MAX_LOGGED_SAMPLES, ShapeSample, TileClip, correct_path, correction_sigma_px,
     seg_len, taper,
 };
-use crate::surface::LayerSurface;
+use crate::surface::{LayerSurface, MaskCur};
 
 /// Why a stroke could not start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -418,7 +418,7 @@ impl StrokeEngine {
     ) -> Option<R> {
         let id = self.layer?;
         let (tiles_wide, tiles_high) = (doc.tiles_wide() as i32, doc.tiles_high() as i32);
-        let (grid, dirty) = doc.paint_target(id)?;
+        let (grid, dirty, mask) = doc.paint_target_masked(id)?;
         let mut surface = LayerSurface {
             grid,
             dirty,
@@ -428,6 +428,8 @@ impl StrokeEngine {
             tiles_high,
             clip: clipped.then_some(&self.clip),
             stats: &mut self.stats,
+            mask,
+            mask_cur: MaskCur::default(),
         };
         Some(f(&self.brush, &mut self.state, &mut surface))
     }
