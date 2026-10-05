@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use ahash::AHashMap;
 
+use crate::history::{ARC_COUNTS, table_bytes};
 use crate::tile::{TileCoord, TilePixels, TileRef, new_tile};
 
 #[derive(Clone, Default)]
@@ -79,16 +80,28 @@ impl TileGrid {
         self.tiles.iter().map(|(c, t)| (*c, t))
     }
 
+    /// Remove every tile. Always starts a fresh map (freeing the old table
+    /// when nothing else shares it), so the grid's memory never depends on
+    /// whether a snapshot or autosave copy was holding the map.
     pub fn clear(&mut self) {
-        match Arc::get_mut(&mut self.tiles) {
-            Some(tiles) => tiles.clear(),
-            None => self.tiles = Arc::default(),
-        }
+        self.tiles = Arc::default();
     }
 
     /// Bytes of pixel data uniquely or jointly owned by this grid.
     pub fn pixel_bytes(&self) -> usize {
         self.tiles.len() * std::mem::size_of::<TilePixels>()
+    }
+
+    /// Identity of the coordinate map: equal exactly when [`Self::shares_storage`].
+    pub(crate) fn map_ptr(&self) -> usize {
+        Arc::as_ptr(&self.tiles) as usize
+    }
+
+    /// Heap bytes of the coordinate map itself (not the tiles).
+    pub(crate) fn map_bytes(&self) -> usize {
+        table_bytes(self.tiles.capacity(), size_of::<(TileCoord, TileRef)>())
+            + ARC_COUNTS
+            + size_of::<AHashMap<TileCoord, TileRef>>()
     }
 }
 

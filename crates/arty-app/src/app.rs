@@ -98,6 +98,9 @@ impl ArtyApp {
 
         let (_, w, h, dpi) = PAGE_PRESETS[3];
         let mut studio = Studio::new(Document::new(w, h, dpi));
+        studio.history.set_budget(arty_core::undo_budget(arty_io::physical_memory()));
+        studio.history.set_release(crate::studio::undo_release());
+        log::info!("undo budget {} MiB", studio.history.budget() >> 20);
         // Mailbox panics where unsupported and eframe exposes no surface capabilities.
         studio.fast_vsync_ok =
             cc.wgpu_render_state.as_ref().is_some_and(|r| r.adapter.get_info().backend == egui_wgpu::wgpu::Backend::Dx12);

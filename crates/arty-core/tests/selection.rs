@@ -533,7 +533,7 @@ fn sc07_erase_selected() {
     assert!(tile_at(&doc, untouched).is_some());
 
     let mut history = History::default();
-    history.push(edit);
+    history.push(edit, &doc);
     history.undo(&mut doc);
     for (c, t) in &before {
         assert!(Arc::ptr_eq(t.as_ref().unwrap(), &tile_at(&doc, *c).unwrap()), "undo restores {c:?}");

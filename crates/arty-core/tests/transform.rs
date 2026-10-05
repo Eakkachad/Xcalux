@@ -326,7 +326,7 @@ fn tr08_selection_commit_is_one_batch_step_undo_and_redo() {
     assert!(!after_sel.shares_storage(&sel));
 
     let mut h = History::default();
-    h.push(edit);
+    h.push(edit, &doc);
     h.undo(&mut doc);
     assert!(!h.can_undo(), "one step");
     for (c, t) in before.iter() {

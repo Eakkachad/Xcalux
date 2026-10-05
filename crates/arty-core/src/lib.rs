@@ -30,7 +30,7 @@ pub use document::{
 pub use frame::{BorderStyle, Cov, Frame, FrameShape, Panel};
 pub use geom::{Affine64, Pt, RectF, TileRect};
 pub use grid::TileGrid;
-pub use history::{Edit, History, PixelRecorder, Touch};
+pub use history::{Edit, History, HistoryUsage, PixelRecorder, TILE_BYTES, Touch, undo_budget};
 pub use layer::{Layer, LayerContent, LayerId, LayerProps};
 pub use page::PageSetup;
 pub use selection::{MaskPixels, MaskRef, MaskView, SelectOp, Selection};

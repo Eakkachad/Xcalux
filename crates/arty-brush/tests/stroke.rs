@@ -42,7 +42,7 @@ fn pen_stroke_paints_and_undoes() {
     assert_eq!(alpha_at(&doc, 120, 140), 0);
 
     let mut h = History::default();
-    h.push(edit);
+    h.push(edit, &doc);
     h.undo(&mut doc);
     assert_eq!(alpha_at(&doc, 120, 100), 0);
 }
@@ -490,17 +490,17 @@ fn shaped_stroke_is_one_undo_step() {
         let mut engine = StrokeEngine::new();
         engine.configure(&p, [0.0; 3]);
         let mut h = History::default();
-        h.push(draw(&mut engine, &mut doc, &jittery()).expect("painted"));
+        h.push(draw(&mut engine, &mut doc, &jittery()).expect("painted"), &doc);
         assert_ne!(engine.last_reshape(), Reshape::Skipped, "({tout}, {corr})");
         h.undo(&mut doc);
         assert!(doc.active_layer().raster().unwrap().is_empty(), "({tout}, {corr}): undo left ink");
 
         // Over existing ink: undo restores the page exactly, in one step.
         engine.configure(&preset("Flat Color"), [0.8, 0.1, 0.1]);
-        h.push(draw(&mut engine, &mut doc, &straight(1.0)).unwrap());
+        h.push(draw(&mut engine, &mut doc, &straight(1.0)).unwrap(), &doc);
         let before = doc.snapshot();
         engine.configure(&p, [0.0; 3]);
-        h.push(draw(&mut engine, &mut doc, &wavy()).unwrap());
+        h.push(draw(&mut engine, &mut doc, &wavy()).unwrap(), &doc);
         assert!(differing_pixels(&doc, &before) > 0);
         let steps = h.undo_len();
         h.undo(&mut doc);
@@ -627,7 +627,7 @@ fn skidding_tap_with_taper_leaves_a_dot() {
             }
             // One undo step removes it.
             let mut history = History::new(8);
-            history.push(edit.unwrap());
+            history.push(edit.unwrap(), &doc);
             history.undo(&mut doc);
             assert!(doc.active_layer().raster().unwrap().is_empty(), "drift {drift}");
         }
