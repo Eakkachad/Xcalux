@@ -363,13 +363,20 @@ pub fn new_frame_folder(studio: &mut Studio) {
 /// Delete the selected panel (Frame Edit).
 pub fn delete_panel(studio: &mut Studio) {
     let Some((id, i)) = active_panel_sel(studio) else { return };
+    // A frame with no panels would hide everything in its folder.
+    let mut last = false;
     studio.edit_frame(id, |s| {
-        (i < s.panels.len()).then(|| {
+        last = s.panels.len() <= 1;
+        (i < s.panels.len() && !last).then(|| {
             let mut s = s.clone();
             s.panels.remove(i);
             s
         })
     });
+    if last {
+        studio.notice = Some("A frame border folder keeps at least one panel — delete the folder instead".into());
+        return;
+    }
     studio.frame_sel = None;
 }
 
@@ -901,7 +908,8 @@ pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: 
         // Turned back on: the tool's width.
         if on { studio.opts.frame.border(dpi).width.max(1.0) } else { 0.0 }
     } else if w_r.changed() {
-        mm_px(w_mm, dpi).max(0.0)
+        // The file format rejects wider borders (and would drop the frame on reopen).
+        mm_px(w_mm, dpi).clamp(0.0, arty_io::fram::MAX_BORDER_WIDTH)
     } else {
         shape.border.width
     };

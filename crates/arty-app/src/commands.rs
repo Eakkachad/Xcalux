@@ -488,9 +488,21 @@ mod tests {
         paint(&mut studio, id);
         execute(Command::SelectTool(Tool::Frame(FrameMode::Edit)), &mut studio, &mut shell);
         studio.frame_sel = Some((folder, 0));
+        // The only panel is never deleted: an empty frame would hide the folder.
         execute(Command::ClearLayer, &mut studio, &mut shell);
         assert!(painted(&studio));
-        assert_eq!(panels(&studio), 0, "the panel was deleted");
+        assert_eq!(panels(&studio), 1, "the last panel stays");
+        assert!(studio.notice.take().is_some());
+        studio.edit_frame(folder, |s| {
+            let mut s = s.clone();
+            s.panels.push(s.panels[0].clone());
+            Some(s)
+        });
+        studio.frame_sel = Some((folder, 1));
+        execute(Command::ClearLayer, &mut studio, &mut shell);
+        assert!(painted(&studio));
+        assert_eq!(panels(&studio), 1, "the panel was deleted");
+        studio.undo();
         studio.undo();
         studio.frame_sel = None;
         execute(Command::ClearLayer, &mut studio, &mut shell);
