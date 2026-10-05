@@ -322,6 +322,8 @@ pub struct History {
     /// Document walks: scans and re-costs.
     #[cfg(test)]
     doc_walks: usize,
+    #[cfg(test)]
+    recost_runs: usize,
 }
 
 impl Default for History {
@@ -353,6 +355,8 @@ impl History {
             pushes: 0,
             #[cfg(test)]
             doc_walks: 0,
+            #[cfg(test)]
+            recost_runs: 0,
         }
     }
 
@@ -617,6 +621,7 @@ impl History {
         #[cfg(test)]
         {
             self.doc_walks += 1;
+            self.recost_runs += 1;
         }
         let s = &mut self.scratch;
         s.owner.clear();
@@ -1571,15 +1576,44 @@ mod tests {
         h.set_budget(h.usage().undo_bytes);
         h.push(stroke(&mut doc, &mut rec, 0, 4).unwrap(), &doc);
         let trimmed = h.usage().trimmed;
-        assert_eq!(h.doc_walks, 1, "the re-cost scans; the step does not");
+        assert_eq!((h.doc_walks, h.recost_runs), (1, 1), "the re-cost scans; the step does not");
         assert!(trimmed > 0);
         check_stacks(&h, &doc, true, "after the trim");
         // Every step exact now: the next push at budget scans by itself.
         h.set_budget(h.usage().undo_bytes);
         h.push(stroke(&mut doc, &mut rec, 0, 5).unwrap(), &doc);
         assert!(h.undo.iter().all(|s| s.exact));
-        assert_eq!(h.doc_walks, 2);
+        assert_eq!((h.doc_walks, h.recost_runs), (2, 1));
         assert!(h.usage().trimmed > trimmed);
+    }
+
+    #[test]
+    fn step_whose_own_tiles_tip_the_budget_scans() {
+        let mut doc = Document::new(640, 64, 72);
+        let mut h = History::default();
+        let mut rec = PixelRecorder::default();
+        for v in 1..=4 {
+            h.push(stroke(&mut doc, &mut rec, 0, v).unwrap(), &doc);
+        }
+        h.recost(&doc);
+        let (walks, recosts) = (h.doc_walks, h.recost_runs);
+        // The stack and the new step's overhead fit; its old tile does not.
+        h.set_budget(h.usage().undo_bytes + TILE_BYTES / 2);
+        h.push(stroke(&mut doc, &mut rec, 0, 5).unwrap(), &doc);
+        let step = h.undo.back().unwrap();
+        assert!(step.bytes - TILE_BYTES <= TILE_BYTES / 2);
+        assert!(step.exact, "the step scans");
+        assert_eq!((h.doc_walks - walks, h.recost_runs - recosts), (1, 0), "and nothing re-costs");
+        assert!(h.usage().trimmed > 0);
+        check_stacks(&h, &doc, true, "after the trim");
+
+        // A redo onto a stack at its budget scans too, against the undo stack.
+        h.undo(&mut doc);
+        h.set_budget(h.usage().undo_bytes);
+        let walks = h.doc_walks;
+        h.redo(&mut doc);
+        assert!(h.undo.back().unwrap().exact, "the redone step scans");
+        assert_eq!(h.doc_walks - walks, 1);
     }
 
     #[test]
