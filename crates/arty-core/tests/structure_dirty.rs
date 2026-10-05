@@ -748,3 +748,41 @@ fn targeted_undo_only_clip_of_pass_through_base() {
     history.redo(&mut doc);
     oracle.verify(&mut doc, "redo");
 }
+
+/// Moving the only clip off a pass-through folder (and undo/redo of that)
+/// turns the folder back to pass-through in all its tiles.
+#[test]
+fn targeted_move_only_clip_off_pass_through_base() {
+    let mut doc = Document::new(256, 64, 72);
+    let mut rng = Rng(5);
+    let base = doc.active();
+    let folder = doc.add_folder().unwrap();
+    let child = doc.add_raster_layer().unwrap();
+    assert!(doc.move_layer(child, Some(folder), 0));
+    let mut p = doc.layer(child).unwrap().props.clone();
+    p.blend = BlendMode::Multiply;
+    doc.set_props(child, p);
+    doc.set_active(folder);
+    let clip = doc.add_raster_layer().unwrap();
+    let top = doc.add_raster_layer().unwrap();
+    for x in 0..3 {
+        paint_pattern(&mut doc, &mut rng, base, TileCoord::new(x, 0));
+        paint_pattern(&mut doc, &mut rng, child, TileCoord::new(x, 0));
+    }
+    paint_pattern(&mut doc, &mut rng, clip, TileCoord::new(3, 0));
+    paint_pattern(&mut doc, &mut rng, top, TileCoord::new(3, 0));
+    let mut p = doc.layer(clip).unwrap().props.clone();
+    p.clip = true;
+    doc.set_props(clip, p);
+    let mut oracle = CompositeOracle::new(&doc);
+    doc.dirty_mut().drain_into(&mut Vec::new());
+    let mut history = History::default();
+    let snap = doc.snapshot_structure();
+    assert!(doc.move_layer(clip, None, usize::MAX));
+    history.push(Edit::Structure(Box::new(snap)), &doc);
+    oracle.verify(&mut doc, "move");
+    history.undo(&mut doc);
+    oracle.verify(&mut doc, "undo");
+    history.redo(&mut doc);
+    oracle.verify(&mut doc, "redo");
+}

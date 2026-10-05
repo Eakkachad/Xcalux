@@ -694,8 +694,8 @@ impl Document {
             let (b0, b1) = (clip_base(old, os, oi), clip_base(new, ns, ni));
             if b0 != b1 {
                 both(dirty, id);
-                b0.into_iter().for_each(|b| mark_subtree(old, dirty, b));
-                b1.into_iter().for_each(|b| mark_subtree(new, dirty, b));
+                b0.filter(|b| isolates(old, b)).into_iter().for_each(|b| mark_subtree(old, dirty, b));
+                b1.filter(|b| isolates(new, b)).into_iter().for_each(|b| mark_subtree(new, dirty, b));
             }
         }
         // Survivors that kept their parent but moved among their siblings.
@@ -1032,11 +1032,20 @@ fn mark_subtree(layers: &Layers, dirty: &mut DirtyRegion, id: LayerId) {
     }
 }
 
-/// `sibs[index]`, the base below it and the clip layers above it.
+/// Whether gaining or losing clips changes how `id` renders outside the
+/// clips' tiles: a pass-through folder base turns isolated in every tile.
+/// Other bases look the same wherever no clip has pixels.
+fn isolates(layers: &Layers, id: &LayerId) -> bool {
+    layers.get(id).is_some_and(|l| l.is_folder() && l.props.blend == BlendMode::PassThrough)
+}
+
+/// `sibs[index]`, the clip layers above it and, when it [`isolates`], the
+/// base below it.
 fn mark_clip_run(layers: &Layers, sibs: &[LayerId], index: usize, dirty: &mut DirtyRegion) {
     let base = sibs[..index].iter().rposition(|s| !is_clip(layers, s)).or((index > 0).then_some(0));
+    let base = base.map(|b| &sibs[b]).filter(|b| isolates(layers, b));
     let above = sibs[index + 1..].iter().take_while(|s| is_clip(layers, s));
-    for &l in base.map(|b| &sibs[b]).into_iter().chain([&sibs[index]]).chain(above) {
+    for &l in base.into_iter().chain([&sibs[index]]).chain(above) {
         mark_subtree(layers, dirty, l);
     }
 }
