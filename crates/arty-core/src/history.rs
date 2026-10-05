@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 
 use ahash::AHashSet;
 
-use crate::document::{Document, StructureSnapshot};
+use crate::document::{DirtyRegion, Document, StructureSnapshot};
 use crate::grid::TileGrid;
 use crate::layer::{LayerId, LayerProps};
 use crate::tile::{TileCoord, TileRef};
@@ -77,6 +77,17 @@ impl PixelRecorder {
     pub fn before_write(&mut self, grid: &TileGrid, c: TileCoord) {
         if self.layer.is_some() && self.seen.insert(c) {
             self.tiles.push((c, grid.get_ref(c).cloned()));
+        }
+    }
+
+    /// Put the pre-stroke tile back for every recorded tile `select` picks, marking it dirty.
+    /// Recording continues, so repainting still yields one Edit::Pixels holding the original tiles.
+    pub fn restore(&self, grid: &mut TileGrid, dirty: &mut DirtyRegion, mut select: impl FnMut(TileCoord) -> bool) {
+        for (c, old) in &self.tiles {
+            if select(*c) {
+                grid.replace(*c, old.clone());
+                dirty.mark(*c);
+            }
         }
     }
 
@@ -216,6 +227,53 @@ mod tests {
         h.redo(&mut doc);
         h.redo(&mut doc);
         assert_eq!((pixel(&doc, 0)[0], pixel(&doc, 1)[0]), (100, 200));
+    }
+
+    #[test]
+    fn restore_puts_back_pre_stroke_tiles_and_keeps_one_edit() {
+        let mut doc = Document::new(256, 64, 72);
+        let mut h = History::default();
+        let mut rec = PixelRecorder::default();
+        // An existing tile (0,0) from an earlier stroke.
+        h.push(stroke(&mut doc, &mut rec, 0, 100).unwrap());
+        let id = doc.active();
+        let (a, b) = (TileCoord::new(0, 0), TileCoord::new(1, 0));
+        let old_a = doc.active_layer().raster().unwrap().get_ref(a).unwrap().clone();
+
+        // A stroke writes the existing tile and creates a new one.
+        rec.begin(id);
+        let (grid, _) = doc.paint_target(id).unwrap();
+        for (c, v) in [(a, 7), (b, 9)] {
+            rec.before_write(grid, c);
+            grid.get_mut_or_create(c)[0][1] = [v; 4];
+        }
+        let (grid, dirty) = doc.paint_target(id).unwrap();
+        let mut drained = Vec::new();
+        dirty.drain_into(&mut drained);
+        rec.restore(grid, dirty, |_| true);
+        let raster = doc.active_layer().raster().unwrap();
+        assert!(std::sync::Arc::ptr_eq(raster.get_ref(a).unwrap(), &old_a), "existing tile is the pre-stroke Arc");
+        assert!(raster.get_ref(b).is_none(), "a tile the stroke created is removed");
+        let (_, dirty) = doc.paint_target(id).unwrap();
+        assert!(!dirty.is_clean(), "restored tiles are marked dirty");
+
+        // Repaint (as a replay would); the restored tiles are not re-recorded.
+        let (grid, _) = doc.paint_target(id).unwrap();
+        for (c, v) in [(a, 11), (b, 12)] {
+            rec.before_write(grid, c);
+            grid.get_mut_or_create(c)[0][1] = [v; 4];
+        }
+        assert_eq!(pixel(&doc, 1)[0], 11);
+        let edit = rec.finish().unwrap();
+        let Edit::Pixels { ref tiles, .. } = edit else { panic!("pixel edit") };
+        assert_eq!(tiles.len(), 2, "one edit holding each tile once");
+        h.push(edit);
+        h.undo(&mut doc);
+        let raster = doc.active_layer().raster().unwrap();
+        assert!(std::sync::Arc::ptr_eq(raster.get_ref(a).unwrap(), &old_a));
+        assert!(raster.get_ref(b).is_none());
+        assert_eq!(pixel(&doc, 0)[0], 100);
+        assert_eq!(pixel(&doc, 1)[0], 0);
     }
 
     #[test]
