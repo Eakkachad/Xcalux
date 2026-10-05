@@ -26,6 +26,7 @@ png.workspace = true
 rayon.workspace = true
 rfd.workspace = true
 serde.workspace = true
+pollster = "0.4"
 
 [dev-dependencies]
 arty-testkit.workspace = true

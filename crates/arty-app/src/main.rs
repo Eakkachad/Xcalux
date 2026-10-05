@@ -9,6 +9,7 @@ mod commands;
 mod demo;
 mod export;
 mod files;
+pub mod gpu_setup;
 mod panels;
 mod shell;
 mod studio;
@@ -21,8 +22,25 @@ mod tools;
 static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 
 fn main() -> eframe::Result<()> {
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "imm32")]
+        unsafe extern "system" {
+            fn ImmDisableIME(id: u32) -> i32;
+        }
+        let _ = ImmDisableIME(0);
+    }
+
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     init_rayon();
+
+    let safe_gpu = std::env::args().any(|arg| arg == "--safe-gpu");
+    let storage_dir = eframe::storage_dir(APP_NAME);
+    let bench_active = bench::active();
+
+    let (wgpu_setup, backend) = gpu_setup::init_gpu(storage_dir.as_deref(), safe_gpu, bench_active);
+    let fast_vsync_ok = backend == gpu_setup::GpuBackend::Dx12 || backend == gpu_setup::GpuBackend::Warp;
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ARTY")
@@ -30,12 +48,20 @@ fn main() -> eframe::Result<()> {
             .with_min_inner_size([960.0, 600.0]),
         renderer: eframe::Renderer::Wgpu,
         // Bench runs leave app.ron alone (bench.rs).
-        persist_window: !bench::active(),
+        persist_window: !bench_active,
         // LOW_LATENCY unless the user picked another Display sync (eframe's default is LOW_LATENCY too).
-        wgpu_options: egui_wgpu::WgpuConfiguration::default().with_surface_config(saved_display_sync().surface_config(false)),
+        wgpu_options: egui_wgpu::WgpuConfiguration {
+            wgpu_setup,
+            ..Default::default()
+        }
+        .with_surface_config(saved_display_sync().surface_config(fast_vsync_ok)),
         ..Default::default()
     };
-    eframe::run_native(APP_NAME, options, Box::new(|cc| Ok(Box::new(app::ArtyApp::new(cc)))))?;
+    eframe::run_native(
+        APP_NAME,
+        options,
+        Box::new(move |cc| Ok(Box::new(app::ArtyApp::new(cc, backend)))),
+    )?;
     // A bench hook that failed (bench.rs) quits with its own code.
     match bench::exit_code() {
         0 => Ok(()),
@@ -59,7 +85,7 @@ fn init_rayon() {
 }
 
 /// eframe's storage folder is named after this.
-const APP_NAME: &str = "ARTY";
+pub const APP_NAME: &str = "ARTY";
 
 /// The saved Display sync, applied at start-up: eframe 0.36 keeps
 /// `Frame::set_wgpu_surface_config` on the frame's copy of the render state and

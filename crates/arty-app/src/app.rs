@@ -56,6 +56,9 @@ pub struct ArtyApp {
     /// Display sync the surface was started with. eframe 0.36 applies the
     /// setting only at start-up (main.rs), so this is what is running.
     running_sync: DisplaySync,
+    gpu_backend: crate::gpu_setup::GpuBackend,
+    first_frame_seen: bool,
+    gpu_marker_cleared: bool,
 }
 
 /// Status bar latency readout. `in→frame` is OS sample time to canvas processing only.
@@ -83,7 +86,7 @@ fn latency_text(st: PenStats, frame_ms: f32, running: DisplaySync, selected: Dis
 }
 
 impl ArtyApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, gpu_backend: crate::gpu_setup::GpuBackend) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         // Ctrl+= / Ctrl+- / Ctrl+0 zoom the canvas (commands.rs), never the UI.
         // The option isn't persisted, but a zoom factor saved by an older build is.
@@ -168,6 +171,9 @@ impl ArtyApp {
             bench,
             bench_run: bench::active(),
             running_sync,
+            gpu_backend,
+            first_frame_seen: false,
+            gpu_marker_cleared: false,
         }
     }
 
@@ -471,6 +477,18 @@ impl ArtyApp {
 impl eframe::App for ArtyApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if !self.first_frame_seen {
+            self.first_frame_seen = true;
+            log::debug!("ArtyApp::ui frame 1 executed");
+        } else if !self.gpu_marker_cleared {
+            self.gpu_marker_cleared = true;
+            log::debug!("ArtyApp::ui frame 2: clearing marker and saving last working backend");
+            crate::gpu_setup::on_first_frame_presented(
+                eframe::storage_dir(crate::APP_NAME).as_deref(),
+                self.gpu_backend,
+                self.bench.is_some(),
+            );
+        }
         let frame_start = self.bench.is_some().then(std::time::Instant::now);
         // Applied on the next paint, only when the setting changed. eframe 0.36 does not
         // pass this back to its painter (see main.rs), so the start-up config is what counts.
@@ -567,6 +585,19 @@ impl eframe::App for ArtyApp {
             tool_opts: self.studio.opts.clone(),
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
+    }
+}
+
+impl Drop for ArtyApp {
+    fn drop(&mut self) {
+        if self.first_frame_seen && !self.gpu_marker_cleared {
+            self.gpu_marker_cleared = true;
+            crate::gpu_setup::on_first_frame_presented(
+                eframe::storage_dir(crate::APP_NAME).as_deref(),
+                self.gpu_backend,
+                self.bench.is_some(),
+            );
+        }
     }
 }
 
