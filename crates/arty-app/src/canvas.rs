@@ -1,20 +1,27 @@
 //! The canvas tab: pen/mouse input, view navigation and page display.
 //!
 //! Every pointer event of a frame is turned into a brush sample (the legacy
-//! app sampled once per frame, which made fast lines jagged). Pen input
-//! arrives as `Touch` events carrying pressure; when a frame has any, mouse
-//! events are ignored for painting so the pen's simulated mouse doesn't
-//! double-feed the stroke.
+//! app sampled once per frame, which made fast lines jagged). With the native
+//! pen hook (`arty_pen`), pen strokes are fed from its queue: every Windows
+//! Ink sample with its own pressure, tilt and OS timestamp, and egui's
+//! `Touch` events for that pointer are ignored. Without it, pen input
+//! arrives as `Touch` events carrying pressure. When a frame has any
+//! `Touch`, mouse events are ignored for painting so the pen's simulated
+//! mouse doesn't double-feed the stroke.
 
 use std::rc::Rc;
 
 use arty_brush::InputSample;
-use arty_pen::{PenQueue, PenStats};
+use arty_pen::{PenMeter, PenPhase, PenQueue, PenSample, PenStats};
 use arty_render::{CanvasGpu, CanvasSync, View};
 use egui::{Color32, CursorIcon, Event, PointerButton, Pos2, Rect, Sense, Shape, Stroke, TouchDeviceId, TouchId, TouchPhase, Vec2};
 
+use crate::commands::{self, Command};
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+
+/// Pen samples drained per frame without reallocating (~5 s at 200 Hz).
+const PEN_BUF_CAP: usize = 1024;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Nav {
@@ -30,8 +37,10 @@ enum Nav {
 #[derive(Clone, Copy, PartialEq)]
 enum StrokeSrc {
     Mouse,
-    /// Pen or finger contact; other contacts can't feed or end the stroke.
+    /// Finger, or pen without the native hook; other contacts can't feed or end the stroke.
     Touch(TouchDeviceId, TouchId),
+    /// Native pen pointer id (egui's `TouchId` of the same contact).
+    Pen(u32),
 }
 
 pub struct CanvasPane {
@@ -43,9 +52,11 @@ pub struct CanvasPane {
     nav: Option<Nav>,
     last_input_time: f64,
     events: Vec<Event>,
-    #[allow(dead_code)] // TRACK PEN
+    /// Native pen queue; `None` off Windows or when the hook failed.
     pen: Option<Rc<PenQueue>>,
-    #[allow(dead_code)] // TRACK PEN
+    /// This frame's pen samples (reused).
+    pen_buf: Vec<PenSample>,
+    pen_meter: PenMeter,
     pen_stats: PenStats,
 }
 
@@ -61,6 +72,8 @@ impl CanvasPane {
             last_input_time: 0.0,
             events: Vec::new(),
             pen,
+            pen_buf: Vec::with_capacity(PEN_BUF_CAP),
+            pen_meter: PenMeter::new(),
             pen_stats: PenStats::default(),
         }
     }
@@ -84,6 +97,26 @@ impl CanvasPane {
         if studio.fit_pending && rect.width() > 10.0 {
             studio.view.fit(studio.doc.width() as f32, studio.doc.height() as f32, rect.width() * ppp, rect.height() * ppp);
             studio.fit_pending = false;
+        }
+
+        self.pen_buf.clear();
+        if let Some(q) = &self.pen {
+            q.set_enabled(studio.input.native_pen);
+            q.drain_into(&mut self.pen_buf);
+            if !studio.input.native_pen {
+                self.pen_buf.clear();
+            }
+            self.pen_stats =
+                self.pen_meter.update(&self.pen_buf, arty_pen::now_secs(), q.dropped(), studio.input.native_pen);
+        }
+        // Eraser end (CSP): decided before the tool is computed, never mid-stroke.
+        if studio.input.eraser_end_switch
+            && self.stroke.is_none()
+            && let Some(end) =
+                self.pen_buf.iter().find(|s| s.phase == PenPhase::Down).or(self.pen_buf.last()).map(|s| s.end)
+            && end != studio.pen_end()
+        {
+            commands::execute(Command::PenEnd(end), studio, shell);
         }
 
         let tool = self.effective_tool(ui, studio.tool);
@@ -140,7 +173,12 @@ impl CanvasPane {
         self.events.clear();
         ui.input(|i| self.events.extend(i.events.iter().cloned()));
         let has_touch = self.events.iter().any(|e| matches!(e, Event::Touch { .. }));
-        let stroke_count = sample_count(&self.events, has_touch, self.stroke == Some(StrokeSrc::Mouse));
+        // Touch events of contacts the native pen reports are the same samples again.
+        let pen_buf = std::mem::take(&mut self.pen_buf);
+        let stroke = self.stroke;
+        let stroke_count = sample_count(&self.events, has_touch, stroke == Some(StrokeSrc::Mouse), |id| {
+            pen_owns(&pen_buf, stroke, id)
+        });
         let t0 = if self.last_input_time > 0.0 { self.last_input_time.max(now - frame_dt.max(0.001)) } else { now };
         let mut k = 0usize;
         let mut sample_time = || {
@@ -150,10 +188,42 @@ impl CanvasPane {
 
         // ----- brush strokes ------------------------------------------------
         if let Tool::Brush(_) = tool {
+            // Native pen first: each sample keeps its own pressure, tilt and OS time.
+            let m = studio.view.screen_to_doc(origin);
+            for s in &pen_buf {
+                let pts = Pos2::new(s.pos[0] / ppp, s.pos[1] / ppp);
+                let [x, y] = m.apply(s.pos);
+                let pressure = match s.pressure {
+                    Some(p) => studio.shape_pressure(p),
+                    None => studio.input.mouse_pressure,
+                };
+                let [tilt_x, tilt_y] = arty_pen::view_tilt([m.a, m.b, m.c, m.d], s.tilt);
+                let smp = InputSample { x, y, pressure, tilt_x, tilt_y, time: s.time };
+                let owner = self.stroke == Some(StrokeSrc::Pen(s.pointer));
+                match s.phase {
+                    PenPhase::Down
+                        if self.stroke.is_none()
+                            && self.nav.is_none()
+                            && rect.contains(pts)
+                            && hovered
+                            && studio.begin_stroke(smp) =>
+                    {
+                        self.stroke = Some(StrokeSrc::Pen(s.pointer));
+                    }
+                    PenPhase::Move if owner => studio.feed_stroke(smp),
+                    PenPhase::Up | PenPhase::Cancel | PenPhase::Leave if owner => {
+                        studio.feed_stroke(InputSample { pressure: 0.0, ..smp });
+                        studio.end_stroke();
+                        self.stroke = None;
+                    }
+                    _ => {}
+                }
+            }
+
             let events = std::mem::take(&mut self.events);
             for e in &events {
                 match *e {
-                    Event::Touch { device_id, id, phase, pos, force } => {
+                    Event::Touch { device_id, id, phase, pos, force } if !pen_owns(&pen_buf, stroke, id) => {
                         let t = sample_time();
                         let pressure = studio.shape_pressure(force.unwrap_or(1.0));
                         let [x, y] = to_doc(&studio.view, pos);
@@ -203,10 +273,20 @@ impl CanvasPane {
                 studio.end_stroke();
                 self.stroke = None;
             }
+            // Likewise when egui saw the pen lift but the native queue did not.
+            if let Some(StrokeSrc::Pen(p)) = self.stroke
+                && self.events.iter().any(|e| {
+                    matches!(e, Event::Touch { id, phase: TouchPhase::End | TouchPhase::Cancel, .. } if id.0 == u64::from(p))
+                })
+            {
+                studio.end_stroke();
+                self.stroke = None;
+            }
         } else if self.stroke.is_some() {
             studio.end_stroke();
             self.stroke = None;
         }
+        self.pen_buf = pen_buf;
 
         // ----- navigation ---------------------------------------------------
         let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -381,16 +461,23 @@ fn angle_from(center: Pos2, p: Pos2) -> f32 {
     (p.y - center.y).atan2(p.x - center.x)
 }
 
+/// Whether `Touch` events of contact `id` belong to the native pen: it
+/// reported that pointer this frame or owns the stroke in progress.
+fn pen_owns(pen_buf: &[PenSample], stroke: Option<StrokeSrc>, id: TouchId) -> bool {
+    pen_buf.iter().any(|s| u64::from(s.pointer) == id.0) || matches!(stroke, Some(StrokeSrc::Pen(p)) if u64::from(p) == id.0)
+}
+
 /// Number of events in a frame that become brush samples, so sample times
 /// spread evenly over the frame. Mirrors the brush match arms: with pen input
 /// only `Touch` counts (egui-winit adds a simulated pointer event per touch),
 /// otherwise primary button events and moves while the mouse button is down.
-fn sample_count(events: &[Event], has_touch: bool, mouse_stroking: bool) -> usize {
+/// Touch events of contacts the native pen owns (`pen_owns`) are not samples.
+fn sample_count(events: &[Event], has_touch: bool, mouse_stroking: bool, pen_owns: impl Fn(TouchId) -> bool) -> usize {
     let mut down = mouse_stroking;
     let mut n = 0;
     for e in events {
         match e {
-            Event::Touch { .. } => n += 1,
+            Event::Touch { id, .. } if !pen_owns(*id) => n += 1,
             Event::PointerButton { button: PointerButton::Primary, pressed, .. } if !has_touch => {
                 down = *pressed;
                 n += 1;
@@ -406,7 +493,9 @@ fn sample_count(events: &[Event], has_touch: bool, mouse_stroking: bool) -> usiz
 mod tests {
     use super::*;
     use crate::theme::ThemeKind;
-    use arty_core::{Document, TileCoord};
+    use arty_brush::BrushGroup;
+    use arty_core::{Document, TileCoord, tile::TilePixels};
+    use arty_pen::PenEnd;
     use egui::{Key, Modifiers, RawInput, pos2};
 
     /// Headless egui frames driving a GPU-less canvas.
@@ -416,19 +505,53 @@ mod tests {
         studio: Studio,
         shell: Shell,
         time: f64,
+        /// The native pen queue the pane drains (`with_pen`).
+        pen: Option<Rc<PenQueue>>,
+        pen_time: f64,
     }
+
+    /// Pointer id of the test pen (= egui `TouchId` of its contact).
+    const PEN: u32 = 5;
 
     impl Harness {
         fn new() -> Self {
+            Self::build(None)
+        }
+
+        /// A canvas with a native pen queue, as `arty_pen::install` gives on Windows.
+        fn with_pen() -> Self {
+            Self::build(Some(Rc::new(PenQueue::new(1024))))
+        }
+
+        fn build(pen: Option<Rc<PenQueue>>) -> Self {
             let mut h = Self {
                 ctx: egui::Context::default(),
-                pane: CanvasPane::new(None, None),
+                pane: CanvasPane::new(None, pen.clone()),
                 studio: Studio::new(Document::new(512, 512, 72)),
                 shell: Shell::new(ThemeKind::Dark),
                 time: 0.0,
+                pen,
+                pen_time: 100.0,
             };
             h.frame(vec![Event::PointerMoved(pos2(200.0, 150.0))]); // lay out and fit the page
             h
+        }
+
+        /// A native pen sample at document point `doc`, 4 ms after the previous one.
+        fn pen(&mut self, phase: PenPhase, doc: [f32; 2], pressure: f32) -> PenSample {
+            self.pen_time += 0.004;
+            let p = self.screen(doc);
+            PenSample { pointer: PEN, phase, pos: [p.x, p.y], pressure: Some(pressure), time: self.pen_time, ..Default::default() }
+        }
+
+        /// Queue `samples` as the window proc would, then run a frame with
+        /// `events` (what egui-winit made of the same messages).
+        fn pen_frame(&mut self, samples: &[PenSample], events: Vec<Event>) {
+            let q = self.pen.as_ref().expect("Harness::with_pen");
+            for s in samples {
+                q.push(*s);
+            }
+            self.frame(events);
         }
 
         fn frame(&mut self, events: Vec<Event>) {
@@ -451,6 +574,67 @@ mod tests {
         fn painted(&self) -> Vec<TileCoord> {
             self.studio.doc.active_layer().raster().unwrap().coords().collect()
         }
+
+        /// Every painted tile with its pixels, in a stable order.
+        fn tiles(&self) -> Vec<(i32, i32, TilePixels)> {
+            let mut v: Vec<_> =
+                self.studio.doc.active_layer().raster().unwrap().iter().map(|(c, t)| (c.y, c.x, **t)).collect();
+            v.sort_by_key(|t| (t.0, t.1));
+            v
+        }
+
+        fn alpha(&self, x: i32, y: i32) -> u16 {
+            let c = TileCoord::from_pixel(x, y);
+            let (ox, oy) = c.origin();
+            let grid = self.studio.doc.active_layer().raster().unwrap();
+            grid.get(c).map_or(0, |t| t[(y - oy) as usize][(x - ox) as usize][3])
+        }
+
+        /// Total alpha on the active layer.
+        fn ink(&self) -> u64 {
+            self.tiles().iter().flat_map(|t| t.2.iter().flatten()).map(|p| u64::from(p[3])).sum()
+        }
+
+        /// Rows of document column `x` that hold ink.
+        fn column_height(&self, x: i32) -> usize {
+            (0..512).filter(|&y| self.alpha(x, y) > 0).count()
+        }
+    }
+
+    /// What egui-winit emits for the same pointer messages: a `Touch` per
+    /// sample (force 0.6, unlike the native samples) plus the simulated mouse.
+    fn mirrored(samples: &[PenSample]) -> Vec<Event> {
+        let mut ev = Vec::new();
+        for s in samples {
+            let pos = pos2(s.pos[0], s.pos[1]);
+            let t = |phase| touch(u64::from(s.pointer), phase, pos);
+            match s.phase {
+                PenPhase::Down => ev.extend([t(TouchPhase::Start), Event::PointerMoved(pos), primary(pos, true, Modifiers::NONE)]),
+                PenPhase::Move | PenPhase::Hover => ev.extend([t(TouchPhase::Move), Event::PointerMoved(pos)]),
+                PenPhase::Up => ev.extend([t(TouchPhase::End), primary(pos, false, Modifiers::NONE), Event::PointerGone]),
+                PenPhase::Cancel => ev.extend([t(TouchPhase::Cancel), Event::PointerGone]),
+                PenPhase::Leave => {}
+            }
+        }
+        ev
+    }
+
+    /// Down, `n` moves along a line and Up, ramping pressure from `p0` to `p1`.
+    fn pen_line(h: &mut Harness, from: [f32; 2], to: [f32; 2], n: usize, p0: f32, p1: f32) -> Vec<PenSample> {
+        (0..n + 2)
+            .map(|i| {
+                let f = i as f32 / (n + 1) as f32;
+                let phase = if i == 0 {
+                    PenPhase::Down
+                } else if i == n + 1 {
+                    PenPhase::Up
+                } else {
+                    PenPhase::Move
+                };
+                let at = [from[0] + (to[0] - from[0]) * f, from[1] + (to[1] - from[1]) * f];
+                h.pen(phase, at, p0 + (p1 - p0) * f)
+            })
+            .collect()
     }
 
     fn touch(id: u64, phase: TouchPhase, pos: Pos2) -> Event {
@@ -494,7 +678,8 @@ mod tests {
             primary(p, false, m),
             touch(1, TouchPhase::End, p),
         ];
-        assert_eq!(sample_count(&pen, true, false), 3);
+        assert_eq!(sample_count(&pen, true, false, |_| false), 3);
+        assert_eq!(sample_count(&pen, true, false, |id| id == TouchId(1)), 1, "native pen samples itself");
         // Moves only count while the mouse button is down.
         let mouse = [
             Event::PointerMoved(p),
@@ -504,9 +689,9 @@ mod tests {
             primary(p, false, m),
             Event::PointerMoved(p),
         ];
-        assert_eq!(sample_count(&mouse, false, false), 4);
-        assert_eq!(sample_count(&[Event::PointerMoved(p)], false, true), 1);
-        assert_eq!(sample_count(&[], false, false), 1);
+        assert_eq!(sample_count(&mouse, false, false, |_| false), 4);
+        assert_eq!(sample_count(&[Event::PointerMoved(p)], false, true, |_| false), 1);
+        assert_eq!(sample_count(&[], false, false, |_| false), 1);
     }
 
     /// Drags the view by `deg` around the canvas center, holding `mods`
@@ -542,5 +727,227 @@ mod tests {
         // The Rotate tool itself still snaps with Shift.
         let tool = drag_rotate(Tool::Rotate, false, Modifiers::SHIFT, 10.0);
         assert!((tool - 15.0).abs() < 0.01, "{tool}");
+    }
+
+    /// P17: the native samples feed the stroke; egui's Touch events for the
+    /// same contact add nothing (a pen-only run paints identical pixels).
+    #[test]
+    fn native_pen_feeds_once() {
+        // `split`: the stroke spans two frames (Down + 6 moves, then 7 moves + Up)
+        // or one, where the native Up ends it before the Touch Start is seen.
+        let run = |mirror: bool, split: usize| {
+            let mut h = Harness::with_pen();
+            let line = pen_line(&mut h, [100.0, 100.0], [380.0, 400.0], 13, 1.0, 1.0);
+            for batch in [&line[..split], &line[split..]] {
+                let events = if mirror {
+                    mirrored(batch)
+                } else {
+                    batch.iter().map(|s| Event::PointerMoved(pos2(s.pos[0], s.pos[1]))).collect()
+                };
+                h.pen_frame(batch, events);
+            }
+            assert!(!h.studio.engine.is_stroking());
+            assert_eq!(h.studio.history.undo_len(), 1);
+            h.tiles()
+        };
+        let pen_only = run(false, 7);
+        assert!(!pen_only.is_empty());
+        for split in [7, 15] {
+            assert!(run(true, split) == pen_only, "mirrored Touch events were fed (split {split})");
+        }
+    }
+
+    /// P18
+    #[test]
+    fn pen_down_outside_rect_or_unhovered_does_not_start() {
+        // Outside the canvas rect (the screen is 400×300 points).
+        let mut h = Harness::with_pen();
+        let outside =
+            PenSample { pointer: PEN, phase: PenPhase::Down, pos: [450.0, 100.0], pressure: Some(1.0), time: 1.0, ..Default::default() };
+        h.pen_frame(&[outside], vec![]);
+        assert!(!h.studio.engine.is_stroking());
+        let m = h.pen(PenPhase::Move, [200.0, 200.0], 1.0);
+        h.pen_frame(&[m], vec![Event::PointerMoved(pos2(m.pos[0], m.pos[1]))]);
+        assert!(h.painted().is_empty(), "a stroke that never started was fed");
+
+        // Inside, but the canvas is not hovered (e.g. a floating panel covers it).
+        let mut h = Harness::with_pen();
+        h.frame(vec![Event::PointerGone]);
+        let down = h.pen(PenPhase::Down, [200.0, 200.0], 1.0);
+        h.pen_frame(&[down], vec![]);
+        assert!(!h.studio.engine.is_stroking());
+        assert!(h.painted().is_empty());
+    }
+
+    /// P19: per-sample pressure inside one frame (winit gives every coalesced
+    /// entry the newest pressure, which made the whole frame one width).
+    #[test]
+    fn per_sample_pressure_reaches_engine() {
+        let mut h = Harness::with_pen();
+        h.studio.preset_mut().stabilizer = 0;
+        let line = pen_line(&mut h, [100.0, 250.0], [400.0, 250.0], 30, 0.1, 1.0);
+        h.pen_frame(&line, mirrored(&line));
+        assert!(!h.studio.engine.is_stroking());
+        let (thin, wide) = (h.column_height(130), h.column_height(370));
+        assert!(thin >= 1 && wide >= thin + 3, "width did not follow pressure: {thin} → {wide}");
+    }
+
+    /// P20: a contact at pressure 0 leaves no blob (winit's force `None` used
+    /// to become full pressure).
+    #[test]
+    fn pressure_zero_contact_is_not_a_blob() {
+        let ink = |p: f32| {
+            let mut h = Harness::with_pen();
+            let s = [
+                h.pen(PenPhase::Down, [200.0, 200.0], p),
+                h.pen(PenPhase::Move, [201.5, 200.0], p),
+                h.pen(PenPhase::Up, [201.5, 200.0], p),
+            ];
+            h.pen_frame(&s, mirrored(&s));
+            assert!(!h.studio.engine.is_stroking());
+            h.ink()
+        };
+        let (light, full) = (ink(0.0), ink(1.0));
+        assert!(full > 0);
+        assert!(light * 20 < full, "zero-pressure contact painted {light} vs {full} at full pressure");
+    }
+
+    /// P21: with `native_pen` off the queue is disabled, its samples are
+    /// discarded and the Touch path paints exactly as without a queue.
+    #[test]
+    fn touch_fallback_unchanged_without_queue_or_when_disabled() {
+        let id = u64::from(PEN);
+        let mut h = Harness::with_pen();
+        h.studio.input.native_pen = false;
+        // The native samples point elsewhere; only the Touch events may paint.
+        let far = pen_line(&mut h, [400.0, 400.0], [450.0, 450.0], 3, 1.0, 1.0);
+        let (a, b) = (h.screen([100.0, 100.0]), h.screen([130.0, 100.0]));
+        h.pen_frame(&far[..2], vec![Event::PointerMoved(a), touch(id, TouchPhase::Start, a)]);
+        assert!(!h.pane.pen.as_ref().unwrap().enabled());
+        assert!(h.studio.engine.is_stroking(), "the Touch path did not start the stroke");
+        h.pen_frame(&far[2..], vec![touch(id, TouchPhase::Move, b), touch(id, TouchPhase::End, b)]);
+        assert!(!h.studio.engine.is_stroking());
+        assert_eq!(h.painted(), [TileCoord::from_pixel(110, 100)]);
+        assert!(h.pane.pen_buf.is_empty());
+        assert!(!h.pane.pen_stats().native);
+
+        // The same Touch input without any queue paints the same pixels.
+        let mut plain = Harness::new();
+        plain.frame(vec![Event::PointerMoved(a), touch(id, TouchPhase::Start, a)]);
+        plain.frame(vec![touch(id, TouchPhase::Move, b), touch(id, TouchPhase::End, b)]);
+        assert!(plain.tiles() == h.tiles());
+
+        // Turning it back on re-enables the queue.
+        h.studio.input.native_pen = true;
+        h.frame(vec![]);
+        assert!(h.pane.pen.as_ref().unwrap().enabled());
+        assert!(h.pane.pen_stats().native);
+    }
+
+    /// P22
+    #[test]
+    fn mouse_strokes_unchanged() {
+        let run = |mut h: Harness| {
+            let (a, b, c) = (h.screen([100.0, 100.0]), h.screen([200.0, 150.0]), h.screen([260.0, 300.0]));
+            h.frame(vec![Event::PointerMoved(a)]);
+            h.frame(vec![primary(a, true, Modifiers::NONE)]);
+            h.frame(vec![Event::PointerMoved(b), Event::PointerMoved(c)]);
+            assert!(h.studio.engine.is_stroking());
+            assert!(h.pane.stroke == Some(StrokeSrc::Mouse));
+            h.frame(vec![primary(c, false, Modifiers::NONE)]);
+            assert!(!h.studio.engine.is_stroking());
+            h.tiles()
+        };
+        let plain = run(Harness::new());
+        assert!(!plain.is_empty());
+        assert!(run(Harness::with_pen()) == plain);
+    }
+
+    /// P23
+    #[test]
+    fn eraser_flip_switches_tool_and_back() {
+        let mut h = Harness::with_pen();
+        let hover = |h: &mut Harness, end: PenEnd| {
+            let s = PenSample { end, ..h.pen(PenPhase::Hover, [200.0, 200.0], 0.0) };
+            h.pen_frame(&[s], mirrored(&[s]));
+        };
+        let pen = Tool::Brush(BrushGroup::Pen);
+        assert_eq!(h.studio.tool, pen);
+        hover(&mut h, PenEnd::Eraser);
+        assert_eq!(h.studio.pen_end(), PenEnd::Eraser);
+        assert_eq!(h.studio.tool, Tool::Brush(BrushGroup::Eraser));
+        assert!(h.studio.preset().eraser);
+
+        // Pick Pencil while flipped; the tip brings back its own tool.
+        commands::execute(Command::SelectTool(Tool::Brush(BrushGroup::Pencil)), &mut h.studio, &mut h.shell);
+        hover(&mut h, PenEnd::Tip);
+        assert_eq!(h.studio.tool, pen);
+        hover(&mut h, PenEnd::Eraser);
+        assert_eq!(h.studio.tool, Tool::Brush(BrushGroup::Pencil), "the eraser end remembers Pencil");
+        hover(&mut h, PenEnd::Tip);
+        assert_eq!(h.studio.tool, pen);
+
+        // A flip reported during a stroke changes nothing until after Up.
+        let down = [h.pen(PenPhase::Down, [100.0, 100.0], 1.0), h.pen(PenPhase::Move, [120.0, 100.0], 1.0)];
+        h.pen_frame(&down, mirrored(&down));
+        assert!(h.studio.engine.is_stroking());
+        let flipped = [PenSample { end: PenEnd::Eraser, ..h.pen(PenPhase::Move, [140.0, 100.0], 1.0) }];
+        h.pen_frame(&flipped, mirrored(&flipped));
+        assert_eq!(h.studio.tool, pen);
+        assert!(h.studio.engine.is_stroking());
+        let up = [PenSample { end: PenEnd::Eraser, ..h.pen(PenPhase::Up, [140.0, 100.0], 1.0) }];
+        h.pen_frame(&up, mirrored(&up));
+        assert!(!h.studio.engine.is_stroking());
+        assert_eq!(h.studio.tool, pen, "the switch waits for the frame after the stroke");
+        assert_eq!(h.studio.history.undo_len(), 1);
+        hover(&mut h, PenEnd::Eraser);
+        assert_eq!(h.studio.tool, Tool::Brush(BrushGroup::Pencil));
+
+        // Switched off: the eraser end keeps the current tool.
+        hover(&mut h, PenEnd::Tip);
+        h.studio.input.eraser_end_switch = false;
+        hover(&mut h, PenEnd::Eraser);
+        assert_eq!((h.studio.tool, h.studio.pen_end()), (pen, PenEnd::Tip));
+    }
+
+    /// P24
+    #[test]
+    fn touch_end_safety_net_ends_pen_stroke() {
+        let mut h = Harness::with_pen();
+        let s = [h.pen(PenPhase::Down, [100.0, 100.0], 1.0), h.pen(PenPhase::Move, [140.0, 110.0], 1.0)];
+        h.pen_frame(&s, mirrored(&s));
+        assert!(h.studio.engine.is_stroking());
+        // egui saw the lift-off, the native queue did not.
+        h.frame(vec![touch(u64::from(PEN), TouchPhase::End, pos2(s[1].pos[0], s[1].pos[1]))]);
+        assert!(!h.studio.engine.is_stroking());
+        assert!(h.pane.stroke.is_none());
+        assert_eq!(h.studio.history.undo_len(), 1);
+
+        // Another contact's End does not end it.
+        let mut h = Harness::with_pen();
+        let s = [h.pen(PenPhase::Down, [100.0, 100.0], 1.0)];
+        h.pen_frame(&s, mirrored(&s));
+        h.frame(vec![touch(9, TouchPhase::End, pos2(10.0, 10.0))]);
+        assert!(h.studio.engine.is_stroking());
+    }
+
+    /// P25
+    #[test]
+    fn cancel_and_leave_end_the_stroke_with_one_undo() {
+        for last in [PenPhase::Cancel, PenPhase::Leave] {
+            let mut h = Harness::with_pen();
+            let s = [h.pen(PenPhase::Down, [100.0, 100.0], 1.0), h.pen(PenPhase::Move, [160.0, 120.0], 1.0)];
+            h.pen_frame(&s, mirrored(&s));
+            let more = [h.pen(PenPhase::Move, [220.0, 160.0], 1.0)];
+            h.pen_frame(&more, mirrored(&more));
+            assert!(h.studio.engine.is_stroking());
+            h.pen_frame(&[PenSample { phase: last, ..more[0] }], vec![]);
+            assert!(!h.studio.engine.is_stroking(), "{last:?} left the stroke hanging");
+            assert!(h.pane.stroke.is_none());
+            assert_eq!(h.studio.history.undo_len(), 1, "{last:?}");
+            assert!(!h.painted().is_empty());
+            h.studio.undo();
+            assert!(h.painted().is_empty(), "{last:?}: one undo removes the whole stroke");
+        }
     }
 }

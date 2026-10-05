@@ -292,4 +292,37 @@ mod tests {
             assert_eq!(file_request_after(m, k, true), None, "blocked behind a modal");
         }
     }
+
+    /// P26
+    #[test]
+    fn pen_end_command_remembers_tool_per_end() {
+        use arty_pen::PenEnd;
+        let mut studio = Studio::new(Document::new(64, 64, 72));
+        let mut shell = Shell::new(ThemeKind::Dark);
+        let pen = Tool::Brush(BrushGroup::Pen);
+        assert_eq!(Command::PenEnd(PenEnd::Tip).label(), "Pen Tip");
+        assert_eq!(Command::PenEnd(PenEnd::Eraser).label(), "Pen Eraser End");
+        assert_eq!(shortcut_for(Command::PenEnd(PenEnd::Eraser)), None);
+
+        execute(Command::PenEnd(PenEnd::Eraser), &mut studio, &mut shell);
+        assert_eq!((studio.pen_end(), studio.tool), (PenEnd::Eraser, Tool::Brush(BrushGroup::Eraser)));
+        assert!(studio.preset().eraser);
+        execute(Command::SelectTool(Tool::Hand), &mut studio, &mut shell);
+        execute(Command::PenEnd(PenEnd::Eraser), &mut studio, &mut shell);
+        assert_eq!(studio.tool, Tool::Hand, "same end again is a no-op");
+        execute(Command::PenEnd(PenEnd::Tip), &mut studio, &mut shell);
+        assert_eq!(studio.tool, pen);
+        execute(Command::PenEnd(PenEnd::Eraser), &mut studio, &mut shell);
+        assert_eq!(studio.tool, Tool::Hand, "the eraser end remembers its own tool");
+        execute(Command::PenEnd(PenEnd::Tip), &mut studio, &mut shell);
+
+        // No-op while stroking.
+        let s = arty_brush::InputSample { x: 10.0, y: 10.0, pressure: 1.0, ..Default::default() };
+        assert!(studio.begin_stroke(s));
+        execute(Command::PenEnd(PenEnd::Eraser), &mut studio, &mut shell);
+        assert_eq!((studio.pen_end(), studio.tool), (PenEnd::Tip, pen));
+        studio.end_stroke();
+        execute(Command::PenEnd(PenEnd::Eraser), &mut studio, &mut shell);
+        assert_eq!((studio.pen_end(), studio.tool), (PenEnd::Eraser, Tool::Hand));
+    }
 }
