@@ -13,37 +13,9 @@ pub fn render_preview(preset: &BrushPreset, width: u32, height: u32, color: [f32
     let mut doc = Document::new(width, height, 72);
     doc.set_paper(None);
 
-    let mut p = preset.clone();
-    p.size = p.size.min(height as f32 * 0.55);
-    p.stabilizer = 0;
-    // Erasers preview as paint so the stroke is visible.
-    p.eraser = false;
-
-    let mut engine = StrokeEngine::new();
-    let (w, h) = (width as f32, height as f32);
-    // A mostly-blending brush only moves color around and the preview page
-    // starts empty: give it bars to smear.
-    if p.blending > 0.5 {
-        paint_backdrop(&mut engine, &mut doc, color, w, h);
-    }
-    engine.configure(&p, color);
-    let n = 90;
-    for i in 0..=n {
-        let t = i as f32 / n as f32;
-        let s = InputSample {
-            x: w * (0.08 + 0.84 * t),
-            y: h * 0.5 + h * 0.22 * (t * std::f32::consts::TAU).sin(),
-            pressure: (t * std::f32::consts::PI).sin().max(0.0),
-            time: i as f64 * 0.008,
-            ..Default::default()
-        };
-        if i == 0 {
-            let _ = engine.begin(&mut doc, s);
-        } else {
-            engine.feed(&mut doc, s);
-        }
-    }
-    engine.end(&mut doc);
+    // The preview stroke has PREVIEW_SAMPLES samples: a small log suffices.
+    let mut engine = StrokeEngine::with_log_capacity(256);
+    paint_preview(&mut engine, &mut doc, preset, color);
 
     let mut rgba = vec![0u8; (width * height * 4) as usize];
     let mut tile = new_tile_box();
@@ -73,6 +45,48 @@ pub fn render_preview(preset: &BrushPreset, width: u32, height: u32, color: [f32
     rgba
 }
 
+/// Samples in the preview stroke.
+const PREVIEW_SAMPLES: u32 = 91;
+
+/// The preview stroke itself, through the real engine (taper and post
+/// correction included, so the list shows them).
+fn paint_preview(engine: &mut StrokeEngine, doc: &mut Document, preset: &BrushPreset, color: [f32; 3]) {
+    let (w, h) = (doc.width() as f32, doc.height() as f32);
+    let mut p = preset.clone();
+    p.size = p.size.min(h * 0.55);
+    p.stabilizer = 0;
+    // Erasers preview as paint so the stroke is visible.
+    p.eraser = false;
+    // Taper lengths are document px; keep a long one from fading the whole
+    // little stroke (its path is roughly 1.2 × the width).
+    p.taper_in = p.taper_in.min(w * 0.35);
+    p.taper_out = p.taper_out.min(w * 0.35);
+
+    // A mostly-blending brush only moves color around and the preview page
+    // starts empty: give it bars to smear.
+    if p.blending > 0.5 {
+        paint_backdrop(engine, doc, color, w, h);
+    }
+    engine.configure(&p, color);
+    let n = PREVIEW_SAMPLES - 1;
+    for i in 0..=n {
+        let t = i as f32 / n as f32;
+        let s = InputSample {
+            x: w * (0.08 + 0.84 * t),
+            y: h * 0.5 + h * 0.22 * (t * std::f32::consts::TAU).sin(),
+            pressure: (t * std::f32::consts::PI).sin().max(0.0),
+            time: i as f64 * 0.008,
+            ..Default::default()
+        };
+        if i == 0 {
+            let _ = engine.begin(doc, s);
+        } else {
+            engine.feed(doc, s);
+        }
+    }
+    engine.end(doc);
+}
+
 /// Upright bars across the preview's middle, alternating `color` and grey.
 fn paint_backdrop(engine: &mut StrokeEngine, doc: &mut Document, color: [f32; 3], w: f32, h: f32) {
     let pen = BrushPreset { size: (h * 0.14).max(2.0), min_size: 1.0, hardness: 0.9, stabilizer: 0, ..Default::default() };
@@ -92,5 +106,24 @@ fn paint_backdrop(engine: &mut StrokeEngine, doc: &mut Document, color: [f32; 3]
             }
             engine.end(doc);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Reshape;
+    use crate::preset::default_presets;
+
+    #[test]
+    fn preview_with_shaping_is_cheap() {
+        let inking = default_presets().into_iter().find(|p| p.name == "Inking Pen").unwrap();
+        let mut doc = Document::new(192, 48, 72);
+        doc.set_paper(None);
+        let mut engine = StrokeEngine::with_log_capacity(256);
+        paint_preview(&mut engine, &mut doc, &inking, [0.0; 3]);
+        // The whole stroke fit the small log and was reshaped from it.
+        assert_eq!(engine.last_reshape(), Reshape::Full);
+        assert!(engine.log_capacity() <= 256 && PREVIEW_SAMPLES as usize <= 256, "log grew to {}", engine.log_capacity());
     }
 }

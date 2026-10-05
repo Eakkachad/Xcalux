@@ -76,6 +76,22 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             ui.checkbox(&mut p.eraser, "");
             ui.end_row();
         });
+
+        section(ui, "STARTING AND ENDING");
+        egui::Grid::new("brush-shape").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label("Taper in");
+            ui.add(Slider::new(&mut p.taper_in, 0.0..=500.0).suffix(" px").max_decimals(0))
+                .on_hover_text("Uses this sub tool's pressure settings (Min size / Min opacity)");
+            ui.end_row();
+            ui.label("Taper out");
+            ui.add(Slider::new(&mut p.taper_out, 0.0..=500.0).suffix(" px").max_decimals(0))
+                .on_hover_text("Applied when the pen lifts. Uses Min size / Min opacity");
+            ui.end_row();
+            ui.label("Post correction");
+            ui.add(Slider::new(&mut p.post_correction, 0..=arty_brush::shape::MAX_CORRECTION))
+                .on_hover_text("Smooths the finished line when the pen lifts, relative to the current zoom");
+            ui.end_row();
+        });
     });
 
     if p != *studio.preset() {
