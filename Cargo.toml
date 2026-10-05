@@ -54,6 +54,70 @@ opt-level = 3
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+# Step 3 (E14): opt-level = "s" ONLY for UI / windowing / font / icon crates
+[profile.release.package.egui]
+opt-level = "s"
+[profile.release.package.epaint]
+opt-level = "s"
+[profile.release.package.eframe]
+opt-level = "s"
+[profile.release.package.egui-winit]
+opt-level = "s"
+[profile.release.package.egui-wgpu]
+opt-level = "s"
+[profile.release.package.egui_dock]
+opt-level = "s"
+[profile.release.package.egui-phosphor]
+opt-level = "s"
+[profile.release.package.emath]
+opt-level = "s"
+[profile.release.package.ecolor]
+opt-level = "s"
+[profile.release.package.winit]
+opt-level = "s"
+[profile.release.package.accesskit]
+opt-level = "s"
+[profile.release.package.accesskit_consumer]
+opt-level = "s"
+[profile.release.package.accesskit_windows]
+opt-level = "s"
+[profile.release.package.accesskit_winit]
+opt-level = "s"
+[profile.release.package.epaint_default_fonts]
+opt-level = "s"
+[profile.release.package.font-types]
+opt-level = "s"
+[profile.release.package.read-fonts]
+opt-level = "s"
+[profile.release.package.skrifa]
+opt-level = "s"
+[profile.release.package.harfrust]
+opt-level = "s"
+[profile.release.package.kurbo]
+opt-level = "s"
+[profile.release.package.peniko]
+opt-level = "s"
+[profile.release.package.vello_cpu]
+opt-level = "s"
+[profile.release.package.vello_common]
+opt-level = "s"
+[profile.release.package.polycool]
+opt-level = "s"
+[profile.release.package.linebender_resource_handle]
+opt-level = "s"
+[profile.release.package.guillotiere]
+opt-level = "s"
+[profile.release.package.image]
+opt-level = "s"
+[profile.release.package.arboard]
+opt-level = "s"
+[profile.release.package.clipboard-win]
+opt-level = "s"
+[profile.release.package.rfd]
+opt-level = "s"
+
+
