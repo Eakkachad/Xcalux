@@ -1,0 +1,19 @@
+[package]
+name = "arty-pen"
+description = "ARTY native pen input: Windows Ink pointer history to a PenSample queue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+raw-window-handle.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Performance", "Win32_UI_Controls", "Win32_UI_Input_Pointer", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+arty-testkit.workspace = true
+
+[lints]
+workspace = true

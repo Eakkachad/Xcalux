@@ -8,6 +8,7 @@
 pub mod engine;
 pub mod input;
 pub mod preset;
+pub mod pressure;
 pub mod preview;
 pub mod surface;
 

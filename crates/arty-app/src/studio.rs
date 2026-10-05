@@ -127,16 +127,21 @@ mod hsv_math {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InputSettings {
     /// `p' = p^gamma`: >1 needs a firmer press, <1 is lighter.
     pub pressure_gamma: f32,
     /// Pressure used for mouse strokes.
     pub mouse_pressure: f32,
+    /// Read Windows Ink directly: per-sample pressure, tilt, eraser end, OS timestamps.
+    pub native_pen: bool,
+    /// Flipping the pen to its eraser end switches to the eraser end's tool (CSP).
+    pub eraser_end_switch: bool,
 }
 
 impl Default for InputSettings {
     fn default() -> Self {
-        Self { pressure_gamma: 1.0, mouse_pressure: 1.0 }
+        Self { pressure_gamma: 1.0, mouse_pressure: 1.0, native_pen: true, eraser_end_switch: true }
     }
 }
 
