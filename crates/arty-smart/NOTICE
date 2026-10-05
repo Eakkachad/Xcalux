@@ -1,0 +1,58 @@
+arty-smart — third-party notices
+================================
+
+Parts of this crate are ported from katgpt-rs
+(https://github.com/katopz/katgpt-rs, branch `develop`, commit
+3facb6607cbac4431f8a976d56cf37ffd61668d3, ported 2026-10-05), which is
+distributed under the MIT License reproduced below. Every ported file starts
+with a "Ported from katgpt-rs <path> (MIT)" line naming its source file(s)
+and what was changed. ARTY does not depend on any katgpt crate; the code was
+copied and adapted (MSRV 1.88, no SIMD/unsafe, allocation-free APIs, LLM- and
+game-specific parts removed).
+
+Ported files
+------------
+
+  arty-smart/src/kinematics/mod.rs        <- crates/katgpt-core/src/kinematics/mod.rs
+  arty-smart/src/kinematics/perception.rs <- crates/katgpt-core/src/kinematics/perception.rs
+  arty-smart/src/kinematics/fixture.rs    <- crates/katgpt-core/src/kinematics/fixture.rs (tests only)
+  arty-smart/src/kinematics/tests.rs      <- crates/katgpt-core/src/kinematics/tests.rs
+  arty-smart/src/conformal/mod.rs         <- crates/katgpt-core/src/conformal/mod.rs
+  arty-smart/src/conformal/ring.rs        <- crates/katgpt-core/src/conformal/ring.rs
+  arty-smart/src/conformal/metrics.rs     <- crates/katgpt-core/src/conformal/metrics.rs
+  arty-smart/src/conformal/seasonal.rs    <- crates/katgpt-core/src/conformal/seasonal.rs
+  arty-smart/src/stats.rs                 <- crates/katgpt-core/src/welford.rs
+                                             crates/katgpt-core/src/stats.rs
+  arty-smart/src/temporal.rs              <- crates/katgpt-types/src/temporal.rs
+                                             crates/katgpt-core/src/temporal_deriv.rs (tests)
+  arty-smart/src/cumprodsum.rs            <- crates/katgpt-core/src/cumprodsum.rs
+  arty-smart/src/partition.rs             <- crates/katgpt-core/src/partition.rs
+
+ARTY-original files (not covered by the notice below):
+  arty-smart/src/kinematics/divided.rs, arty-smart/src/geom.rs,
+  arty-smart/src/lib.rs, arty-smart/tests/alloc_gate.rs
+
+katgpt-rs license
+-----------------
+
+MIT License
+
+Copyright (c) 2026 Todsaporn Banjerdkit
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

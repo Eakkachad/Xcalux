@@ -1,0 +1,19 @@
+[package]
+name = "arty-smart"
+description = "ARTY assist math: stroke kinematics, conformal intervals, online stats, min-max partition, small geometry (deterministic, no models)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Parts of this crate are ported from katgpt-rs (MIT); see NOTICE.
+include = ["src/**", "tests/**", "Cargo.toml", "NOTICE"]
+
+# No runtime dependencies on purpose: everything here is small closed-form
+# math that must stay cheap to build and safe to run on the stroke hot path.
+[dependencies]
+
+[dev-dependencies]
+arty-testkit.workspace = true
+
+[lints]
+workspace = true

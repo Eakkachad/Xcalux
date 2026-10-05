@@ -19,6 +19,7 @@ arty-brush = { path = "crates/arty-brush" }
 arty-io = { path = "crates/arty-io" }
 arty-pen = { path = "crates/arty-pen" }
 arty-render = { path = "crates/arty-render" }
+arty-smart = { path = "crates/arty-smart" }
 arty-testkit = { path = "crates/arty-testkit" }
 hokusai = { path = "hokusai-0.2.0/hokusai-0.2.0/hokusai", default-features = false }
 

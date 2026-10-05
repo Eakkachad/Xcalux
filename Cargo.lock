@@ -348,6 +348,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arty-smart"
+version = "0.2.0"
+dependencies = [
+ "arty-testkit",
+]
+
+[[package]]
 name = "arty-testkit"
 version = "0.2.0"
 dependencies = [
