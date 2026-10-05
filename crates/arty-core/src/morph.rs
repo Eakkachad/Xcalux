@@ -405,15 +405,31 @@ fn edt(s: &Src<'_>, out: &mut [u8], r: usize, inside: bool) {
     // Horizontal pass: lower envelope of the parabolas g(i)² + (x − i)².
     let mut env = Envelope::default();
     let rf = r as f64;
+    // Squared distances at or below `near` / at or above `far` saturate,
+    // so only the pixels in between need a square root.
+    let (near, far) = ((rf - 0.5).powi(2), (rf + 0.5).powi(2));
+    let (close, distant) = if inside { (0u8, 255u8) } else { (255, 0) };
     for ly in 0..s.ch {
         let gr = &g[ly * ww..][..ww];
-        env.build(gr.iter().enumerate().filter(|&(_, &v)| v < cap).map(|(i, &v)| (i as f64, f64::from(v * v))));
         let dst = &mut out[ly * s.cw..][..s.cw];
+        if gr[hl..hl + s.cw].iter().all(|&v| v == 0) {
+            // Every central pixel is a feature.
+            dst.fill(close);
+            continue;
+        }
+        env.build(gr.iter().enumerate().filter(|&(_, &v)| v < cap).map(|(i, &v)| (i as f64, f64::from(v * v))));
         let mut it = env.eval(hl);
         for d in dst.iter_mut() {
-            let dist = it.next_dist();
-            let v = if inside { 0.5 + dist - rf } else { 0.5 + rf - dist };
-            *d = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            let d2 = it.next_d2();
+            *d = if d2 <= near {
+                close
+            } else if d2 >= far {
+                distant
+            } else {
+                let dist = d2.sqrt();
+                let v = if inside { 0.5 + dist - rf } else { 0.5 + rf - dist };
+                (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+            };
         }
     }
 }
@@ -455,7 +471,7 @@ impl Envelope {
         self.z.push(f64::INFINITY);
     }
 
-    /// Distances at x = start, start + 1, …
+    /// Squared distances at x = start, start + 1, …
     fn eval(&self, start: usize) -> EnvelopeIter<'_> {
         EnvelopeIter { env: self, k: 0, x: start as f64 }
     }
@@ -468,7 +484,7 @@ struct EnvelopeIter<'a> {
 }
 
 impl EnvelopeIter<'_> {
-    fn next_dist(&mut self) -> f64 {
+    fn next_d2(&mut self) -> f64 {
         let e = self.env;
         let x = self.x;
         self.x += 1.0;
@@ -479,14 +495,14 @@ impl EnvelopeIter<'_> {
             self.k += 1;
         }
         let dx = x - e.v[self.k];
-        (dx * dx + e.f[self.k]).sqrt()
+        dx * dx + e.f[self.k]
     }
 }
 
 // ----- square: van Herk / Gil-Werman -----------------------------------------
 
 /// Max (`op = max`) or min filter over a (2r+1)² square.
-fn square(s: &Src<'_>, out: &mut [u8], r: usize, op: fn(u8, u8) -> u8) {
+fn square(s: &Src<'_>, out: &mut [u8], r: usize, op: impl Fn(u8, u8) -> u8 + Copy) {
     let (ww, wh) = (s.ww, s.wh);
     let l = 2 * r + 1;
     let mut row = vec![0u8; ww];
@@ -684,8 +700,8 @@ mod tests {
         env.build(sites.iter().copied());
         let mut it = env.eval(0);
         for x in 0..16 {
-            let want = sites.iter().map(|&(q, f)| (x as f64 - q).powi(2) + f).fold(f64::MAX, f64::min).sqrt();
-            assert!((it.next_dist() - want).abs() < 1e-9, "x {x}");
+            let want = sites.iter().map(|&(q, f)| (x as f64 - q).powi(2) + f).fold(f64::MAX, f64::min);
+            assert!((it.next_d2() - want).abs() < 1e-9, "x {x}");
         }
     }
 }
