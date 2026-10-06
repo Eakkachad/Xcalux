@@ -1195,12 +1195,12 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
 
         // Curve editor
         Key::CurveMaxPoints => ("สูงสุด 16 จุด", "Up to 16 points"),
-        Key::CurveInput => ("เข้า", "Input"),
-        Key::CurveOutput => ("ออก", "Output"),
+        Key::CurveInput => ("แรงกดเข้า", "Input"),
+        Key::CurveOutput => ("แรงกดที่ใช้", "Output"),
         Key::CurveIn => ("เข้า", "In"),
         Key::CurveOut => ("ออก", "Out"),
-        Key::CurveInputPct => ("เข้า %", "Input %"),
-        Key::CurveOutputPct => ("ออก %", "Output %"),
+        Key::CurveInputPct => ("แรงกดเข้า %", "Input %"),
+        Key::CurveOutputPct => ("แรงกดที่ใช้ %", "Output %"),
         Key::CurveReset => ("รีเซ็ต", "Reset"),
         Key::CurveResetTip => ("เส้นตรง: เอาต์พุต = อินพุต", "Straight line: output = input"),
         Key::CurveTestPad => ("พื้นที่ทดสอบเส้น", "Test pad"),
@@ -1303,7 +1303,7 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::HintSelectPolygon => ("คลิกเพื่อเพิ่มจุด ดับเบิลคลิก กด Enter หรือคลิกจุดแรกเพื่อปิดรูป กด Backspace เพื่อลบจุด", "Click to add points; double-click, Enter or click the first point to close. Backspace removes a point."),
         Key::NoticeSelectionTooDetailed => ("พื้นที่เลือกมีรายละเอียดมากเกินไป: แสดงเส้นขอบเพียงบางส่วน", "Selection too detailed: outline shown in part"),
         Key::SelRadius => ("รัศมี", "Radius"),
-        Key::SelAmount => ("จำนวน", "Amount"),
+        Key::SelAmount => ("ระยะ", "Amount"),
         Key::SelShapeCircle => ("วงกลม", "Circle"),
         Key::SelShapeSquare => ("สี่เหลี่ยม", "Square"),
 
