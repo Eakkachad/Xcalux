@@ -31,6 +31,7 @@
 //!   its preset `b4_350`, `b5_350`, `a4_350`, `b4_600` or `a4_600` if one is named.
 //! - `ARTY_BENCH_NEWDOC_LIST=1`: with the New Page dialog, its preset list open.
 //! - `ARTY_BENCH_SETTINGS=1`: Input & display settings open (screenshots).
+//! - `ARTY_BENCH_ABOUT=1`: the About dialog open at start-up (screenshots).
 //! - `ARTY_BENCH_PERF=auto|light|full`: the performance setting for the run
 //!   (not saved); the `threads` line reports what it came to.
 //! - `ARTY_BENCH_LANG=th|en`, `ARTY_BENCH_THEME=light|dark`,
@@ -250,6 +251,10 @@ pub fn newdoc() -> Option<Option<(u32, u32, u32)>> {
 pub fn open_preset_list_once() -> bool {
     static DONE: AtomicBool = AtomicBool::new(false);
     env("ARTY_BENCH_NEWDOC_LIST", parse_on).unwrap_or(false) && !DONE.swap(true, Ordering::Relaxed)
+}
+
+pub fn about_open() -> bool {
+    env("ARTY_BENCH_ABOUT", parse_on).unwrap_or(false)
 }
 
 pub fn settings_open() -> bool {

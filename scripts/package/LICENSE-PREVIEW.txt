@@ -1,0 +1,17 @@
+ARTY Preview 0 - ใบอนุญาตสำหรับเวอร์ชันทดสอบ
+
+โปรแกรมนี้เป็นเวอร์ชันพรีวิวสำหรับทดสอบ ใช้ได้ฟรีเพื่อการทดสอบส่วนตัวเท่านั้น
+ห้ามแจกจ่ายต่อ ห้ามขาย ห้ามแก้ไขหรือนำไปทำซ้ำ สิทธิ์ทั้งหมดเป็นของเจ้าของโปรแกรม
+โปรแกรมนี้ให้ใช้ "ตามสภาพ" ไม่มีการรับประกันใด ๆ ผู้พัฒนาไม่รับผิดชอบต่อความเสียหายหรือไฟล์งานที่สูญหาย
+กรุณาสำรองงานสำคัญไว้เสมอ
+
+---
+
+ARTY Preview 0 - Preview licence
+
+This is a preview build for testing. It is free for personal testing only.
+Do not redistribute it, sell it, modify it or copy it. All rights are reserved by the owner.
+It is provided "as is", without any warranty. The authors are not responsible for any damage
+or for lost work files. Please keep a backup of anything important.
+
+Open-source parts used inside ARTY keep their own licences: see THIRD_PARTY_NOTICES.txt.
