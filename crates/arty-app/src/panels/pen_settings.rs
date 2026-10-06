@@ -16,6 +16,9 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
             ui.label(t(Key::LanguageLabel));
             language_combo(ui, shell);
             ui.end_row();
+            ui.label(t(Key::HomeShowAtStartup));
+            ui.checkbox(&mut shell.home_at_start, "");
+            ui.end_row();
             ui.label(t(Key::PenSettingsMousePressure));
             ui.add(percent(&mut studio.input.mouse_pressure));
             ui.end_row();

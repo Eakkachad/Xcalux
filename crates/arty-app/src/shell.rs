@@ -164,6 +164,8 @@ pub struct Shell {
     /// Page setup of the manuscript preset picked in the New dialog,
     /// applied to the new document.
     pub new_doc_page: Option<PageSetup>,
+    /// Show the home screen at start-up (saved setting).
+    pub home_at_start: bool,
 }
 
 impl Shell {
@@ -189,6 +191,7 @@ impl Shell {
             page_setup_open: false,
             sel_dialog: None,
             new_doc_page: None,
+            home_at_start: crate::home::default_show(),
         }
     }
 

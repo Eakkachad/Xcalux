@@ -543,6 +543,22 @@ pub enum Key {
     PresetDisplayBlender,
     PresetDisplayHardEraser,
     PresetDisplaySoftEraser,
+
+    // Home screen
+    HomeHeading,
+    HomeMangaTitle,
+    HomeMangaBody,
+    HomeLayoutClassic,
+    HomeLayoutYonkoma,
+    HomeSketchTitle,
+    HomeSketchBody,
+    HomeSketchStart,
+    HomeOpenTitle,
+    HomeOpenBody,
+    HomeUnsavedWork,
+    HomeSkip,
+    HomeShowAtStartup,
+    HomeInkLayer,
 }
 
 impl Key {
@@ -939,6 +955,20 @@ impl Key {
         Key::PresetDisplayBlender,
         Key::PresetDisplayHardEraser,
         Key::PresetDisplaySoftEraser,
+        Key::HomeHeading,
+        Key::HomeMangaTitle,
+        Key::HomeMangaBody,
+        Key::HomeLayoutClassic,
+        Key::HomeLayoutYonkoma,
+        Key::HomeSketchTitle,
+        Key::HomeSketchBody,
+        Key::HomeSketchStart,
+        Key::HomeOpenTitle,
+        Key::HomeOpenBody,
+        Key::HomeUnsavedWork,
+        Key::HomeSkip,
+        Key::HomeShowAtStartup,
+        Key::HomeInkLayer,
     ];
 }
 
@@ -1404,6 +1434,22 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::PresetDisplayBlender => ("เกลี่ยสี", "Blender"),
         Key::PresetDisplayHardEraser => ("ยางลบแข็ง", "Hard Eraser"),
         Key::PresetDisplaySoftEraser => ("ยางลบนุ่ม", "Soft Eraser"),
+
+        // Home screen
+        Key::HomeHeading => ("วันนี้อยากวาดอะไร?", "What would you like to draw?"),
+        Key::HomeMangaTitle => ("หน้ามังงะแรก", "First manga page"),
+        Key::HomeMangaBody => ("กระดาษ B5 มีเส้นขอบตัดและช่องแบ่งไว้ให้แล้ว เลือกแบบช่องแล้ววาดได้เลย", "A B5 page with trim guides and panels ready. Pick a layout and start drawing."),
+        Key::HomeLayoutClassic => ("5 ช่อง", "5 panels"),
+        Key::HomeLayoutYonkoma => ("4 ช่องจบ", "4-koma"),
+        Key::HomeSketchTitle => ("สเก็ตช์เร็ว", "Quick sketch"),
+        Key::HomeSketchBody => ("กระดาษ A4 เปล่ากับดินสอ", "A blank A4 page and a pencil."),
+        Key::HomeSketchStart => ("เริ่มสเก็ตช์", "Start sketching"),
+        Key::HomeOpenTitle => ("เปิด / กู้คืน", "Open / recover"),
+        Key::HomeOpenBody => ("เปิดงานที่บันทึกไว้", "Open saved work."),
+        Key::HomeUnsavedWork => ("งานที่ยังไม่ได้บันทึก", "Unsaved work"),
+        Key::HomeSkip => ("ข้ามไปหน้าว่าง (Esc)", "Skip to a blank page (Esc)"),
+        Key::HomeShowAtStartup => ("แสดงหน้านี้ทุกครั้งที่เปิด ARTY", "Show this screen when ARTY starts"),
+        Key::HomeInkLayer => ("เส้นหมึก", "Ink"),
     }
 }
 

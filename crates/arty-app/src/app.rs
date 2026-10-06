@@ -16,6 +16,7 @@ use crate::canvas::CanvasPane;
 use crate::commands::{self, Command, SelModify};
 use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
+use crate::home::{self, Home};
 use crate::panels::{self, Layouts, PreviewCache, Tab, ThumbCache, Viewer};
 use crate::shell::{self, FileRequest, PAGE_PRESETS, Shell, UiMode, new_doc_text};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
@@ -47,6 +48,8 @@ struct Persisted {
     ui_mode: UiMode,
     #[serde(default)]
     simple_dock: Option<DockState<Tab>>,
+    #[serde(default = "home::default_show")]
+    home_at_start: bool,
 }
 
 /// Mode and per-mode docks from the saved settings: a fresh profile starts in
@@ -75,6 +78,7 @@ pub struct ArtyApp {
     layouts: Layouts,
     export_job: Option<Receiver<String>>,
     files: FileController,
+    home: Home,
     /// `ARTY_BENCH_*` hooks (bench.rs); `None` in normal runs.
     bench: Option<Bench>,
     /// A bench variable is set: nothing is saved (bench.rs).
@@ -144,7 +148,9 @@ impl ArtyApp {
         let mut theme_kind = ThemeKind::Dark;
         let mut autosave = AutosaveSettings::default();
         let mut lang = Lang::default();
+        let mut home_at_start = home::default_show();
         if let Some(p) = saved {
+            home_at_start = p.home_at_start;
             theme_kind = p.theme;
             autosave = p.autosave;
             lang = p.lang;
@@ -186,6 +192,7 @@ impl ArtyApp {
         shell.lang = lang;
         shell.autosave = autosave;
         shell.ui_mode = ui_mode;
+        shell.home_at_start = home_at_start;
         let dialogs: Box<dyn files::FileDialogs> = match bench.as_ref().and_then(|b| b.open.as_ref()) {
             Some(_) => {
                 shell.file_request = Some(FileRequest::Open);
@@ -193,7 +200,8 @@ impl ArtyApp {
             }
             None => Box::new(NativeDialogs),
         };
-        let files = FileController::new(io, dialogs, &studio);
+        let mut files = FileController::new(io, dialogs, &studio);
+        let home = Home::new(home::show_at_start(home_at_start, bench::active(), demo_pending), &studio, &mut files);
         if bench::active() {
             let autosave_str = if autosave.enabled { format!("{} s", autosave.interval_secs) } else { "off".to_owned() };
             bench::report_threads(io_threads, load_budget, &autosave_str);
@@ -208,6 +216,7 @@ impl ArtyApp {
             layouts,
             export_job: None,
             files,
+            home,
             bench,
             bench_run: bench::active(),
             running_sync,
@@ -530,6 +539,35 @@ impl ArtyApp {
             }
         }
     }
+
+    /// Status bar, tool bar and the dock with the canvas.
+    fn workspace(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        let simple = self.shell.ui_mode == UiMode::Simple;
+        if simple {
+            egui::Panel::bottom("simple-sliders").show(ui, |ui| panels::simple_sliders(ui, &mut self.studio));
+        }
+        let width = if simple { theme::TOOLBAR_SIMPLE_WIDTH } else { theme::TOOLBAR_STUDIO_WIDTH };
+        egui::Panel::left("tools").resizable(false).exact_size(width).show(ui, |ui| {
+            panels::toolbar::ui(ui, &mut self.studio, &mut self.shell);
+        });
+
+        let style = theme::dock_style(ui, self.shell.theme);
+        let mut viewer = Viewer {
+            studio: &mut self.studio,
+            shell: &mut self.shell,
+            canvas: &mut self.canvas,
+            previews: &mut self.previews,
+            thumbs: &mut self.thumbs,
+        };
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+            DockArea::new(self.layouts.get_mut(viewer.shell.ui_mode))
+                .style(style)
+                .show_leaf_collapse_buttons(false)
+                .show_leaf_close_all_buttons(false)
+                .show_inside(ui, &mut viewer);
+        });
+    }
 }
 
 impl eframe::App for ArtyApp {
@@ -579,6 +617,7 @@ impl eframe::App for ArtyApp {
             commands::handle_shortcuts(&ctx, &mut self.studio, &mut self.shell);
         }
         self.files.tick(&ctx, &mut self.studio, &mut self.shell);
+        self.home.sync(&self.studio, &mut self.files);
         self.thumbs.sync_doc(self.studio.doc_epoch);
         if self.shell.export_requested {
             self.shell.export_requested = false;
@@ -595,31 +634,13 @@ impl eframe::App for ArtyApp {
         }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        let simple = self.shell.ui_mode == UiMode::Simple;
-        if simple {
-            egui::Panel::bottom("simple-sliders").show(ui, |ui| panels::simple_sliders(ui, &mut self.studio));
+        if self.home.open {
+            egui::CentralPanel::default_margins().show(ui, |ui| {
+                home::ui(ui, &mut self.home, &mut self.studio, &mut self.shell, &mut self.files);
+            });
+        } else {
+            self.workspace(ui);
         }
-        let width = if simple { theme::TOOLBAR_SIMPLE_WIDTH } else { theme::TOOLBAR_STUDIO_WIDTH };
-        egui::Panel::left("tools").resizable(false).exact_size(width).show(ui, |ui| {
-            panels::toolbar::ui(ui, &mut self.studio, &mut self.shell);
-        });
-
-        let style = theme::dock_style(ui, self.shell.theme);
-        let mut viewer = Viewer {
-            studio: &mut self.studio,
-            shell: &mut self.shell,
-            canvas: &mut self.canvas,
-            previews: &mut self.previews,
-            thumbs: &mut self.thumbs,
-        };
-        egui::CentralPanel::no_frame().show(ui, |ui| {
-            DockArea::new(self.layouts.get_mut(viewer.shell.ui_mode))
-                .style(style)
-                .show_leaf_collapse_buttons(false)
-                .show_leaf_close_all_buttons(false)
-                .show_inside(ui, &mut viewer);
-        });
 
         self.new_document_dialog(&ctx);
         tools::select::dialogs(&ctx, &mut self.studio, &mut self.shell);
@@ -657,6 +678,7 @@ impl eframe::App for ArtyApp {
             lang: self.shell.lang,
             ui_mode: self.shell.ui_mode,
             simple_dock: Some(self.layouts.simple.clone()),
+            home_at_start: self.shell.home_at_start,
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
     }
@@ -694,6 +716,7 @@ mod tests {
             lang: Lang::En,
             ui_mode: UiMode::Studio,
             simple_dock: None,
+            home_at_start: false,
         }
     }
 
@@ -819,6 +842,24 @@ mod tests {
         assert_eq!(mode, UiMode::Simple);
         assert_eq!(ron(&layouts.simple), ron(&panels::default_layout(UiMode::Simple)));
         assert_eq!(ron(&layouts.studio), ron(&panels::default_layout(UiMode::Studio)));
+    }
+
+    /// The home screen setting round-trips; profiles from before it show it.
+    #[test]
+    fn home_at_start_persists() {
+        let mut st = MemStorage::default();
+        let p = default_persisted();
+        assert!(!p.home_at_start);
+        eframe::set_value(&mut st, STORAGE_KEY, &p);
+        let back: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("loads");
+        assert!(!back.home_at_start, "opted out");
+
+        let text = st.0[STORAGE_KEY].clone();
+        let start = text.find(",home_at_start:").expect("home_at_start written");
+        st.0.insert(STORAGE_KEY.to_owned(), format!("{})", &text[..start]));
+        let old: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without home_at_start loads");
+        assert!(old.home_at_start, "existing profiles see the home screen");
+        assert!(Shell::new(ThemeKind::Dark).home_at_start, "fresh profiles too");
     }
 
     #[test]
