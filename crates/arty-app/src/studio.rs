@@ -716,8 +716,11 @@ impl Studio {
                 }
                 Touch::Structure => self.epochs.structure_changed(),
                 // The ants follow `selection_rev`; page guides are drawn
-                // every frame.
-                Touch::Selection | Touch::Page => {}
+                // every frame. Clear any transform carry on selection undo/redo.
+                Touch::Selection => {
+                    self.ants_carry = None;
+                }
+                Touch::Page => {}
             }
         }
     }
