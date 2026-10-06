@@ -33,6 +33,10 @@ rfd.workspace = true
 serde.workspace = true
 pollster = "0.4"
 
+# Log file names (local time), Windows version for crash reports, Help menu links.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Wdk_System_SystemServices", "Win32_System_Diagnostics_Debug"] }
+
 [dev-dependencies]
 arty-testkit.workspace = true
 # Tests hold the IO thread with `Request::Pause`.

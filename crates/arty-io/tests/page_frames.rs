@@ -133,6 +133,7 @@ fn fr11_round_trip_through_save_autosave_and_compaction() {
         sections: loaded.extra_sections.clone(),
         layer_ext: loaded.layer_ext.clone(),
         title: String::new(),
+        ..Default::default()
     };
     let recovery = s.recovery_path().unwrap();
     s.autosave(&doc, &again, 1, &pool, &p).unwrap();
@@ -197,6 +198,7 @@ fn fr11_flags_and_stale_copies() {
         sections: l.extra_sections.clone(),
         layer_ext: l.layer_ext.clone(),
         title: String::new(),
+        ..Default::default()
     };
     let again = write(&l.doc, &ex, &pool);
     assert_eq!(sections(&again).iter().filter(|x| x.0 == TAG_PSET).count(), 1);

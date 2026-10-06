@@ -118,7 +118,7 @@ fn render(doc: &mut Document, view: View, w: u32, h: u32) -> Option<Vec<u8>> {
     let (device, queue) = device()?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut gpu = CanvasGpu::new(&device, format);
-    CanvasSync::default().sync(doc, &mut gpu, &device, &queue)?;
+    CanvasSync::default().sync(doc, &mut gpu, &device, &queue, &mut Default::default())?;
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None,

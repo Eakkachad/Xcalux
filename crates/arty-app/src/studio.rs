@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arty_pen::PenEnd;
-use arty_render::View;
+use arty_render::{Overview, View};
 use serde::{Deserialize, Serialize};
 
 use crate::text::{Key, t};
@@ -399,6 +399,8 @@ pub struct Studio {
     /// revision) it made and its affine. Until that selection's outline is
     /// extracted, the ants draw the old one moved by it.
     pub ants_carry: Option<((u64, u64), Affine64)>,
+    /// The page at an eighth of its size, kept by the canvas sync; a save's thumbnail comes from it.
+    pub overview: Overview,
 }
 
 impl Studio {
@@ -430,6 +432,7 @@ impl Studio {
             frame_sel: None,
             frame_preview: None,
             ants_carry: None,
+            overview: Overview::default(),
         };
         s.select_tool(Tool::Brush(BrushGroup::Pen));
         s
@@ -828,6 +831,7 @@ impl Studio {
         self.epochs.structure_changed();
         self.fit_pending = true;
         self.doc_epoch += 1;
+        self.overview.rev = None;
     }
 
     /// Swap in a loaded document: a stroke in progress is dropped, history
@@ -846,6 +850,8 @@ impl Studio {
         self.epochs.structure_changed();
         self.fit_pending = true;
         self.doc_epoch += 1;
+        // A revision number says nothing about another document.
+        self.overview.rev = None;
     }
 }
 

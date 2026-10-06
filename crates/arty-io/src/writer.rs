@@ -38,11 +38,11 @@ use crate::format::{
 use crate::index::{self, BlobLoc, CommittedLayer, FileIndex, Resolution, Source, TileCache};
 use crate::limits::{
     MAX_EXTRA_TOTAL, MAX_LEXT_ENTRIES, MAX_LEXT_ENTRY, MAX_LEXT_TOTAL, MAX_MANIFEST_RAW, MAX_NAME_LEN, MAX_SEGMENT_BLOBS,
-    MAX_VIEW_BYTES,
+    MAX_THUMB_SIDE, MAX_VIEW_BYTES,
 };
 use crate::manifest::{
     AppSection, DocFields, KNOWN_TAGS, LayerExt, SEC_CRITICAL, SEC_SAFE_TO_COPY, SectionWriter, TAG_DOC, TAG_LAYR,
-    TAG_LEXT, TAG_META, TAG_PSET, TAG_SELM, TAG_VIEW, lext_body, meta_body, truncate_str,
+    TAG_LEXT, TAG_META, TAG_PSET, TAG_SELM, TAG_THUM, TAG_VIEW, lext_body, meta_body, thumb_body, truncate_str,
 };
 use crate::names::blend_id;
 use crate::reader::{self, Loaded};
@@ -89,6 +89,8 @@ pub struct SaveExtras {
     /// `LEXT` entries; those whose layer no longer exists are dropped.
     pub layer_ext: Vec<LayerExt>,
     pub title: String,
+    /// `THUM` pixels (see [`crate::thumb`]); never carried over from a loaded file.
+    pub thumb: Option<crate::thumb::Thumbnail>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -662,7 +664,7 @@ fn layer_flags(l: &Layer) -> u8 {
     f
 }
 
-/// The manifest body: DOC, LAYR, META, then VIEW, SELM, PSET, LEXT and kept
+/// The manifest body: DOC, LAYR, META, then VIEW, THUM, SELM, PSET, LEXT and kept
 /// sections when present, in that order (so equal input gives equal bytes).
 fn build_manifest(
     doc: &Document,
@@ -722,6 +724,12 @@ fn build_manifest(
             return Err(IoError::limit("VIEW section", view.len() as u64, MAX_VIEW_BYTES as u64));
         }
         w.push(TAG_VIEW, SEC_SAFE_TO_COPY, view);
+    }
+    if let Some((tw, th, rgba)) = &ex.thumb
+        && rgba.len() == usize::from(*tw) * usize::from(*th) * 4
+        && (*tw).max(*th) <= MAX_THUMB_SIDE
+    {
+        w.push(TAG_THUM, 0, &thumb_body(*tw, *th, rgba));
     }
     let (w_px, h_px) = (doc.width(), doc.height());
     let (selm_body, selection_saved) = selm::encode(doc.selection(), doc.selection_rev(), w_px, h_px, selm);
