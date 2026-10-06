@@ -7,6 +7,7 @@ use egui::{Color32, CornerRadius, DragAndDrop, Id, Rect, Sense, Stroke, Vec2};
 use egui_phosphor::regular as icon;
 
 use super::thumbs::{self, ThumbCache};
+use super::{even_width, fill_slider};
 use crate::commands::{self, Command};
 use crate::shell::Shell;
 use crate::studio::Studio;
@@ -34,8 +35,12 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, thumbs: &mu
         ui.ctx().request_repaint();
     }
 
-    let footer_h = 28.0;
-    let list_h = (ui.available_height() - footer_h).max(40.0);
+    // The buttons first, so the list takes exactly the height left.
+    egui::Panel::bottom("layer-buttons")
+        .frame(egui::Frame::new().inner_margin(egui::Margin { top: 4, ..Default::default() }))
+        .resizable(false)
+        .show(ui, |ui| footer(ui, studio, shell));
+    let list_h = ui.available_height().max(40.0);
     let mut rows = Vec::new();
     studio.doc.panel_rows(&mut rows);
     egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
@@ -47,9 +52,11 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, thumbs: &mu
         }
         drop_zone(ui, studio, shell, &slots);
     });
+}
 
-    ui.separator();
-    ui.horizontal(|ui| {
+/// Layer buttons sharing the panel width evenly.
+fn footer(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
+    ui.horizontal_wrapped(|ui| {
         let buttons: &[(&str, Command)] = &[
             (icon::FILE_PLUS, Command::NewLayer),
             (icon::FOLDER_SIMPLE_PLUS, Command::NewFolder),
@@ -60,12 +67,13 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, thumbs: &mu
             (icon::BROOM, Command::ClearLayer),
             (icon::TRASH, Command::DeleteLayer),
         ];
+        let w = even_width(ui, buttons.len());
         for &(glyph, cmd) in buttons {
             let mut tip = cmd.label().to_string();
             if let Some(sc) = commands::shortcut_for(cmd) {
                 tip = format!("{tip} ({})", ui.ctx().format_shortcut(&sc));
             }
-            if ui.button(glyph).on_hover_text(tip).clicked() {
+            if ui.add(egui::Button::new(glyph).min_size(Vec2::new(w, 0.0))).on_hover_text(tip).clicked() {
                 commands::execute(cmd, studio, shell);
             }
         }
@@ -86,13 +94,14 @@ fn active_layer_controls(ui: &mut egui::Ui, studio: &mut Studio) {
         } else {
             BlendMode::LAYER_MODES.to_vec()
         };
-        egui::ComboBox::from_id_salt("blend-mode").width(110.0).selected_text(t(blend_mode_key(p.blend))).show_ui(ui, |ui| {
+        let combo_w = (ui.available_width() * 0.45).clamp(72.0, 140.0);
+        egui::ComboBox::from_id_salt("blend-mode").width(combo_w).selected_text(t(blend_mode_key(p.blend))).show_ui(ui, |ui| {
             for m in modes {
                 ui.selectable_value(&mut p.blend, m, t(blend_mode_key(m)));
             }
         });
         let mut pct = p.opacity * 100.0;
-        let r = ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).max_decimals(0).suffix("%"));
+        let r = fill_slider(ui, egui::Slider::new(&mut pct, 0.0..=100.0).max_decimals(0).suffix("%"));
         // One drag is one undo step. The slider senses drags only, so the
         // drag starts on the press frame; the release frame reports
         // `drag_stopped` instead of `dragged` but may still move the value.

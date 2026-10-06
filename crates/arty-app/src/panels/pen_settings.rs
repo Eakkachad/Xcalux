@@ -2,10 +2,10 @@
 
 use super::curve_editor;
 use super::property::percent;
-use super::section;
+use super::{fill_slider, section};
 use crate::shell::Shell;
 use crate::studio::{DisplaySync, Studio};
-use crate::text::{Key, Lang, t};
+use crate::text::{Key, t};
 
 pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     egui::CollapsingHeader::new(t(Key::PenSettingsInputDisplay)).default_open(false).show(ui, |ui| {
@@ -14,13 +14,13 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
         ui.add_space(6.0);
         egui::Grid::new("input-settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label(t(Key::LanguageLabel));
-            language_combo(ui, shell);
+            super::lang_switch(ui, shell);
             ui.end_row();
             ui.label(t(Key::HomeShowAtStartup));
             ui.checkbox(&mut shell.home_at_start, "");
             ui.end_row();
             ui.label(t(Key::PenSettingsMousePressure));
-            ui.add(percent(&mut studio.input.mouse_pressure));
+            fill_slider(ui, percent(&mut studio.input.mouse_pressure));
             ui.end_row();
             ui.label(t(Key::PenSettingsNativePen));
             ui.checkbox(&mut studio.input.native_pen, "").on_hover_text(t(Key::PenSettingsNativePenTip));
@@ -37,19 +37,6 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
             ui.end_row();
         });
     });
-}
-
-fn language_combo(ui: &mut egui::Ui, shell: &mut Shell) {
-    let current = shell.lang;
-    egui::ComboBox::from_id_salt("language-switch")
-        .selected_text(current.name())
-        .show_ui(ui, |ui| {
-            for l in Lang::ALL {
-                if ui.selectable_label(current == l, l.name()).clicked() {
-                    shell.set_lang(l);
-                }
-            }
-        });
 }
 
 fn sync_hover(s: DisplaySync) -> &'static str {

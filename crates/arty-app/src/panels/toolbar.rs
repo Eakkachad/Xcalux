@@ -58,6 +58,18 @@ fn simple_label(i: usize) -> &'static str {
     }
 }
 
+/// Width of the Simple tool bar: its labels fit, in this language.
+pub fn simple_width(ui: &egui::Ui, studio: &Studio) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let widest = (0..SIMPLE_TOOLS.len())
+        .map(simple_label)
+        .chain([more_label(studio)])
+        .map(|l| ui.fonts_mut(|f| f.layout_no_wrap(l.to_owned(), font.clone(), Color32::WHITE).size().x))
+        .fold(0.0, f32::max);
+    // Icon column, label, end padding and the panel's side margins.
+    (theme::SIMPLE_TOOL_HEIGHT + widest + 8.0 + 16.0).clamp(theme::TOOLBAR_SIMPLE_WIDTH, theme::TOOLBAR_SIMPLE_MAX)
+}
+
 /// The Simple tool that is active, if any.
 pub fn simple_active(studio: &Studio) -> Option<usize> {
     SIMPLE_TOOLS
@@ -196,11 +208,14 @@ fn tool_button(ui: &mut egui::Ui, glyph: &str, selected: bool, accent: Color32) 
 
 /// Overlapping main/sub color squares; click the sub chip or press X to swap.
 fn color_chips(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 36.0), Sense::hover());
-    let main = Rect::from_min_size(rect.min, Vec2::splat(22.0));
-    let sub = Rect::from_min_size(rect.min + Vec2::splat(13.0), Vec2::splat(22.0));
+    // Within the tool bar, outline included.
+    let side = (ui.available_width() - 4.0).clamp(24.0, 36.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    let chip = (side * 0.61).round();
+    let main = Rect::from_min_size(rect.min, Vec2::splat(chip));
+    let sub = Rect::from_min_size(rect.min + Vec2::splat(side - chip), Vec2::splat(chip));
     let to32 = |c: [f32; 3]| Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8);
-    let border = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let border = ui.visuals().weak_text_color();
     let sub_resp = ui.interact(sub, ui.id().with("sub-color"), Sense::click()).on_hover_text(t(Key::ColorSubSwapTip));
     let p = ui.painter();
     for (r, c) in [(sub, studio.color.sub), (main, studio.color.main)] {
