@@ -11,7 +11,7 @@ const SIZES: &[f32] = &[
 
 pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
     if !matches!(studio.tool, Tool::Brush(_)) {
-        ui.weak("Select a brush tool");
+        ui.weak(crate::text::t(crate::text::Key::BrushSizeSelectTool));
         return;
     }
     let current = studio.preset().size;

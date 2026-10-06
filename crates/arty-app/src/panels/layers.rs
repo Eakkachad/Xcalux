@@ -10,6 +10,7 @@ use super::thumbs::{self, ThumbCache};
 use crate::commands::{self, Command};
 use crate::shell::Shell;
 use crate::studio::Studio;
+use crate::text::{blend_mode_key, t, Key};
 
 const ROW_H: f32 = 30.0;
 /// Thumbnail box in a row; the page-shaped image is fitted inside.
@@ -85,9 +86,9 @@ fn active_layer_controls(ui: &mut egui::Ui, studio: &mut Studio) {
         } else {
             BlendMode::LAYER_MODES.to_vec()
         };
-        egui::ComboBox::from_id_salt("blend-mode").width(110.0).selected_text(p.blend.label()).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("blend-mode").width(110.0).selected_text(t(blend_mode_key(p.blend))).show_ui(ui, |ui| {
             for m in modes {
-                ui.selectable_value(&mut p.blend, m, m.label());
+                ui.selectable_value(&mut p.blend, m, t(blend_mode_key(m)));
             }
         });
         let mut pct = p.opacity * 100.0;
@@ -103,11 +104,11 @@ fn active_layer_controls(ui: &mut egui::Ui, studio: &mut Studio) {
         }
     });
     ui.horizontal(|ui| {
-        toggle(ui, &mut p.clip, icon::ARROW_ELBOW_LEFT_DOWN, "Clip to layer below");
+        toggle(ui, &mut p.clip, icon::ARROW_ELBOW_LEFT_DOWN, t(Key::CmdToggleClip));
         if !is_folder {
-            toggle(ui, &mut p.lock_alpha, icon::CHECKERBOARD, "Lock transparent pixels");
+            toggle(ui, &mut p.lock_alpha, icon::CHECKERBOARD, t(Key::CmdToggleLockAlpha));
         }
-        toggle(ui, &mut p.locked, icon::LOCK_SIMPLE, "Lock layer");
+        toggle(ui, &mut p.locked, icon::LOCK_SIMPLE, t(Key::LayerLock));
     });
     if drag_started {
         studio.history.end_props_gesture(); // never merge into an earlier entry
@@ -243,9 +244,10 @@ fn layer_row(
             shell.renaming = None;
         }
     } else {
-        let mut sub = props.blend.label().to_string();
+        let blend_lbl = t(blend_mode_key(props.blend));
+        let mut sub = blend_lbl.to_string();
         if props.opacity < 1.0 {
-            sub = format!("{sub} · {:.0}%", props.opacity * 100.0);
+            sub = format!("{blend_lbl} · {:.0}%", props.opacity * 100.0);
         }
         ui.painter().text(
             egui::pos2(name_rect.left(), cy - 7.0),
@@ -304,7 +306,7 @@ fn layer_row(
                 ui.close();
             }
         }
-        if ui.button("Rename").clicked() {
+        if ui.button(t(Key::LayerRename)).clicked() {
             shell.renaming = Some((id, props.name.clone(), false));
             ui.close();
         }

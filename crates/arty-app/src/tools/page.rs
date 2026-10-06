@@ -10,6 +10,7 @@ use crate::commands::Command;
 use crate::export::{ExportCrop, crop_rect};
 use crate::shell::Shell;
 use crate::studio::Studio;
+use crate::text::{Key, t};
 
 const TRIM: Color32 = Color32::from_rgb(76, 141, 255);
 const BLEED: Color32 = Color32::from_rgb(232, 72, 72);
@@ -304,14 +305,14 @@ pub fn dialogs(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
     let mut cancel = false;
     let modal = egui::Modal::new(egui::Id::new("page-setup")).show(ctx, |ui| {
         ui.set_width(380.0);
-        ui.heading("Page Setup");
-        ui.weak(format!("Canvas {w} × {h} px at {dpi} dpi"));
+        ui.heading(t(Key::CmdPageSetup));
+        ui.weak(format!("{} {w} × {h} px at {dpi} dpi", t(Key::PageCanvasSize)));
         ui.add_space(6.0);
-        ui.checkbox(&mut form.none, "No page setup");
+        ui.checkbox(&mut form.none, t(Key::PageNoSetup));
         ui.add_enabled_ui(!form.none, |ui| {
             egui::Grid::new("page-setup-grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label("Preset");
-                let name = form.preset.and_then(|i| MANGA_PRESETS.get(i)).map_or("Custom", |p| p.name);
+                ui.label(t(Key::PagePreset));
+                let name = form.preset.and_then(|i| MANGA_PRESETS.get(i)).map_or(t(Key::NewDocCustom), |p| p.name);
                 egui::ComboBox::from_id_salt("page-setup-preset").selected_text(name).show_ui(ui, |ui| {
                     for (i, p) in MANGA_PRESETS.iter().enumerate() {
                         if ui.selectable_label(form.preset == Some(i), p.name).clicked() {
@@ -320,7 +321,7 @@ pub fn dialogs(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
                     }
                 });
                 ui.end_row();
-                ui.label("Unit");
+                ui.label(t(Key::PageUnit));
                 ui.horizontal(|ui| {
                     for u in [UNIT_MM, UNIT_IN, UNIT_PX] {
                         ui.radio_value(&mut form.unit, u, unit_name(u));
@@ -329,29 +330,29 @@ pub fn dialogs(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
                 ui.end_row();
                 let unit = form.unit;
                 let mut custom = false;
-                ui.label("Trim size");
+                ui.label(t(Key::PageTrimSize));
                 ui.horizontal(|ui| {
                     custom |= length(ui, &mut form.trim.w, unit, dpi, 1.0);
                     ui.label("×");
                     custom |= length(ui, &mut form.trim.h, unit, dpi, 1.0);
                 });
                 ui.end_row();
-                ui.label("Trim position");
+                ui.label(t(Key::PageTrimPos));
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut form.centre, "Centre");
+                    ui.checkbox(&mut form.centre, t(Key::PageCentre));
                     if !form.centre {
                         length(ui, &mut form.trim.x, unit, dpi, 0.0);
                         length(ui, &mut form.trim.y, unit, dpi, 0.0);
                     }
                 });
                 ui.end_row();
-                ui.label("Bleed");
+                ui.label(t(Key::PageBleed));
                 custom |= length(ui, &mut form.bleed, unit, dpi, 0.0);
                 ui.end_row();
-                ui.label("Safe margin");
+                ui.label(t(Key::PageSafeMargin));
                 custom |= length(ui, &mut form.safe, unit, dpi, 0.0);
                 ui.end_row();
-                ui.label("Inner frame");
+                ui.label(t(Key::PageInnerFrame));
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut form.has_inner, "");
                     if form.has_inner {
@@ -365,9 +366,9 @@ pub fn dialogs(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
                 });
                 ui.end_row();
                 if form.has_inner {
-                    ui.label("Inner position");
+                    ui.label(t(Key::PageInnerPos));
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut form.inner_centre, "Centre on trim");
+                        ui.checkbox(&mut form.inner_centre, t(Key::PageCentreTrim));
                         if !form.inner_centre {
                             length(ui, &mut form.inner.x, unit, dpi, 0.0);
                             length(ui, &mut form.inner.y, unit, dpi, 0.0);
@@ -382,12 +383,12 @@ pub fn dialogs(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
         });
         let valid = form.none || form.setup(w, h).sanitized(w, h).is_some();
         if !valid {
-            ui.colored_label(BLEED, "The trim must lie inside the canvas.");
+            ui.colored_label(BLEED, t(Key::PageTrimInsideCanvas));
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            apply = ui.add_enabled(valid, egui::Button::new(RichText::new("Apply").strong())).clicked();
-            cancel = ui.button("Cancel").clicked();
+            apply = ui.add_enabled(valid, egui::Button::new(RichText::new(t(Key::CommonApply)).strong())).clicked();
+            cancel = ui.button(t(Key::NewDocCancel)).clicked();
         });
     });
     if apply {
@@ -418,7 +419,7 @@ pub fn export_dialog(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell
     let (mut export, mut cancel) = (false, false);
     let modal = egui::Modal::new(egui::Id::new("export-dialog")).show(ctx, |ui| {
         ui.set_width(300.0);
-        ui.heading("Export PNG");
+        ui.heading(t(Key::CmdExportPng).trim_end_matches('…'));
         ui.add_space(6.0);
         for c in ExportCrop::ALL {
             let (_, _, cw, ch) = crop_rect(doc, c);
@@ -427,12 +428,12 @@ pub fn export_dialog(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell
             });
         }
         if !has_page {
-            ui.weak("Bleed and Trim need a page setup (File ▸ Page Setup…).");
+            ui.weak(t(Key::ExportNeedPageSetup));
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            export = ui.button(RichText::new("Export…").strong()).clicked();
-            cancel = ui.button("Cancel").clicked();
+            export = ui.button(RichText::new(t(Key::ExportButton)).strong()).clicked();
+            cancel = ui.button(t(Key::NewDocCancel)).clicked();
         });
     });
     if export || cancel || modal.should_close() {
@@ -467,8 +468,8 @@ pub fn new_doc_ui(ui: &mut egui::Ui, shell: &mut Shell) -> Option<(u32, u32, u32
     }
     let mut out = None;
     ui.horizontal(|ui| {
-        ui.label("Manga manuscript");
-        let name = MANGA_PRESETS.get(picked).map_or("None", |p| p.name);
+        ui.label(t(Key::PageMangaManuscript));
+        let name = MANGA_PRESETS.get(picked).map_or(t(Key::CommonNone), |p| p.name);
         egui::ComboBox::from_id_salt("manga-preset").width(170.0).selected_text(name).show_ui(ui, |ui| {
             for (i, p) in MANGA_PRESETS.iter().enumerate() {
                 if ui.selectable_label(picked == i, p.name).clicked() {

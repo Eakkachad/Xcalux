@@ -19,6 +19,7 @@ use egui::{Color32, CursorIcon, Event, PointerButton, Pos2, Rect, Sense, Shape, 
 use crate::commands::{self, Command};
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+use crate::text::{Key, t};
 use crate::tools::{self, CanvasTool, ToolCtx, ToolInput, ToolStates};
 
 /// Pen samples drained per frame without reallocating (~5 s at 200 Hz).
@@ -613,7 +614,7 @@ impl CanvasPane {
             }
             None => {
                 painter.add(Shape::convex_polygon(corners.clone(), Color32::WHITE, Stroke::NONE));
-                painter.text(rect.center(), egui::Align2::CENTER_CENTER, "GPU canvas unavailable", egui::FontId::proportional(14.0), Color32::GRAY);
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, t(Key::GpuCanvasUnavailable), egui::FontId::proportional(14.0), Color32::GRAY);
             }
         }
         painter.add(Shape::closed_line(corners, Stroke::new(1.0, Color32::from_black_alpha(70))));

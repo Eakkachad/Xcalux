@@ -19,6 +19,7 @@ use super::{CanvasTool, ToolCtx, ToolInput};
 use crate::commands::Command;
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+use crate::text::{Key, t};
 
 /// Handles are hit within this many screen points.
 const HIT_PT: f64 = 8.0;
@@ -159,10 +160,10 @@ impl Studio {
             Err(why) => {
                 self.notice = Some(
                     match why {
-                        XfRefused::Folder => "Folders can't be transformed",
-                        XfRefused::Locked => "Layer is locked",
-                        XfRefused::Empty => "Nothing to transform",
-                        XfRefused::Unsupported => "Select a raster layer to transform",
+                        XfRefused::Folder => t(Key::NoticeXfFolder),
+                        XfRefused::Locked => t(Key::NoticeLayerLocked),
+                        XfRefused::Empty => t(Key::NoticeXfEmpty),
+                        XfRefused::Unsupported => t(Key::NoticeXfSelectRaster),
                     }
                     .into(),
                 );
@@ -596,7 +597,7 @@ pub fn execute(cmd: Command, studio: &mut Studio, _shell: &mut Shell) {
 pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
     let filter = &mut studio.opts.transform.filter;
     egui::Grid::new("transform-filter").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Interpolation");
+        ui.label(t(Key::XfInterpolation));
         egui::ComboBox::from_id_salt("transform-interp").selected_text(filter_label(*filter)).show_ui(ui, |ui| {
             for f in [Filter::Nearest, Filter::Bilinear, Filter::Bicubic] {
                 ui.selectable_value(filter, f, filter_label(f));
@@ -605,13 +606,13 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
         ui.end_row();
     });
     let Some(st) = studio.transform.as_mut() else {
-        ui.label("Drag on the canvas to move the active layer, or the selected pixels when there is a selection.");
-        ui.label("Edit ▸ Transform (Ctrl+T) scales and rotates.");
+        ui.label(t(Key::HintMoveTool));
+        ui.label(t(Key::HintMoveTransform));
         return;
     };
     ui.label(match st.session.target() {
-        XfTarget::Layer => "Target: layer",
-        XfTarget::Selection => "Target: selected pixels",
+        XfTarget::Layer => t(Key::XfTargetLayer),
+        XfTarget::Selection => t(Key::XfTargetSelection),
     });
     let p0 = st.session.params();
     let mut p = p0;
@@ -632,7 +633,7 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
             ui.add(egui::DragValue::new(v).speed(0.5).suffix(" %").max_decimals(1));
             ui.end_row();
         }
-        ui.label("Angle");
+        ui.label(t(Key::XfAngle));
         ui.add(egui::DragValue::new(&mut deg).speed(0.5).suffix("°").max_decimals(1));
         ui.end_row();
     });
@@ -653,10 +654,10 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.button("Commit").on_hover_text("Enter").clicked() {
+        if ui.button(t(Key::XfCommit)).on_hover_text("Enter").clicked() {
             studio.commit_transform();
         }
-        if ui.button("Cancel").on_hover_text("Esc").clicked() {
+        if ui.button(t(Key::NewDocCancel)).on_hover_text("Esc").clicked() {
             studio.cancel_transform();
         }
     });
@@ -664,9 +665,9 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
 
 fn filter_label(f: Filter) -> &'static str {
     match f {
-        Filter::Nearest => "Nearest",
-        Filter::Bilinear => "Bilinear",
-        Filter::Bicubic => "Bicubic",
+        Filter::Nearest => t(Key::FilterNearest),
+        Filter::Bilinear => t(Key::FilterBilinear),
+        Filter::Bicubic => t(Key::FilterBicubic),
     }
 }
 

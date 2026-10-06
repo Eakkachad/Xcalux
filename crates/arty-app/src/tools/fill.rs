@@ -11,6 +11,7 @@ use super::{CanvasTool, ToolCtx, ToolInput};
 use crate::commands::Command;
 use crate::shell::Shell;
 use crate::studio::Studio;
+use crate::text::{Key, t};
 
 /// After a fill this slow, the next one waits a frame behind a wait cursor.
 const SLOW_MS: f64 = 100.0;
@@ -38,7 +39,7 @@ impl FillTool {
         // Behind only adds alpha, which a locked alpha forbids (the core
         // refuses it too): say so instead of filling nothing.
         if studio.opts.fill.blend == FillBlend::Behind && studio.doc.layer(id).is_some_and(|l| l.props.lock_alpha) {
-            studio.notice = Some("Layer transparency is locked".into());
+            studio.notice = Some(t(Key::NoticeLayerAlphaLocked).into());
             return;
         }
         let o = &studio.opts.fill;
@@ -155,12 +156,12 @@ fn fill_target(studio: &mut Studio) -> Option<LayerId> {
     let id = studio.doc.active();
     let layer = studio.doc.layer(id)?;
     let refusal = if layer.is_folder() {
-        "Select a raster layer to fill"
+        t(Key::NoticeSelectRasterToFill)
     } else if layer.props.locked {
-        "Layer is locked"
+        t(Key::NoticeLayerLocked)
     } else if !layer.props.visible {
         // As the brushes refuse it: the fill would not be seen.
-        "Layer is hidden"
+        t(Key::NoticeLayerHidden)
     } else {
         return Some(id);
     };
@@ -190,7 +191,7 @@ pub fn execute(cmd: Command, studio: &mut Studio, _shell: &mut Shell) {
         Command::FillSelection => {
             studio.commit_transform();
             if !studio.doc.has_selection() {
-                studio.notice = Some("Nothing is selected".into());
+                studio.notice = Some(t(Key::NoticeNothingSelected).into());
                 return;
             }
             let Some(id) = fill_target(studio) else { return };
@@ -216,11 +217,11 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
     preselect_blend(studio);
     let o = &mut studio.opts.fill;
     egui::Grid::new("fill-props").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Refer to");
+        ui.label(t(Key::FillReferTo));
         let label = |r: FillRef| match r {
-            FillRef::Active => "Editing layer",
-            FillRef::AllVisible => "All layers",
-            FillRef::Reference => "Reference layers",
+            FillRef::Active => t(Key::FillRefActive),
+            FillRef::AllVisible => t(Key::FillRefAll),
+            FillRef::Reference => t(Key::FillRefReference),
         };
         egui::ComboBox::from_id_salt("fill-ref").selected_text(label(o.reference)).show_ui(ui, |ui| {
             for r in [FillRef::Active, FillRef::AllVisible, FillRef::Reference] {
@@ -229,12 +230,12 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
         });
         ui.end_row();
 
-        ui.label("Tolerance");
+        ui.label(t(Key::FillTolerance));
         ui.add(percent(&mut o.tolerance));
         ui.end_row();
 
-        ui.label("Close gap");
-        let gap = |l: u8| if l == 0 { "Off".to_string() } else { format!("Level {l}") };
+        ui.label(t(Key::FillCloseGap));
+        let gap = |l: u8| if l == 0 { t(Key::CommonOff).to_string() } else { format!("{} {l}", t(Key::CommonLevel)) };
         egui::ComboBox::from_id_salt("fill-gap").selected_text(gap(o.gap_level)).show_ui(ui, |ui| {
             for l in 0..=5 {
                 ui.selectable_value(&mut o.gap_level, l, gap(l));
@@ -242,31 +243,31 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
         });
         ui.end_row();
 
-        ui.label("Area scaling");
+        ui.label(t(Key::FillAreaScaling));
         ui.add(Slider::new(&mut o.area_scale, -10..=10).suffix(" px"));
         ui.end_row();
 
         ui.label("");
-        ui.checkbox(&mut o.to_darkest, "To darkest pixel")
-            .on_hover_text("Grow only towards darker pixels, stopping at the core of the line");
+        ui.checkbox(&mut o.to_darkest, t(Key::FillToDarkest))
+            .on_hover_text(t(Key::FillToDarkestTip));
         ui.end_row();
 
-        ui.label("Contiguous");
-        ui.checkbox(&mut o.contiguous, "").on_hover_text("Off: fill every matching pixel on the page");
+        ui.label(t(Key::FillContiguous));
+        ui.checkbox(&mut o.contiguous, "").on_hover_text(t(Key::FillContiguousTip));
         ui.end_row();
 
-        ui.label("Antialiasing");
+        ui.label(t(Key::FillAntialiasing));
         ui.checkbox(&mut o.antialias, "");
         ui.end_row();
 
-        ui.label("Opacity");
+        ui.label(t(Key::FillOpacity));
         ui.add(percent(&mut o.opacity));
         ui.end_row();
 
-        ui.label("Blend");
+        ui.label(t(Key::FillBlend));
         let blend = |b: FillBlend| match b {
-            FillBlend::Normal => "Normal",
-            FillBlend::Behind => "Behind",
+            FillBlend::Normal => t(Key::BlendNormal),
+            FillBlend::Behind => t(Key::FillBlendBehind),
         };
         egui::ComboBox::from_id_salt("fill-blend").selected_text(blend(o.blend)).show_ui(ui, |ui| {
             for b in [FillBlend::Normal, FillBlend::Behind] {
@@ -277,7 +278,7 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
     });
     if o.reference == FillRef::AllVisible {
         ui.label(
-            egui::RichText::new("Filling against all layers composites the page. Marking the line art as a reference layer is faster.")
+            egui::RichText::new(t(Key::FillAllLayersNote))
                 .small()
                 .weak(),
         );
@@ -339,11 +340,11 @@ mod tests {
         p.locked = true;
         studio.doc.set_props(id, p);
         click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
-        assert_eq!(studio.notice.take().as_deref(), Some("Layer is locked"));
+        assert_eq!(studio.notice.take().as_deref(), Some(t(Key::NoticeLayerLocked)));
         studio.edit_structure(|d| d.add_folder().is_some());
         let steps = studio.history.undo_len();
         click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
-        assert_eq!(studio.notice.take().as_deref(), Some("Select a raster layer to fill"));
+        assert_eq!(studio.notice.take().as_deref(), Some(t(Key::NoticeSelectRasterToFill)));
         assert_eq!(studio.history.undo_len(), steps);
     }
 
@@ -363,9 +364,9 @@ mod tests {
         studio.set_selection(sel);
         let (steps, rev) = (studio.history.undo_len(), studio.doc.revision());
         click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
-        assert_eq!(studio.notice.take().as_deref(), Some("Layer is hidden"));
+        assert_eq!(studio.notice.take().as_deref(), Some(t(Key::NoticeLayerHidden)));
         commands::execute(Command::FillSelection, &mut studio, &mut shell);
-        assert_eq!(studio.notice.take().as_deref(), Some("Layer is hidden"));
+        assert_eq!(studio.notice.take().as_deref(), Some(t(Key::NoticeLayerHidden)));
         assert_eq!((studio.history.undo_len(), studio.doc.revision()), (steps, rev), "no step, no change");
         assert!(studio.doc.active_layer().raster().unwrap().is_empty());
     }
@@ -384,7 +385,7 @@ mod tests {
         let (steps, rev) = (studio.history.undo_len(), studio.doc.revision());
         click(&mut tool, &mut studio, &mut shell, 10.0, 10.0);
         assert_eq!(studio.opts.fill.blend, FillBlend::Behind, "preselected for the reference layer");
-        assert_eq!(studio.notice.take().as_deref(), Some("Layer transparency is locked"));
+        assert_eq!(studio.notice.take().as_deref(), Some(t(Key::NoticeLayerAlphaLocked)));
         assert_eq!((studio.history.undo_len(), studio.doc.revision()), (steps, rev));
         // Normal recolours what is there, as alpha lock allows.
         studio.opts.fill.blend = FillBlend::Normal;
@@ -430,7 +431,7 @@ mod tests {
         studio.set_selection(Selection::new());
         let steps = studio.history.undo_len();
         commands::execute(Command::FillSelection, &mut studio, &mut shell);
-        assert_eq!(studio.notice.take().as_deref(), Some("Nothing is selected"));
+        assert_eq!(studio.notice.take().as_deref(), Some(t(Key::NoticeNothingSelected)));
         assert_eq!(studio.history.undo_len(), steps);
     }
 

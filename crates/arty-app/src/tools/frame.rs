@@ -18,6 +18,7 @@ use crate::commands::{self, Command};
 use crate::panels::section;
 use crate::shell::Shell;
 use crate::studio::{FrameMode, Rgb, Studio, Tool};
+use crate::text::{Key, t};
 
 /// Edges snap within this many screen points.
 pub const SNAP_PT: f32 = 8.0;
@@ -303,7 +304,7 @@ pub fn add_rect_panel(studio: &mut Studio, r: RectF) {
     match target_folder(studio).filter(|_| !studio.opts.frame.new_folder_per_frame) {
         Some(id) => {
             if studio.doc.frame(id).is_some_and(|f| f.shape().panels.len() >= MAX_PANELS) {
-                studio.notice = Some("This frame folder has the most panels it can hold".into());
+                studio.notice = Some(t(Key::NoticeFrameMaxPanels).into());
                 return;
             }
             studio.edit_frame(id, |s| {
@@ -323,7 +324,7 @@ pub fn add_rect_panel(studio: &mut Studio, r: RectF) {
 /// the segment crosses.
 pub fn cut_frame(studio: &mut Studio, a: Pt, b: Pt) {
     let Some(id) = target_folder(studio) else {
-        studio.notice = Some("Select a frame border folder to divide".into());
+        studio.notice = Some(t(Key::NoticeSelectFrameToDivide).into());
         return;
     };
     let Some(frame) = studio.doc.frame(id) else { return };
@@ -331,7 +332,7 @@ pub fn cut_frame(studio: &mut Studio, a: Pt, b: Pt) {
     let Some((shape, bs)) = frame.shape().cut(a, b, gap_h, gap_v) else {
         let crossed = frame.shape().panels.iter().any(|p| p.crossed_by(a, b));
         studio.notice =
-            Some(if crossed { "The gutter is wider than the panel" } else { "Drag across a panel to divide it" }.into());
+            Some(if crossed { t(Key::NoticeGutterWiderThanPanel) } else { t(Key::NoticeDragAcrossPanel) }.into());
         return;
     };
     if studio.opts.frame.divide_into_folders && !bs.is_empty() && bs.len() < shape.panels.len() {
@@ -383,7 +384,7 @@ pub fn delete_panel(studio: &mut Studio) {
         })
     });
     if last {
-        studio.notice = Some("A frame border folder keeps at least one panel — delete the folder instead".into());
+        studio.notice = Some(t(Key::NoticeFrameKeepOnePanel).into());
         return;
     }
     studio.frame_sel = None;
@@ -822,23 +823,23 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     let mode = mode(studio);
     let mut o = studio.opts.frame.clone();
     ui.label(match mode {
-        Some(FrameMode::Rect) => "Drag to add a panel. Shift: square, Alt: from the centre.",
-        Some(FrameMode::Cut) => "Drag across panels to divide them. Shift snaps to 45°.",
-        _ => "Drag vertices, edges or panels. Double-click an edge to add a vertex, a vertex to remove it. Shift snaps; Ctrl snaps past the canvas edge.",
+        Some(FrameMode::Rect) => t(Key::HintFrameRect),
+        Some(FrameMode::Cut) => t(Key::HintFrameCut),
+        _ => t(Key::HintFrameEdit),
     });
     ui.add_space(4.0);
-    section(ui, "PANELS");
+    section(ui, t(Key::SectionPanels));
     egui::Grid::new("frame-opts").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         fn mm(v: &mut f32, max: f32) -> egui::DragValue<'_> {
             egui::DragValue::new(v).range(0.0..=max).speed(0.05).max_decimals(2).suffix(" mm")
         }
-        ui.label("Gutter left / right");
+        ui.label(t(Key::FrameGutterLr));
         ui.add(mm(&mut o.gutter_lr_mm, 50.0));
         ui.end_row();
-        ui.label("Gutter top / bottom");
+        ui.label(t(Key::FrameGutterTb));
         ui.add(mm(&mut o.gutter_tb_mm, 50.0));
         ui.end_row();
-        ui.label("New border");
+        ui.label(t(Key::FrameNewBorder));
         ui.horizontal(|ui| {
             ui.add(mm(&mut o.border_mm, 10.0));
             ui.color_edit_button_rgb(&mut o.border_color);
@@ -847,22 +848,22 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     });
     match mode {
         Some(FrameMode::Rect) => {
-            ui.checkbox(&mut o.new_folder_per_frame, "New folder per frame");
+            ui.checkbox(&mut o.new_folder_per_frame, t(Key::FrameNewFolderPerFrame));
         }
         Some(FrameMode::Cut) => {
-            ui.checkbox(&mut o.divide_into_folders, "Divide into folders");
+            ui.checkbox(&mut o.divide_into_folders, t(Key::FrameDivideIntoFolders));
         }
         _ => {}
     }
-    ui.checkbox(&mut o.snap_guides, "Snap to page guides");
-    ui.checkbox(&mut o.snap_panels, "Snap to panels");
+    ui.checkbox(&mut o.snap_guides, t(Key::FrameSnapGuides));
+    ui.checkbox(&mut o.snap_panels, t(Key::FrameSnapPanels));
     if o != studio.opts.frame {
         studio.opts.frame = o;
     }
 
     // The active frame folder's own border.
     let Some(id) = target_folder(studio) else {
-        ui.weak("The active layer is not in a frame border folder.");
+        ui.weak(t(Key::FrameNotInFolder));
         return;
     };
     border_ui(ui, studio, shell, id);
@@ -875,7 +876,7 @@ pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: 
     let dpi = studio.doc.dpi();
     let Some(frame) = studio.doc.frame(id).cloned() else { return };
     ui.add_space(6.0);
-    section(ui, "FRAME BORDER");
+    section(ui, t(Key::SectionFrameBorder));
     let shape = frame.shape();
     let mut on = shape.border.width > 0.0;
     let mut w_mm = shape.border.width / dpi as f32 * MM_PER_IN;
@@ -886,10 +887,10 @@ pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: 
         .num_columns(2)
         .spacing([8.0, 6.0])
         .show(ui, |ui| {
-            ui.label("Border");
+            ui.label(t(Key::FrameBorder));
             let on_r = ui.checkbox(&mut on, "");
             ui.end_row();
-            ui.label("Width");
+            ui.label(t(Key::FrameWidth));
             let w_r = ui.add_enabled(
                 on,
                 egui::Slider::new(&mut w_mm, 0.05..=10.0)
@@ -899,7 +900,7 @@ pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: 
                     .suffix(" mm"),
             );
             ui.end_row();
-            ui.label("Colour");
+            ui.label(t(Key::FrameColor));
             let c_r = ui.color_edit_button_rgb(&mut rgb);
             ui.end_row();
             (on_r, w_r, c_r)
@@ -922,7 +923,11 @@ pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: 
     }
     finish_style_drag(ui, studio, id);
     let n = studio.doc.frame(id).map_or(0, |f| f.shape().panels.len());
-    ui.weak(format!("{n} panel{}", if n == 1 { "" } else { "s" }));
+    ui.weak(if n == 1 {
+        t(Key::FramePanelCountSingle).to_string()
+    } else {
+        format!("{n} {}", t(Key::FramePanelCountPlural))
+    });
     if studio.frame_sel.is_some_and(|s| s.0 == id) && ui.button(Command::DeletePanel.label()).clicked() {
         commands::execute(Command::DeletePanel, studio, shell);
     }
@@ -1273,7 +1278,7 @@ mod tests {
         gesture(&mut t, &mut s, &mut sh, &[[50.0, 120.0], [550.0, 120.0]], Modifiers::NONE);
         assert_eq!(steps(&s), n);
         assert!(Arc::ptr_eq(s.doc.frame(a).unwrap(), &before));
-        assert_eq!(s.notice.as_deref(), Some("The gutter is wider than the panel"));
+        assert_eq!(s.notice.as_deref(), Some(crate::text::t(Key::NoticeGutterWiderThanPanel)));
     }
 
     /// A selected panel of a folder that is no longer active is dropped.

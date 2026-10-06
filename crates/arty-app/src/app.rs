@@ -19,7 +19,7 @@ use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
 use crate::shell::{self, FileRequest, PAGE_PRESETS, Shell, new_doc_text};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
-use crate::text::{self, Key, Lang, t};
+use crate::text::{self, Key, Lang, display_preset_name, t};
 use crate::theme::{self, ThemeKind};
 use crate::tools::{self, ToolOptions};
 
@@ -345,7 +345,7 @@ impl ArtyApp {
             let weak = |t: String| RichText::new(t).small().color(pal.text_weak);
             ui.label(RichText::new(s.tool.label()).small().strong());
             if let crate::studio::Tool::Brush(_) = s.tool {
-                ui.label(weak(format!("{} · {:.1}px", s.preset().name, s.preset().size)));
+                ui.label(weak(format!("{} · {:.1}px", display_preset_name(&s.preset().name), s.preset().size)));
             }
             ui.separator();
             ui.label(weak(format!(
@@ -372,10 +372,7 @@ impl ArtyApp {
                 if s.input.show_latency {
                     let frame_ms = ui.input(|i| i.stable_dt) * 1000.0;
                     let text = latency_text(self.canvas.pen_stats(), frame_ms, self.running_sync, s.input.display_sync);
-                    ui.label(weak(text)).on_hover_text(
-                        "in to frame: age of the newest pen sample when the canvas used it (OS timestamp to frame). \
-                         It does not include rendering, presenting or the display.",
-                    );
+                    ui.label(weak(text)).on_hover_text(t(Key::StatusLatencyTip));
                     ui.separator();
                 }
                 let st = self.shell.last_sync;

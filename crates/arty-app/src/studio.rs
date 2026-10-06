@@ -15,6 +15,7 @@ use arty_pen::PenEnd;
 use arty_render::View;
 use serde::{Deserialize, Serialize};
 
+use crate::text::{Key, t};
 use crate::tools::ToolOptions;
 use crate::tools::transform::TransformState;
 
@@ -37,7 +38,6 @@ pub enum Tool {
 
 impl Tool {
     pub fn label(self) -> &'static str {
-        use crate::text::{Key, t};
         match self {
             Tool::Brush(g) => match g {
                 BrushGroup::Pen => t(Key::ToolPen),
@@ -271,10 +271,10 @@ impl DisplaySync {
 
     pub fn label(self) -> &'static str {
         match self {
-            DisplaySync::Smooth => "Smooth",
-            DisplaySync::LowLatency => "Low latency",
-            DisplaySync::FastVsync => "Fast vsync",
-            DisplaySync::Off => "Off",
+            DisplaySync::Smooth => t(Key::DisplaySyncSmooth),
+            DisplaySync::LowLatency => t(Key::DisplaySyncLowLatency),
+            DisplaySync::FastVsync => t(Key::DisplaySyncFastVsync),
+            DisplaySync::Off => t(Key::DisplaySyncOff),
         }
     }
 
@@ -524,7 +524,7 @@ impl Studio {
     pub fn delete_preset(&mut self, i: usize) {
         let group = self.presets[i].group;
         if self.presets.iter().filter(|p| p.group == group).count() <= 1 {
-            self.notice = Some("Each tool keeps at least one sub tool".into());
+            self.notice = Some(t(Key::NoticeKeepOneSubTool).into());
             return;
         }
         self.presets.remove(i);
@@ -638,10 +638,10 @@ impl Studio {
             Err(why) => {
                 self.notice = Some(
                     match why {
-                        StrokeRefused::NotRaster => "Select a raster layer to paint",
-                        StrokeRefused::Locked => "Layer is locked",
-                        StrokeRefused::Hidden => "Layer is hidden",
-                        StrokeRefused::AlphaLocked => "Layer transparency is locked",
+                        StrokeRefused::NotRaster => t(Key::NoticeSelectRasterToPaint),
+                        StrokeRefused::Locked => t(Key::NoticeLayerLocked),
+                        StrokeRefused::Hidden => t(Key::NoticeLayerHidden),
+                        StrokeRefused::AlphaLocked => t(Key::NoticeLayerAlphaLocked),
                     }
                     .into(),
                 );
@@ -665,7 +665,7 @@ impl Studio {
             }
         }
         if self.engine.last_reshape() == Reshape::TooLong {
-            self.notice = Some("Stroke too long to reshape; kept as drawn".into());
+            self.notice = Some(t(Key::NoticeStrokeTooLong).into());
         }
     }
 
@@ -793,7 +793,7 @@ impl Studio {
         let id = self.doc.active();
         let Some(layer) = self.doc.layer(id) else { return };
         if layer.props.locked {
-            self.notice = Some("Layer is locked".into());
+            self.notice = Some(t(Key::NoticeLayerLocked).into());
             return;
         }
         if self.doc.has_selection() {
