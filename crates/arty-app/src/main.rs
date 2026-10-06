@@ -50,11 +50,18 @@ fn main() -> eframe::Result<()> {
         .with_surface_config(saved_display_sync().surface_config(fast_vsync_ok)),
         ..Default::default()
     };
-    eframe::run_native(
+    if let Err(e) = eframe::run_native(
         APP_NAME,
         options,
         Box::new(move |cc| Ok(Box::new(app::ArtyApp::new(cc, backend)))),
-    )?;
+    ) {
+        // The backend may have worked last time but not now (driver change):
+        // the next start probes again, and the crash marker skips this one.
+        if let Some(dir) = storage_dir.as_deref() {
+            gpu_setup::forget_last_working(dir);
+        }
+        return Err(e);
+    }
     // A bench hook that failed (bench.rs) quits with its own code.
     match bench::exit_code() {
         0 => Ok(()),

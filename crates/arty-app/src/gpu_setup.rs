@@ -290,6 +290,11 @@ pub fn save_last_working(storage_dir: &Path, backend: GpuBackend) {
     }
 }
 
+/// Forgets the last working backend, so the next start probes again.
+pub fn forget_last_working(storage_dir: &Path) {
+    let _ = std::fs::remove_file(last_working_path(storage_dir));
+}
+
 /// Invoked when the first frame is presented.
 pub fn on_first_frame_presented(storage_dir: Option<&Path>, backend: GpuBackend, bench_active: bool) {
     if let Some(dir) = storage_dir {
@@ -300,91 +305,78 @@ pub fn on_first_frame_presented(storage_dir: Option<&Path>, backend: GpuBackend,
     }
 }
 
-/// Attempts to initialize a single GPU backend with one instance, adapter, device, and queue.
-pub fn try_init_backend(
-    backend: GpuBackend,
-    power_preference: wgpu::PowerPreference,
-    memory_hints: wgpu::MemoryHints,
-) -> Result<egui_wgpu::WgpuSetupExisting, String> {
-    log::info!("Attempting GPU initialization with backend {:?}", backend);
+/// Checks that `backend` has a usable, non-blocklisted adapter, without
+/// creating a device: the device is created by eframe once the window exists,
+/// so the adapter is chosen with the window's surface (B021).
+pub fn probe_backend(backend: GpuBackend, power_preference: wgpu::PowerPreference) -> Result<(), String> {
+    let instance = wgpu::Instance::new(instance_descriptor(backend));
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference,
+        compatible_surface: None,
+        force_fallback_adapter: backend.force_fallback(),
+        apply_limit_buckets: false,
+    }))
+    .map_err(|e| format!("no adapter found for {backend:?}: {e}"))?;
+    let info = adapter.get_info();
+    if is_blocklisted(BLOCKLIST, &info, backend) {
+        return Err(format!("adapter {} (vendor 0x{:04x}, driver {}) is blocklisted for {backend:?}", info.name, info.vendor, info.driver_info));
+    }
+    Ok(())
+}
 
-    let instance_desc = wgpu::InstanceDescriptor {
+fn instance_descriptor(backend: GpuBackend) -> wgpu::InstanceDescriptor {
+    wgpu::InstanceDescriptor {
         backends: backend.backends(),
         flags: wgpu::InstanceFlags::from_build_config().with_env(),
         backend_options: wgpu::BackendOptions::from_env_or_default(),
         memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         display: None,
-    };
-    let instance = wgpu::Instance::new(instance_desc);
-
-    let adapter_options = wgpu::RequestAdapterOptions {
-        power_preference,
-        compatible_surface: None,
-        force_fallback_adapter: backend.force_fallback(),
-        apply_limit_buckets: false,
-    };
-
-    let adapter = pollster::block_on(instance.request_adapter(&adapter_options))
-        .map_err(|e| format!("no adapter found for {backend:?}: {e}"))?;
-
-    let info = adapter.get_info();
-    log::info!(
-        "wgpu adapter: name: {:?}, backend: {:?}, driver_info: {:?}",
-        info.name,
-        info.backend,
-        info.driver_info
-    );
-
-    if is_blocklisted(BLOCKLIST, &info, backend) {
-        return Err(format!(
-            "adapter {} (vendor 0x{:04x}, driver {}) is blocklisted for {backend:?}",
-            info.name, info.vendor, info.driver_info
-        ));
     }
-
-    let base_limits = if info.backend == wgpu::Backend::Gl {
-        wgpu::Limits::downlevel_webgl2_defaults()
-    } else {
-        wgpu::Limits::default()
-    };
-
-    let device_desc = wgpu::DeviceDescriptor {
-        label: Some("arty wgpu device"),
-        required_limits: wgpu::Limits {
-            max_texture_dimension_2d: 8192,
-            ..base_limits
-        },
-        memory_hints,
-        ..Default::default()
-    };
-
-    let (device, queue) = pollster::block_on(adapter.request_device(&device_desc))
-        .map_err(|e| format!("device creation failed for {backend:?}: {e}"))?;
-
-    Ok(egui_wgpu::WgpuSetupExisting {
-        instance,
-        adapter,
-        device,
-        queue,
-    })
 }
 
-/// Initializes GPU setup by iterating through fallback candidates.
-pub fn init_gpu(
-    storage_dir: Option<&Path>,
-    safe_gpu: bool,
-    bench_active: bool,
-) -> (egui_wgpu::WgpuSetup, GpuBackend) {
-    let last_working = if bench_active {
-        None
-    } else {
-        storage_dir.and_then(read_last_working)
-    };
-    let crashed_marker = storage_dir.and_then(read_crashed_marker);
+/// eframe's setup for one backend: it enumerates only that backend and picks
+/// the adapter by `power_preference` and the window's surface.
+pub fn create_new_setup(
+    backend: GpuBackend,
+    power_preference: wgpu::PowerPreference,
+    memory_hints: wgpu::MemoryHints,
+) -> egui_wgpu::WgpuSetup {
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    setup.instance_descriptor = instance_descriptor(backend);
+    setup.power_preference = power_preference;
+    if backend.force_fallback() {
+        // WARP: the software adapter, which request_adapter only returns when asked for a fallback.
+        setup.native_adapter_selector = Some(std::sync::Arc::new(|adapters, _surface| {
+            adapters
+                .iter()
+                .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
+                .cloned()
+                .ok_or_else(|| "no software adapter".to_owned())
+        }));
+    }
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| {
+        let base_limits = if adapter.get_info().backend == wgpu::Backend::Gl {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
+        wgpu::DeviceDescriptor {
+            label: Some("arty wgpu device"),
+            required_limits: wgpu::Limits { max_texture_dimension_2d: 8192, ..base_limits },
+            memory_hints: memory_hints.clone(),
+            ..Default::default()
+        }
+    });
+    egui_wgpu::WgpuSetup::CreateNew(setup)
+}
 
+/// Picks the first fallback candidate that has a usable adapter. The crash
+/// marker names it until the first frame is presented.
+pub fn init_gpu(storage_dir: Option<&Path>, safe_gpu: bool, bench_active: bool) -> (egui_wgpu::WgpuSetup, GpuBackend) {
+    let last_working = if bench_active { None } else { storage_dir.and_then(read_last_working) };
+    let crashed_marker = storage_dir.and_then(read_crashed_marker);
     let env_arty_gpu = std::env::var("ARTY_GPU").ok();
     let env_wgpu_backend = std::env::var("WGPU_BACKEND").ok();
-
     let candidates = resolve_backend_candidates(
         safe_gpu,
         env_arty_gpu.as_deref(),
@@ -392,26 +384,35 @@ pub fn init_gpu(
         last_working,
         crashed_marker,
     );
-
     let power_pref = resolve_power_preference();
     let memory_hints = resolve_memory_hints();
+    // A probe is a second instance before eframe's own: +325 ms on Intel DX12,
+    // +70 ms on Vulkan (B021). Skip it for a forced backend and for the one
+    // that presented a frame last time; main.rs forgets that one if eframe fails.
+    let forced = env_arty_gpu.as_deref().and_then(GpuBackend::parse).is_some()
+        || env_wgpu_backend.as_deref().and_then(GpuBackend::parse).is_some();
 
+    let mut chosen = None;
     for &backend in &candidates {
-        if let Some(dir) = storage_dir {
-            write_marker(dir, backend);
+        if forced || Some(backend) == last_working && crashed_marker != Some(backend) {
+            chosen = Some(backend);
+            break;
         }
-        match try_init_backend(backend, power_pref, memory_hints.clone()) {
-            Ok(existing) => {
-                log::info!("Successfully initialized GPU backend {:?}", backend);
-                return (egui_wgpu::WgpuSetup::Existing(existing), backend);
+        match probe_backend(backend, power_pref) {
+            Ok(()) => {
+                chosen = Some(backend);
+                break;
             }
-            Err(e) => {
-                log::warn!("GPU init failed for {backend:?}: {e}; trying next fallback");
-            }
+            Err(e) => log::warn!("GPU backend {backend:?} unusable: {e}; trying the next one"),
         }
     }
-
-    panic!("All GPU backend initialization attempts failed for candidates: {candidates:?}");
+    // Nothing probed usable: let eframe try the last candidate and report its error.
+    let backend = chosen.unwrap_or(*candidates.last().expect("candidates are never empty"));
+    if let Some(dir) = storage_dir {
+        write_marker(dir, backend);
+    }
+    log::info!("GPU backend {backend:?}");
+    (create_new_setup(backend, power_pref, memory_hints), backend)
 }
 
 #[cfg(test)]
@@ -568,21 +569,10 @@ mod tests {
     }
 
     #[test]
-    fn try_init_available_backends() {
-        let power_pref = resolve_power_preference();
-        let memory_hints = resolve_memory_hints();
-
-        println!("Testing backend initialization:");
-        for &backend in &[GpuBackend::Vulkan, GpuBackend::Dx12, GpuBackend::Gl, GpuBackend::Warp] {
-            match try_init_backend(backend, power_pref, memory_hints.clone()) {
-                Ok(setup) => {
-                    let info = setup.adapter.get_info();
-                    println!("  {:?}: OK -> {} ({:?}, driver: {})", backend, info.name, info.backend, info.driver_info);
-                }
-                Err(e) => {
-                    println!("  {:?}: FAILED -> {}", backend, e);
-                }
-            }
+    #[ignore = "needs a GPU; prints which backends probe usable"]
+    fn probe_available_backends() {
+        for b in [GpuBackend::Vulkan, GpuBackend::Dx12, GpuBackend::Gl, GpuBackend::Warp] {
+            println!("{b:?}: {:?}", probe_backend(b, wgpu::PowerPreference::LowPower));
         }
     }
 }
