@@ -1,5 +1,8 @@
 //! Stroke engine: stabilized samples → hokusai dabs → layer tiles.
 
+use std::sync::OnceLock;
+use std::time::Instant;
+
 use arty_core::{Document, Edit, LayerId, PixelRecorder, TilePixels, tile::new_tile_box};
 use hokusai::mapping::SettingValue;
 use hokusai::{BrushSetting, BrushState};
@@ -7,8 +10,7 @@ use hokusai::{BrushSetting, BrushState};
 use crate::input::{InputSample, Stabilizer};
 use crate::preset::BrushPreset;
 use crate::shape::{
-    self, DabStats, MAX_FULL_REPLAY_PX, MAX_LOGGED_SAMPLES, ShapeSample, TileClip, correct_path, correction_sigma_px,
-    seg_len, taper,
+    self, DabStats, MAX_LOGGED_SAMPLES, ShapeSample, TileClip, correct_path, correction_sigma_px, seg_len, taper,
 };
 use crate::surface::{LayerSurface, MaskCur};
 
@@ -37,11 +39,33 @@ pub enum Reshape {
     Full,
 }
 
+/// Fine-grained timing breakdown of [`StrokeEngine::end`], in microseconds.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EndBreakdown {
+    /// Time spent draining the stabilizer and finishing the live stroke, µs.
+    pub drain_us: u64,
+    /// Time spent checking and handling taps, µs.
+    pub tap_us: u64,
+    /// Time spent on post correction (`correct_path`), µs.
+    pub correct_us: u64,
+    /// Time spent building clip and bounding tail cost, µs.
+    pub clip_cost_us: u64,
+    /// Time spent restoring tiles (`PixelRecorder::restore`), µs.
+    pub restore_us: u64,
+    /// Time spent replaying dabs through the brush, µs.
+    pub replay_us: u64,
+    /// Time spent finishing the undo recording (`PixelRecorder::finish`), µs.
+    pub finish_us: u64,
+    /// Total `end()` duration, µs.
+    pub total_us: u64,
+}
+
 /// Which logged path a replay paints.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReplayPath {
     Log,
     Corrected,
+    TailCorrected,
 }
 
 pub struct StrokeEngine {
@@ -82,6 +106,40 @@ pub struct StrokeEngine {
     stats: DabStats,
     view_zoom: f32,
     reshape: Reshape,
+    budget_ms: f64,
+    injected_rate_ns_per_px: Option<f64>,
+    live_paint_ns: u64,
+    calibrated_rate_ns_per_px: f64,
+    tail_buf: Vec<ShapeSample>,
+    tail_corrected: Vec<ShapeSample>,
+    breakdown: EndBreakdown,
+}
+
+static STARTUP_RATE: OnceLock<f64> = OnceLock::new();
+
+/// Calibrate the machine's real ns per live dab pixel (< 2 ms startup cost).
+pub fn startup_rate() -> f64 {
+    *STARTUP_RATE.get_or_init(calibrate_ns_per_px)
+}
+
+fn calibrate_ns_per_px() -> f64 {
+    let mut doc = Document::new(128, 128, 350);
+    let mut engine = StrokeEngine::new_empty(64);
+    let p = BrushPreset { size: 8.0, density: 6.0, ..BrushPreset::default() };
+    engine.configure(&p, [0.1, 0.1, 0.1]);
+    let t0 = Instant::now();
+    let _ = engine.begin(&mut doc, InputSample { x: 20.0, y: 64.0, pressure: 0.8, time: 0.0, ..Default::default() });
+    for i in 1..=30 {
+        engine.feed(&mut doc, InputSample { x: 20.0 + i as f32 * 2.0, y: 64.0, pressure: 0.8, time: i as f64 * 0.005, ..Default::default() });
+    }
+    let elapsed = t0.elapsed();
+    let px = engine.dab_stats().px.max(1);
+    let rate = elapsed.as_nanos() as f64 / px as f64;
+    if rate.is_finite() && rate > 1.0 {
+        rate.clamp(5.0, 100.0)
+    } else {
+        20.0
+    }
 }
 
 impl Default for StrokeEngine {
@@ -91,13 +149,7 @@ impl Default for StrokeEngine {
 }
 
 impl StrokeEngine {
-    pub fn new() -> Self {
-        Self::with_log_capacity(MAX_LOGGED_SAMPLES)
-    }
-
-    /// An engine whose strokes log at most `n` samples; longer shaped
-    /// strokes are kept as drawn ([`Reshape::TooLong`]).
-    pub(crate) fn with_log_capacity(n: usize) -> Self {
+    fn new_empty(n: usize) -> Self {
         Self {
             brush: BrushPreset::default().to_hokusai([0.0; 3]),
             state: BrushState::default(),
@@ -127,7 +179,78 @@ impl StrokeEngine {
             stats: DabStats::default(),
             view_zoom: 1.0,
             reshape: Reshape::Skipped,
+            budget_ms: 16.0,
+            injected_rate_ns_per_px: None,
+            live_paint_ns: 0,
+            calibrated_rate_ns_per_px: 20.0,
+            tail_buf: Vec::new(),
+            tail_corrected: Vec::new(),
+            breakdown: EndBreakdown::default(),
         }
+    }
+
+    pub fn new() -> Self {
+        Self::with_log_capacity(MAX_LOGGED_SAMPLES)
+    }
+
+    /// An engine whose strokes log at most `n` samples; longer shaped
+    /// strokes are kept as drawn ([`Reshape::TooLong`]).
+    pub(crate) fn with_log_capacity(n: usize) -> Self {
+        let mut e = Self::new_empty(n);
+        e.calibrated_rate_ns_per_px = startup_rate();
+        e
+    }
+
+    /// Override the replay rate (ns/px) for deterministic tests.
+    pub fn set_replay_rate(&mut self, rate_ns_per_px: f64) {
+        self.injected_rate_ns_per_px = Some(rate_ns_per_px.max(0.1));
+    }
+
+    /// Set the pen-up replay budget in milliseconds (default 16.0 ms, 1 frame).
+    pub fn set_replay_budget(&mut self, budget_ms: f64) {
+        self.budget_ms = budget_ms.max(0.1);
+    }
+
+    /// Effective replay rate in ns per live dab pixel.
+    pub fn replay_rate(&self) -> f64 {
+        self.effective_rate_ns_per_px()
+    }
+
+    /// Pen-up replay budget in milliseconds.
+    pub fn replay_budget(&self) -> f64 {
+        self.budget_ms
+    }
+
+    /// The derived full-replay ceiling in live dab pixels.
+    pub fn full_replay_ceiling(&self) -> u64 {
+        self.full_replay_ceiling_px()
+    }
+
+    /// Fine-grained timing breakdown of the last `end()` call.
+    pub fn last_breakdown(&self) -> EndBreakdown {
+        self.breakdown
+    }
+
+    fn effective_rate_ns_per_px(&self) -> f64 {
+        if let Some(r) = self.injected_rate_ns_per_px {
+            return r;
+        }
+        if self.stats.px >= 200_000 && self.live_paint_ns > 0 {
+            let live_rate = self.live_paint_ns as f64 / self.stats.px as f64;
+            if live_rate.is_finite() && live_rate > 1.0 {
+                return live_rate.clamp(5.0, 100.0);
+            }
+        }
+        self.calibrated_rate_ns_per_px
+    }
+
+    fn full_replay_ceiling_px(&self) -> u64 {
+        let rate = self.effective_rate_ns_per_px();
+        if rate <= 0.0 || !rate.is_finite() {
+            return shape::MAX_FULL_REPLAY_PX;
+        }
+        let ns = self.budget_ms * 1_000_000.0;
+        (ns / rate) as u64
     }
 
     /// Load a preset + color. Allocates; call between strokes, not per sample.
@@ -209,8 +332,11 @@ impl StrokeEngine {
         self.last_time = s.time;
         self.painted = false;
         self.peak_pressure = s.pressure;
+        self.live_paint_ns = 0;
         let s = self.stabilizer.push(s);
+        let t0 = Instant::now();
         self.paint(doc, s, 0.0);
+        self.live_paint_ns += t0.elapsed().as_nanos() as u64;
         Ok(())
     }
 
@@ -223,7 +349,9 @@ impl StrokeEngine {
         self.last_time = s.time;
         self.peak_pressure = self.peak_pressure.max(s.pressure);
         let smoothed = self.stabilizer.push(s);
+        let t0 = Instant::now();
         self.paint(doc, smoothed, dt);
+        self.live_paint_ns += t0.elapsed().as_nanos() as u64;
     }
 
     /// Finish the stroke; returns the undo entry if anything was painted.
@@ -232,12 +360,19 @@ impl StrokeEngine {
     /// repainted from its log here ([`StrokeEngine::last_reshape`] says how).
     pub fn end(&mut self, doc: &mut Document) -> Option<Edit> {
         self.layer?;
+        let t_end_start = Instant::now();
+        self.breakdown = EndBreakdown::default();
+
         // Let a stabilized line catch up to the pen-up point.
+        let t_drain = Instant::now();
         while let Some(s) = self.stabilizer.drain_step() {
             self.paint(doc, s, 0.004);
         }
         self.painted |= self.with_surface(doc, false, |brush, state, surface| brush.finish_stroke(state, surface))
             == Some(true);
+        self.breakdown.drain_us = t_drain.elapsed().as_micros() as u64;
+
+        let t_tap = Instant::now();
         let p = self.peak_pressure;
         // With a taper, a tap whose pen skids a little paints only a faint
         // speck: the pressure ramps from 0 over the taper length, which the
@@ -251,7 +386,9 @@ impl StrokeEngine {
             if let Some(id) = self.layer
                 && let Some((grid, dirty)) = doc.paint_target(id)
             {
+                let t_r0 = Instant::now();
                 self.recorder.restore(grid, dirty, |_| true);
+                self.breakdown.restore_us += t_r0.elapsed().as_micros() as u64;
             }
             self.state = self.state0.clone();
             self.painted = false;
@@ -274,9 +411,16 @@ impl StrokeEngine {
                 brush.stroke_to(state, surface, x, y, p, 0.0, 0.0, 0.004);
             });
         }
+        self.breakdown.tap_us = t_tap.elapsed().as_micros() as u64;
+
         self.reshape = self.reshape_stroke(doc, was_tap);
         self.layer = None;
-        self.recorder.finish()
+
+        let t_fin = Instant::now();
+        let edit = self.recorder.finish();
+        self.breakdown.finish_us = t_fin.elapsed().as_micros() as u64;
+        self.breakdown.total_us = t_end_start.elapsed().as_micros() as u64;
+        edit
     }
 
     /// Abort the stroke, restoring the layer as it was.
@@ -307,10 +451,14 @@ impl StrokeEngine {
         if self.log_overflow {
             return Reshape::TooLong;
         }
-        let affordable = self.stats.px <= MAX_FULL_REPLAY_PX;
+        let ceiling = self.full_replay_ceiling_px();
+        let affordable = self.stats.px <= ceiling;
+        let sigma = if corr > 0 { correction_sigma_px(corr, self.view_zoom) } else { 0.0 };
+        let mut shift = 0.0f32;
         if corr > 0 {
-            let sigma = correction_sigma_px(corr, self.view_zoom);
-            let shift = correct_path(&self.log, sigma, &mut self.corrected, &mut self.scratch);
+            let t_c0 = Instant::now();
+            shift = correct_path(&self.log, sigma, &mut self.corrected, &mut self.scratch);
+            self.breakdown.correct_us += t_c0.elapsed().as_micros() as u64;
             if shift < 0.05 && tout == 0.0 {
                 return Reshape::Skipped;
             }
@@ -321,7 +469,7 @@ impl StrokeEngine {
             if tout == 0.0 {
                 return Reshape::TooLong;
             }
-            // Too costly to repaint whole: still give the raw line its exit taper.
+            // Too costly to repaint whole: still give the raw line its exit taper and end correction.
         }
         if self.blending {
             // Smudge reads the canvas, so a clipped replay would differ.
@@ -331,41 +479,76 @@ impl StrokeEngine {
             self.replay(doc, ReplayPath::Log, false);
             return Reshape::Full;
         }
-        // Tail: only samples within `tout` of the end change, so only the
-        // tiles their dabs reach need repainting.
+        // Tail: only samples within the tail reach change.
+        // For taper only: samples within `tout`.
+        // If correction is active (`corr > 0` and `shift >= 0.05`),
+        // the tail reach must also cover the smoothing window (`3.0 * sigma`).
+        let tail_reach = if corr > 0 && shift >= 0.05 {
+            tout.max(3.0 * sigma)
+        } else {
+            tout
+        };
         let mut s = 0.0f32;
         let mut i0 = self.log.len() - 1;
         for i in 0..self.log.len() {
             if i > 0 {
                 s += seg_len(&self.log[i - 1], &self.log[i]);
             }
-            if total - s < tout {
+            if total - s < tail_reach {
                 i0 = i;
                 break;
             }
         }
-        self.clip.build(&self.log[i0.saturating_sub(1)..], self.max_radius);
+        let use_tail_correction = corr > 0 && shift >= 0.05 && self.log.len() - i0 >= 3;
+        if use_tail_correction {
+            let t_c0 = Instant::now();
+            correct_path(&self.log[i0..], sigma, &mut self.tail_corrected, &mut self.scratch);
+            self.breakdown.correct_us += t_c0.elapsed().as_micros() as u64;
+
+            self.tail_buf.clear();
+            self.tail_buf.extend_from_slice(&self.log[..i0]);
+            self.tail_buf.extend_from_slice(&self.tail_corrected);
+
+            let t_cl0 = Instant::now();
+            self.clip.build(&self.tail_buf[i0.saturating_sub(1)..], self.max_radius);
+            self.breakdown.clip_cost_us += t_cl0.elapsed().as_micros() as u64;
+        } else {
+            let t_cl0 = Instant::now();
+            self.clip.build(&self.log[i0.saturating_sub(1)..], self.max_radius);
+            self.breakdown.clip_cost_us += t_cl0.elapsed().as_micros() as u64;
+        }
         if self.clip.is_empty() {
             return Reshape::TooLong;
         }
         // A clipped replay still renders every dab that reaches the clip in
         // full. That is bounded by the live cost; when even that is over
         // budget (huge brushes), count the clipped cost first without painting.
-        if !affordable && self.tail_cost() > MAX_FULL_REPLAY_PX {
-            return Reshape::TooLong;
+        if !affordable && self.max_radius > 64.0 {
+            let t_cc0 = Instant::now();
+            let tc = self.tail_cost();
+            self.breakdown.clip_cost_us += t_cc0.elapsed().as_micros() as u64;
+            if tc > ceiling {
+                return Reshape::TooLong;
+            }
         }
         let mut tiles = 0u32;
         if let Some(id) = self.layer
             && let Some((grid, dirty)) = doc.paint_target(id)
         {
+            let t_r0 = Instant::now();
             let clip = &self.clip;
             self.recorder.restore(grid, dirty, |c| {
                 let hit = clip.contains(c);
                 tiles += hit as u32;
                 hit
             });
+            self.breakdown.restore_us += t_r0.elapsed().as_micros() as u64;
         }
-        self.replay(doc, ReplayPath::Log, true);
+        if use_tail_correction {
+            self.replay(doc, ReplayPath::TailCorrected, true);
+        } else {
+            self.replay(doc, ReplayPath::Log, true);
+        }
         Reshape::Tail { tiles }
     }
 
@@ -377,22 +560,28 @@ impl StrokeEngine {
         if !clipped && let Some(id) = self.layer
             && let Some((grid, dirty)) = doc.paint_target(id)
         {
+            let t_r0 = Instant::now();
             self.recorder.restore(grid, dirty, |_| true);
+            self.breakdown.restore_us += t_r0.elapsed().as_micros() as u64;
         }
         // Moved out (not copied) so painting can borrow `self`.
         let buf = std::mem::take(match path {
             ReplayPath::Log => &mut self.log,
             ReplayPath::Corrected => &mut self.corrected,
+            ReplayPath::TailCorrected => &mut self.tail_buf,
         });
+        let t_rep0 = Instant::now();
         let (tin, tout, _) = self.shape;
         for_each_tapered(&buf, tin, tout, |s, p| {
             self.stroke(doc, s, p, clipped);
         });
+        self.with_surface(doc, clipped, |brush, state, surface| brush.finish_stroke(state, surface));
+        self.breakdown.replay_us += t_rep0.elapsed().as_micros() as u64;
         match path {
             ReplayPath::Log => self.log = buf,
             ReplayPath::Corrected => self.corrected = buf,
+            ReplayPath::TailCorrected => self.tail_buf = buf,
         }
-        self.with_surface(doc, clipped, |brush, state, surface| brush.finish_stroke(state, surface));
     }
 
     /// Dab pixels a clipped replay of the log would render: the brush runs
