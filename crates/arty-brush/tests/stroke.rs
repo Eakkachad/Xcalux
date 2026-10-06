@@ -730,3 +730,111 @@ fn scribble_in_place_is_not_a_tap() {
     // 30% dabs looping in place build up far more ink than one dot.
     assert!(scribble > dot * 2, "the scribble collapsed into the tap dot ({scribble} vs {dot})");
 }
+
+#[test]
+fn deterministic_budget_selection() {
+    let mut doc = Document::new(512, 512, 350);
+    let mut engine = StrokeEngine::new();
+    let pen = arty_brush::BrushPreset { size: 8.0, ..shaped("G-Pen", 30.0, 80.0, 3) };
+    engine.configure(&pen, [0.0; 3]);
+
+    // Rate = 200.0 ns/px, budget = 16.0 ms -> ceiling = 80,000 px.
+    engine.set_replay_rate(200.0);
+    engine.set_replay_budget(16.0);
+    assert_eq!(engine.full_replay_ceiling(), 80_000);
+
+    // Draw a short stroke that stays under 80k px (live ~15k dab px).
+    let short_path: Vec<_> = (0..=30).map(|i| (50.0 + i as f32 * 3.0, 100.0, 0.8)).collect();
+    draw(&mut engine, &mut doc, &short_path);
+    assert_eq!(engine.last_reshape(), Reshape::Full);
+
+    // Draw a longer stroke that exceeds 80k px (live ~88k dab px).
+    let long_path: Vec<_> = (0..=350).map(|i| (50.0 + i as f32 * 1.2, 150.0 + 10.0 * (i as f32 * 0.1).sin(), 0.8)).collect();
+    draw(&mut engine, &mut doc, &long_path);
+    assert!(matches!(engine.last_reshape(), Reshape::Tail { .. }));
+
+    // Now expand budget to 80.0 ms -> ceiling = 400,000 px.
+    engine.set_replay_budget(80.0);
+    assert_eq!(engine.full_replay_ceiling(), 400_000);
+    draw(&mut engine, &mut doc, &long_path);
+    assert_eq!(engine.last_reshape(), Reshape::Full);
+}
+
+#[test]
+fn tail_replay_applies_correction_and_taper() {
+    let mut doc = Document::new(512, 512, 350);
+    let mut engine = StrokeEngine::new();
+    let pen = arty_brush::BrushPreset { size: 8.0, ..shaped("G-Pen", 0.0, 80.0, 4) };
+    engine.configure(&pen, [0.0; 3]);
+    // Force Tail replay by setting a very tight budget (0.1 ms).
+    engine.set_replay_budget(0.1);
+    engine.set_replay_rate(100.0);
+
+    // Path has steady straight line, then jitter in the last 60 px.
+    let mut path = Vec::new();
+    for i in 0..100 {
+        path.push((50.0 + i as f32 * 2.0, 100.0, 0.8));
+    }
+    for i in 100..=130 {
+        let y = if i % 2 == 0 { 102.5 } else { 97.5 };
+        path.push((50.0 + i as f32 * 2.0, y, 0.8));
+    }
+    draw(&mut engine, &mut doc, &path);
+    assert!(matches!(engine.last_reshape(), Reshape::Tail { .. }));
+
+    // Check that jitter at the tail is smoothed compared to raw tremor.
+    let v_tail = variance(&centroids(&doc, 250..300));
+    assert!(v_tail < 0.8, "tail should be smoothed by post-correction: {v_tail}");
+
+    // Check that end tapers out (alpha drops to 0 at the end).
+    let a_end = peak_alpha(&doc, 316, 100);
+    let a_mid = peak_alpha(&doc, 150, 100);
+    assert!(a_mid > 20000);
+    assert_eq!(a_end, 0, "stroke end must taper out");
+}
+
+#[test]
+fn bit_identity_of_tail_speedups() {
+    // Tail replay of plain tapered strokes (no correction) must remain
+    // 100% bit-identical to live before the tail and exact pre-tapered at the tail.
+    for seed in [1u32, 42, 999] {
+        let mut s = seed;
+        let mut rand = || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        };
+        let n = 80 + (rand() % 60) as usize;
+        let mut path = Vec::with_capacity(n);
+        for i in 0..n {
+            let x = 40.0 + i as f32 * 2.5;
+            let y = 100.0 + ((rand() % 100) as f32 / 50.0 - 1.0) * 3.0;
+            let p = 0.5 + ((rand() % 100) as f32 / 200.0);
+            path.push((x, y, p));
+        }
+
+        let mut doc1 = Document::new(512, 256, 350);
+        let mut doc2 = Document::new(512, 256, 350);
+        let mut e1 = StrokeEngine::new();
+        let mut e2 = StrokeEngine::new();
+        let pen = arty_brush::BrushPreset { size: 8.0, ..shaped("G-Pen", 20.0, 60.0, 0) };
+        e1.configure(&pen, [0.1, 0.2, 0.3]);
+        e2.configure(&pen, [0.1, 0.2, 0.3]);
+        // e1 unbudgeted, e2 tight budget (both take Tail since corr=0 and tout>0).
+        e1.set_replay_budget(100.0);
+        e2.set_replay_budget(1.0);
+        draw(&mut e1, &mut doc1, &path);
+        draw(&mut e2, &mut doc2, &path);
+        assert_eq!(differing_pixels(&doc1, &doc2), 0, "seed {seed} differed");
+    }
+}
+
+#[test]
+fn startup_calibration_is_fast() {
+    let t0 = std::time::Instant::now();
+    let rate = arty_brush::engine::startup_rate();
+    let elapsed = t0.elapsed();
+    assert!((5.0..=100.0).contains(&rate), "calibrated rate {rate} out of bounds");
+    assert!(elapsed.as_millis() < 5, "startup calibration must take < 5 ms: {:?}", elapsed);
+}
