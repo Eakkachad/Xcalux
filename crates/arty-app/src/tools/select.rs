@@ -293,6 +293,16 @@ impl SelectTool {
         if a.key == Some(key) {
             return;
         }
+        let carrying = match studio.ants_carry {
+            Some((k, _)) => k == key,
+            None => false,
+        };
+        if !carrying {
+            a.key = None;
+            a.contours = None;
+            a.geom = None;
+            a.bboxes = Default::default();
+        }
         if a.pending.as_ref().is_none_or(|(k, _)| *k != key) {
             let (tx, rx) = mpsc::channel();
             let (sel, w, h) = (studio.doc.selection().clone(), studio.doc.width(), studio.doc.height());
@@ -1177,6 +1187,39 @@ mod tests {
         // Undo is a new selection: no carry.
         studio.undo();
         assert_eq!(ants_matrix(&st.ants, &studio, ORIGIN), view);
+    }
+
+    #[test]
+    fn undo_selection_transform_invalidates_ants_immediately() {
+        let (mut studio, _, mut st) = setup(Tool::Select);
+        moved_session(&mut studio);
+        st.sync_ants(&studio, true);
+        studio.commit_transform();
+        assert!(studio.ants_carry.is_some(), "carry during background extraction of commit");
+        st.sync_ants(&studio, true);
+        assert!(st.ants.contours.is_some());
+        assert_eq!(st.ants.key, Some((studio.doc_epoch, studio.doc.selection_rev())));
+
+        // Undo the transform: carry must be cleared and cached outline invalidated in the same frame.
+        studio.undo();
+        assert!(studio.ants_carry.is_none(), "undo must clear ants_carry");
+        // Non-blocking sync (first frame after undo) must not retain stale moved outline.
+        st.sync_ants(&studio, false);
+        assert!(st.ants.contours.is_none(), "stale moved contours must be invalidated on undo");
+        assert!(st.ants.geom.is_none(), "stale moved geometry must be invalidated on undo");
+        // Waiting for extraction restores the pre-transform outline.
+        st.sync_ants(&studio, true);
+        assert!(st.ants.contours.is_some());
+        assert_eq!(st.ants.key, Some((studio.doc_epoch, studio.doc.selection_rev())));
+
+        // Redo the transform: carry cleared and outline invalidated on redo as well.
+        studio.redo();
+        assert!(studio.ants_carry.is_none(), "redo must not have stale ants_carry");
+        st.sync_ants(&studio, false);
+        assert!(st.ants.contours.is_none(), "stale contours must be invalidated on redo");
+        assert!(st.ants.geom.is_none(), "stale geometry must be invalidated on redo");
+        st.sync_ants(&studio, true);
+        assert!(st.ants.contours.is_some());
     }
 
     #[test]
