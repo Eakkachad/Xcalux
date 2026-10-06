@@ -3,11 +3,37 @@
 
 use arty_core::{LayerId, PageSetup, TILE_SIZE, TilePixels};
 use arty_render::SyncStats;
+use serde::{Deserialize, Serialize};
 
 use crate::commands::SelModify;
 use crate::files::AutosaveSettings;
 use crate::text::{self, Key, Lang, t};
 use crate::theme::ThemeKind;
+
+/// Simple: few tools with labels, one panel column, big targets (a fresh
+/// profile starts here). Studio: every panel, Clip Studio-like.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UiMode {
+    #[default]
+    Simple,
+    Studio,
+}
+
+impl UiMode {
+    pub const ALL: [UiMode; 2] = [UiMode::Simple, UiMode::Studio];
+
+    /// Mode of a profile saved before modes existed: its users know Studio.
+    pub fn existing_profile() -> UiMode {
+        UiMode::Studio
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiMode::Simple => t(Key::ModeSimple),
+            UiMode::Studio => t(Key::ModeStudio),
+        }
+    }
+}
 
 pub struct NewDocForm {
     pub width: u32,
@@ -113,6 +139,7 @@ impl Default for NewDocForm {
 pub struct Shell {
     pub theme: ThemeKind,
     pub theme_dirty: bool,
+    pub ui_mode: UiMode,
     pub lang: Lang,
     pub canvas_center_px: [f32; 2],
     pub cursor_doc: Option<[f32; 2]>,
@@ -144,6 +171,7 @@ impl Shell {
         Self {
             theme,
             theme_dirty: true,
+            ui_mode: UiMode::Simple,
             lang: text::current_lang(),
             canvas_center_px: [0.0; 2],
             cursor_doc: None,
@@ -161,6 +189,14 @@ impl Shell {
             page_setup_open: false,
             sel_dialog: None,
             new_doc_page: None,
+        }
+    }
+
+    /// Target sizes differ per mode, so the style is applied again.
+    pub fn set_ui_mode(&mut self, mode: UiMode) {
+        if self.ui_mode != mode {
+            self.ui_mode = mode;
+            self.theme_dirty = true;
         }
     }
 

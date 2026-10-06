@@ -6,7 +6,9 @@ use egui::{Color32, CornerRadius, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2, 
 use egui_phosphor::regular as icon;
 
 use super::section;
+use crate::shell::UiMode;
 use crate::studio::{Rgb, Studio, hsv_to_rgb};
+use crate::theme;
 
 fn to32(c: Rgb) -> Color32 {
     Color32::from_rgb((c[0] * 255.0).round() as u8, (c[1] * 255.0).round() as u8, (c[2] * 255.0).round() as u8)
@@ -188,7 +190,7 @@ pub fn swatches_ui(ui: &mut egui::Ui, studio: &mut Studio) {
     section(ui, t(Key::SectionColorSet));
     let mut pick = None;
     let mut remove = None;
-    let cell = 20.0;
+    let cell = theme::swatch_size(UiMode::Studio);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::splat(3.0);
         for (i, &c) in studio.color.swatches.iter().enumerate() {
@@ -211,8 +213,22 @@ pub fn swatches_ui(ui: &mut egui::Ui, studio: &mut Studio) {
             }
         }
     });
+    if let Some(i) = remove {
+        studio.color.swatches.remove(i);
+    }
+    if let Some(c) = pick {
+        studio.set_main_color(c);
+    }
     ui.add_space(8.0);
+    recent_ui(ui, studio, UiMode::Studio);
+}
+
+/// Recently used colors; chips are full click targets in Simple.
+pub fn recent_ui(ui: &mut egui::Ui, studio: &mut Studio, mode: UiMode) {
+    use crate::text::{t, Key};
     section(ui, t(Key::SectionHistory));
+    let cell = theme::swatch_size(mode);
+    let mut pick = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::splat(3.0);
         for &c in &studio.color.recent {
@@ -226,9 +242,6 @@ pub fn swatches_ui(ui: &mut egui::Ui, studio: &mut Studio) {
             ui.weak(t(Key::ColorHistoryEmpty));
         }
     });
-    if let Some(i) = remove {
-        studio.color.swatches.remove(i);
-    }
     if let Some(c) = pick {
         studio.set_main_color(c);
     }
