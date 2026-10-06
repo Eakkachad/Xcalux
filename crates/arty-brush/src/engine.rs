@@ -840,6 +840,70 @@ mod tests {
         assert_eq!(engine.last_reshape(), Reshape::Full);
     }
 
+    /// Fed in small chunks, each processed by the worker before the next one
+    /// arrives (as at a real pen rate), the stroke is rendered while the pen is
+    /// down and still equals the synchronous replay bit for bit.
+    #[test]
+    fn zero_wait_incremental_matches_sync_replay() {
+        let preset = |name: &str| default_presets().into_iter().find(|p| p.name == name).unwrap();
+        let g_pen = BrushPreset { stabilizer: 0, ..preset("G-Pen") };
+        let cases = [
+            (BrushPreset { taper_out: 80.0, post_correction: 3, ..g_pen.clone() }, 1),
+            (BrushPreset { taper_out: 60.0, post_correction: 0, ..g_pen.clone() }, 2),
+            (BrushPreset { taper_out: 0.0, post_correction: 6, ..g_pen.clone() }, 5),
+            (BrushPreset { size: 24.0, taper_in: 0.0, taper_out: 30.0, post_correction: 10, ..g_pen }, 3),
+            (preset("Inking Pen"), 4),
+        ];
+        // Wobble, a zigzag (its smoothed path is far shorter than the raw one) and a pause.
+        let mut pts = Vec::new();
+        for i in 0..420 {
+            let t = i as f32;
+            let (x, y) = match i {
+                0..150 => (40.0 + 2.0 * t, 120.0 + 12.0 * (t / 9.0).sin()),
+                150..170 => (340.0, 120.0),
+                170..330 => (340.0 - 0.5 * (t - 170.0), 200.0 + if i % 2 == 0 { 4.0 } else { -4.0 }),
+                _ => (260.0 - 2.5 * (t - 330.0), 200.0 + 1.5 * (t - 330.0)),
+            };
+            let pressure = 0.3 + 0.6 * (t / 23.0).sin().abs();
+            pts.push(InputSample { x, y, pressure, time: i as f64 / 240.0, ..Default::default() });
+        }
+        for (p, chunk) in cases {
+            let mut doc_sync = Document::new(512, 512, 350);
+            let mut doc_spec = Document::new(512, 512, 350);
+            let mut e_sync = StrokeEngine::new();
+            e_sync.set_speculative_replay(false);
+            e_sync.configure(&p, [0.2, 0.5, 0.8]);
+            let mut e_spec = StrokeEngine::new();
+            e_spec.configure(&p, [0.2, 0.5, 0.8]);
+            e_sync.begin(&mut doc_sync, pts[0]).unwrap();
+            e_spec.begin(&mut doc_spec, pts[0]).unwrap();
+            let mut rendered = 0;
+            for c in pts[1..].chunks(chunk) {
+                for &s in c {
+                    e_sync.feed(&mut doc_sync, s);
+                    e_spec.feed(&mut doc_spec, s);
+                }
+                rendered = e_spec.worker.wait_processed(e_spec.log.len());
+            }
+            // Most of the stroke was rendered before pen-up (steps: stations or samples).
+            let (_, tout, corr) = e_spec.shape;
+            let steps = if corr > 0 { e_spec.arc / shape::station_step(correction_sigma_px(corr, 1.0)) } else { 400.0 };
+            assert!(rendered as f32 > 0.6 * steps, "{}: only {rendered} of ~{steps} steps rendered live", p.name);
+            e_sync.end(&mut doc_sync);
+            e_spec.end(&mut doc_spec);
+            // Taper only replays the tail synchronously, which is exact too.
+            assert!(matches!(e_sync.last_reshape(), Reshape::Full | Reshape::Tail { .. }));
+            assert_eq!(e_spec.last_reshape(), Reshape::Full);
+            assert!(e_spec.worker_cpu_time_us() > 0, "{}: the worker result was not used", p.name);
+            let (a, b) = (tiles(&doc_spec), tiles(&doc_sync));
+            assert_eq!(a.len(), b.len(), "{} (taper {tout}, correction {corr})", p.name);
+            for ((ca, ta), (cb, tb)) in a.iter().zip(&b) {
+                assert_eq!(ca, cb);
+                assert!(**ta == **tb, "{} (taper {tout}, correction {corr}, chunk {chunk}): tile {ca:?} differs", p.name);
+            }
+        }
+    }
+
     #[test]
     fn view_zoom_is_sanitized() {
         let mut e = StrokeEngine::new();

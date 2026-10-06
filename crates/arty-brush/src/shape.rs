@@ -84,16 +84,6 @@ pub fn correction_taps(sigma_px: f32, h: f32) -> usize {
     }
 }
 
-/// How far from the stroke end (in document arc length px) samples remain unstable.
-/// Samples farther than this from the current live end are strictly final.
-#[inline]
-pub fn unstable_reach(taper_out: f32, sigma_px: f32) -> f32 {
-    let h = station_step(sigma_px);
-    let taps = correction_taps(sigma_px, h);
-    let corr_reach = taps as f32 * h;
-    taper_out.max(corr_reach)
-}
-
 #[inline]
 fn point_at_arc(src: &[ShapeSample], s: f32) -> [f32; 2] {
     let s = s.max(0.0);
@@ -113,7 +103,6 @@ fn point_at_arc(src: &[ShapeSample], s: f32) -> [f32; 2] {
     }
 }
 
-
 /// Resample `src` at uniform arc spacing, then Gaussian-smooth x/y. Returns the largest
 /// displacement the smoothing applied (px). Reuses `out`/`scratch`; no allocation once warm.
 ///
@@ -123,115 +112,248 @@ fn point_at_arc(src: &[ShapeSample], s: f32) -> [f32; 2] {
 pub fn correct_path(src: &[ShapeSample], sigma_px: f32, out: &mut Vec<ShapeSample>, scratch: &mut Vec<[f32; 2]>) -> f32 {
     out.clear();
     scratch.clear();
-    let total: f32 = src.windows(2).map(|w| seg_len(&w[0], &w[1])).sum();
+    let mut c = Corrector::new(sigma_px);
+    c.take(src);
+    let total = c.total;
     // NaN coordinates (a broken driver) also take the copy path.
     if src.len() < 3 || total.is_nan() || total < 0.5 {
         out.extend_from_slice(src);
         return 0.0;
     }
-    let sigma = if sigma_px.is_finite() { sigma_px.max(0.0) } else { 0.0 };
-    let mut h = (sigma / 3.0).clamp(0.5, 4.0);
+    let mut h = station_step(sigma_px);
     if total / h + 2.0 > MAX_CORRECTED_SAMPLES as f32 {
         h = total / (MAX_CORRECTED_SAMPLES - 2) as f32;
     }
+    c.set_step(h);
+    c.complete(src, out, scratch);
+    c.shift
+}
 
-    // Fixed stations s_j = j·h up to total, then the exact last point. h is fixed
-    // so existing stations s_j never shift as new samples arrive, making the stable
-    // prefix invariant to future points!
-    let num_steps = ((total / h).floor() as usize).clamp(1, MAX_CORRECTED_SAMPLES - 2);
-    let last = src[src.len() - 1];
-    // Walk the source polyline once. `seg` is the current segment's start
-    // index; `seg_s`/`seg_t` its arc length and cumulative time (excluding
-    // the first sample's dt, which `out[0]` keeps).
-    let (mut seg, mut seg_s, mut seg_t) = (0usize, 0.0f32, 0.0f64);
-    let mut prev_t = 0.0f64;
-    for j in 0..=num_steps {
-        let s = (j as f32 * h).min(total);
-        let mut len = seg_len(&src[seg], &src[seg + 1]);
-        while seg + 2 < src.len() && seg_s + len < s {
-            seg_s += len;
-            seg_t += src[seg + 1].dt;
-            seg += 1;
-            len = seg_len(&src[seg], &src[seg + 1]);
+/// [`correct_path`] as a running computation, so the speculative worker can
+/// correct the log as it grows with the very arithmetic of the one-shot call:
+/// stations `s_j = j·h` never move, a station is resampled once the log
+/// reaches it and smoothed once its whole kernel support is resampled.
+pub(crate) struct Corrector {
+    sigma: f32,
+    h: f32,
+    /// Kernel half-width (stations) and its normalized weights.
+    taps: usize,
+    w: [f32; MAX_TAPS],
+    /// Samples taken, their arc length and their time after the first, summed in order.
+    taken: usize,
+    total: f32,
+    t_end: f64,
+    /// The resampling walk: current segment start, its arc length and
+    /// cumulative time (excluding the first sample's dt, which station 0
+    /// keeps); the previous station's time.
+    seg: usize,
+    seg_s: f32,
+    seg_t: f64,
+    prev_t: f64,
+    /// Stations before this one are final (station 0 is never smoothed).
+    smoothed: usize,
+    shift: f32,
+}
+
+impl Corrector {
+    /// Starts with step [`station_step`], the step of every log short enough to correct.
+    pub(crate) fn new(sigma_px: f32) -> Self {
+        let sigma = if sigma_px.is_finite() { sigma_px.max(0.0) } else { 0.0 };
+        let mut c = Self {
+            sigma,
+            h: 0.0,
+            taps: 0,
+            w: [0.0; MAX_TAPS],
+            taken: 0,
+            total: 0.0,
+            t_end: -0.0,
+            seg: 0,
+            seg_s: 0.0,
+            seg_t: 0.0,
+            prev_t: 0.0,
+            smoothed: 1,
+            shift: 0.0,
+        };
+        c.set_step(station_step(sigma_px));
+        c
+    }
+
+    fn set_step(&mut self, h: f32) {
+        self.h = h;
+        self.set_taps(if self.sigma > 0.0 { ((3.0 * self.sigma / h).ceil() as usize).min(MAX_TAPS / 2) } else { 0 });
+    }
+
+    fn set_taps(&mut self, taps: usize) {
+        self.taps = taps;
+        if taps == 0 {
+            return;
         }
-        let (a, b) = (&src[seg], &src[seg + 1]);
-        let u = if len > 0.0 { ((s - seg_s) / len).clamp(0.0, 1.0) } else { 0.0 };
+        let (sigma, h) = (self.sigma, self.h);
+        let mut wsum = 0.0f32;
+        for (k, wk) in self.w.iter_mut().enumerate().take(taps + 1) {
+            let d = k as f32 * h;
+            *wk = (-(d * d) / (2.0 * sigma * sigma)).exp();
+            wsum += if k == 0 { *wk } else { 2.0 * *wk };
+        }
+        for wk in &mut self.w[..=taps] {
+            *wk /= wsum;
+        }
+    }
+
+    /// How many leading stations of `out` no later sample can change.
+    pub(crate) fn final_len(&self, out: &[ShapeSample]) -> usize {
+        self.smoothed.min(out.len())
+    }
+
+    /// Add the samples `src` gained since the last call to the running sums.
+    fn take(&mut self, src: &[ShapeSample]) {
+        for i in self.taken.max(1)..src.len() {
+            self.total += seg_len(&src[i - 1], &src[i]);
+            self.t_end += src[i].dt;
+        }
+        self.taken = self.taken.max(src.len());
+    }
+
+    /// Take the samples `src` (the log so far) gained, then resample and smooth
+    /// every station no later sample can change. False once `src` can no longer
+    /// be corrected with this step (NaN, or so long that [`correct_path`] picks another).
+    pub(crate) fn advance(&mut self, src: &[ShapeSample], out: &mut Vec<ShapeSample>, scratch: &mut Vec<[f32; 2]>) -> bool {
+        self.take(src);
+        if self.total.is_nan() || self.total / self.h + 2.0 > MAX_CORRECTED_SAMPLES as f32 {
+            return false;
+        }
+        if src.len() < 3 {
+            return true;
+        }
+        // Stations the log already reaches sit at the same s_j in the final path.
+        let reach = (self.total / self.h).floor() as usize;
+        while out.len() <= reach && out.len() as f32 * self.h <= self.total {
+            self.station(src, out, scratch);
+        }
+        // Smoothed once the kernel support is resampled, short of the last
+        // station (where the final path may put the lift-off point).
+        while self.taps > 0 && self.smoothed + self.taps + 2 <= out.len() {
+            self.smooth(self.smoothed, src, out, scratch);
+            self.smoothed += 1;
+        }
+        true
+    }
+
+    /// Complete the path for the whole log `src`; false (and nothing done) if
+    /// [`correct_path`] would not correct it with this step.
+    pub(crate) fn finish(&mut self, src: &[ShapeSample], out: &mut Vec<ShapeSample>, scratch: &mut Vec<[f32; 2]>) -> bool {
+        self.take(src);
+        let exact = self.taken >= 3 && self.total >= 0.5 && self.total / self.h + 2.0 <= MAX_CORRECTED_SAMPLES as f32;
+        if exact {
+            self.complete(src, out, scratch);
+        }
+        exact
+    }
+
+    /// The remaining stations, the exact lift-off point and total time, and
+    /// the smoothing near the end.
+    fn complete(&mut self, src: &[ShapeSample], out: &mut Vec<ShapeSample>, scratch: &mut Vec<[f32; 2]>) {
+        // Fixed stations s_j = j·h up to total, then the exact last point. h is fixed
+        // so existing stations s_j never shift as new samples arrive, making the stable
+        // prefix invariant to future points!
+        let num_steps = ((self.total / self.h).floor() as usize).clamp(1, MAX_CORRECTED_SAMPLES - 2);
+        while out.len() <= num_steps {
+            self.station(src, out, scratch);
+        }
+        let last = src[src.len() - 1];
+        let rest = (self.t_end - self.prev_t).max(0.0);
+        if (num_steps as f32 * self.h) < self.total - 1e-4 {
+            out.push(ShapeSample { dt: rest, ..last });
+            scratch.push([last.x, last.y]);
+        } else if let Some(last_out) = out.last_mut() {
+            last_out.dt += rest;
+        }
+        // Endpoints stay exactly where the pen touched and lifted.
+        if let (Some(end), Some(p)) = (out.last_mut(), scratch.last_mut()) {
+            (end.x, end.y) = (last.x, last.y);
+            *p = [last.x, last.y];
+        }
+
+        let n = out.len();
+        let taps = self.taps.min(n - 1);
+        if taps == 0 {
+            return;
+        }
+        if taps != self.taps {
+            // Only a path too short to have smoothed anything yet.
+            self.set_taps(taps);
+        }
+        for j in self.smoothed..n - 1 {
+            self.smooth(j, src, out, scratch);
+        }
+        self.smoothed = self.smoothed.max(n - 1);
+    }
+
+    /// Resample the next station, walking the source polyline on from the last one.
+    fn station(&mut self, src: &[ShapeSample], out: &mut Vec<ShapeSample>, scratch: &mut Vec<[f32; 2]>) {
+        let j = out.len();
+        let s = (j as f32 * self.h).min(self.total);
+        let mut len = seg_len(&src[self.seg], &src[self.seg + 1]);
+        while self.seg + 2 < src.len() && self.seg_s + len < s {
+            self.seg_s += len;
+            self.seg_t += src[self.seg + 1].dt;
+            self.seg += 1;
+            len = seg_len(&src[self.seg], &src[self.seg + 1]);
+        }
+        let (a, b) = (&src[self.seg], &src[self.seg + 1]);
+        let u = if len > 0.0 { ((s - self.seg_s) / len).clamp(0.0, 1.0) } else { 0.0 };
         let lerp = |p: f32, q: f32| p + (q - p) * u;
-        let t = seg_t + b.dt * u as f64;
-        let dt = if j == 0 { src[0].dt } else { t - prev_t };
-        prev_t = t;
-        out.push(ShapeSample {
+        let t = self.seg_t + b.dt * u as f64;
+        let dt = if j == 0 { src[0].dt } else { t - self.prev_t };
+        self.prev_t = t;
+        let mut o = ShapeSample {
             x: lerp(a.x, b.x),
             y: lerp(a.y, b.y),
             pressure: lerp(a.pressure, b.pressure),
             tilt_x: lerp(a.tilt_x, b.tilt_x),
             tilt_y: lerp(a.tilt_y, b.tilt_y),
             dt,
-        });
-    }
-    let t_end: f64 = src[1..].iter().map(|s| s.dt).sum();
-    if (num_steps as f32 * h) < total - 1e-4 {
-        out.push(ShapeSample { dt: (t_end - prev_t).max(0.0), ..last });
-    } else if let Some(last_out) = out.last_mut() {
-        last_out.dt += (t_end - prev_t).max(0.0);
-    }
-    if let Some(first) = out.first_mut() {
-        let s0 = src[0];
-        (first.x, first.y) = (s0.x, s0.y);
-    }
-    if let Some(end) = out.last_mut() {
-        (end.x, end.y) = (last.x, last.y);
-    }
-    scratch.extend(out.iter().map(|s| [s.x, s.y]));
-
-    let n = out.len();
-    let taps = if sigma > 0.0 { ((3.0 * sigma / h).ceil() as usize).min(MAX_TAPS / 2).min(n - 1) } else { 0 };
-    if taps == 0 {
-        return 0.0;
-    }
-    let mut w = [0.0f32; MAX_TAPS];
-    let mut wsum = 0.0f32;
-    for (k, wk) in w.iter_mut().enumerate().take(taps + 1) {
-        let d = k as f32 * h;
-        *wk = (-(d * d) / (2.0 * sigma * sigma)).exp();
-        wsum += if k == 0 { *wk } else { 2.0 * *wk };
-    }
-    for wk in &mut w[..=taps] {
-        *wk /= wsum;
-    }
-    // Odd reflection: p[-i] = 2p₀ − p[i], and for points past the end, reflect
-    // arc length across total: s_refl = 2*total - i*h, ensuring odd reflection
-    // continues straight lines exactly even when total is not an integer multiple of h.
-    let at = |idx: isize| -> [f32; 2] {
-        let s = idx as f32 * h;
-        if idx < 0 {
-            let (o, p) = (scratch[0], scratch[(-idx) as usize]);
-            [2.0 * o[0] - p[0], 2.0 * o[1] - p[1]]
-        } else if s > total {
-            let s_refl = (2.0 * total - s).max(0.0);
-            let p = point_at_arc(src, s_refl);
-            let o = [last.x, last.y];
-            [2.0 * o[0] - p[0], 2.0 * o[1] - p[1]]
-        } else if (idx as usize) < scratch.len() {
-            scratch[idx as usize]
-        } else {
-            [last.x, last.y]
+        };
+        if j == 0 {
+            (o.x, o.y) = (src[0].x, src[0].y);
         }
-    };
-    let mut shift = 0.0f32;
-    // Endpoints stay exactly where the pen touched and lifted.
-    for (j, o) in out.iter_mut().enumerate().take(n - 1).skip(1) {
+        out.push(o);
+        scratch.push([o.x, o.y]);
+    }
+
+    /// Smooth station `j` in place from the resampled positions in `scratch`.
+    fn smooth(&mut self, j: usize, src: &[ShapeSample], out: &mut [ShapeSample], scratch: &[[f32; 2]]) {
+        let (h, total, w) = (self.h, self.total, &self.w);
+        // Odd reflection: p[-i] = 2p₀ − p[i], and for points past the end, reflect
+        // arc length across total: s_refl = 2*total - i*h, ensuring odd reflection
+        // continues straight lines exactly even when total is not an integer multiple of h.
+        let last = src[src.len() - 1];
+        let at = |idx: isize| -> [f32; 2] {
+            let s = idx as f32 * h;
+            if idx < 0 {
+                let (o, p) = (scratch[0], scratch[(-idx) as usize]);
+                [2.0 * o[0] - p[0], 2.0 * o[1] - p[1]]
+            } else if s > total {
+                let s_refl = (2.0 * total - s).max(0.0);
+                let p = point_at_arc(src, s_refl);
+                let o = [last.x, last.y];
+                [2.0 * o[0] - p[0], 2.0 * o[1] - p[1]]
+            } else if (idx as usize) < scratch.len() {
+                scratch[idx as usize]
+            } else {
+                [last.x, last.y]
+            }
+        };
         let c = scratch[j];
         let (mut x, mut y) = (w[0] * c[0], w[0] * c[1]);
-        for (k, &wk) in w.iter().enumerate().take(taps + 1).skip(1) {
+        for (k, &wk) in w.iter().enumerate().take(self.taps + 1).skip(1) {
             let (l, r) = (at(j as isize - k as isize), at((j + k) as isize));
             x += wk * (l[0] + r[0]);
             y += wk * (l[1] + r[1]);
         }
-        shift = shift.max((x - c[0]).hypot(y - c[1]));
-        (o.x, o.y) = (x, y);
+        self.shift = self.shift.max((x - c[0]).hypot(y - c[1]));
+        (out[j].x, out[j].y) = (x, y);
     }
-    shift
 }
 
 /// A set of tiles a clipped replay may repaint, as a bitmap over its bounding box.
@@ -502,6 +624,72 @@ mod tests {
         assert_eq!(correction_sigma_px(4, 0.5), 6.0);
         assert_eq!(correction_sigma_px(200, 1.0), 12.0);
         assert!(correction_sigma_px(3, 0.0).is_finite());
+    }
+
+    #[test]
+    fn incremental_correction_is_bit_identical() {
+        let mut r = rand_iter(4242);
+        for case in 0..120 {
+            let sigma = [0.75f32, 1.5, 2.25, 3.0, 5.0, 12.0][case % 6];
+            // A wobbly walk with zigzags, pauses (repeated points) and speed changes.
+            let n = 3 + (r.next().unwrap() * 500.0) as usize;
+            let (mut x, mut y) = (100.0 * r.next().unwrap(), 100.0 * r.next().unwrap());
+            let mut pts = Vec::with_capacity(n);
+            for i in 0..n {
+                let v = r.next().unwrap();
+                if v > 0.1 {
+                    let speed = if case % 4 == 0 { 0.3 } else { 4.0 * v };
+                    x += speed + (r.next().unwrap() - 0.5) * if i % 9 < 3 { 6.0 } else { 1.0 };
+                    y += (r.next().unwrap() - 0.5) * 3.0;
+                }
+                let pressure = r.next().unwrap();
+                pts.push(ShapeSample { x, y, pressure, tilt_x: v, dt: 0.002 + 0.01 * v as f64, ..Default::default() });
+            }
+            let (mut want, mut want_scratch) = (Vec::new(), Vec::new());
+            let want_shift = correct_path(&pts, sigma, &mut want, &mut want_scratch);
+
+            // Fed in random chunks, as the worker pops them.
+            let mut c = Corrector::new(sigma);
+            let (mut out, mut scratch) = (Vec::new(), Vec::new());
+            let (mut fed, mut done) = (0, 0);
+            while fed < n {
+                fed = (fed + 1 + (r.next().unwrap() * 8.0) as usize).min(n);
+                assert!(c.advance(&pts[..fed], &mut out, &mut scratch));
+                assert!(c.final_len(&out) >= done);
+                done = c.final_len(&out);
+            }
+            let total: f32 = pts.windows(2).map(|w| seg_len(&w[0], &w[1])).sum();
+            if total < 0.5 {
+                continue;
+            }
+            assert!(c.finish(&pts, &mut out, &mut scratch));
+            assert_eq!(out.len(), want.len(), "case {case}");
+            for (j, (a, b)) in out.iter().zip(&want).enumerate() {
+                let bits = |s: &ShapeSample| {
+                    [s.x.to_bits(), s.y.to_bits(), s.pressure.to_bits(), s.tilt_x.to_bits(), s.tilt_y.to_bits()]
+                };
+                assert_eq!(bits(a), bits(b), "case {case} station {j} of {} (final before pen-up: {done})", out.len());
+                assert_eq!(a.dt.to_bits(), b.dt.to_bits(), "case {case} station {j}: dt");
+            }
+            assert_eq!(c.shift.to_bits(), want_shift.to_bits(), "case {case}: shift");
+            if total > 100.0 {
+                assert!(done * 2 > out.len(), "case {case}: only {done} of {} stations final before pen-up", out.len());
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_correction_gives_up_past_its_step() {
+        // So long that the one-shot call stretches h: the running one must stop.
+        let pts: Vec<ShapeSample> = (0..2000).map(|i| at(i as f32 * 20.0, 0.0)).collect();
+        let (mut out, mut scratch) = (Vec::new(), Vec::new());
+        let mut c = Corrector::new(1.5);
+        assert!(c.advance(&pts[..1000], &mut out, &mut scratch));
+        assert!(!c.advance(&pts, &mut out, &mut scratch));
+        assert!(!c.finish(&pts, &mut out, &mut scratch));
+        let mut nan = pts[..10].to_vec();
+        nan[5].x = f32::NAN;
+        assert!(!Corrector::new(1.5).advance(&nan, &mut out, &mut scratch));
     }
 
     #[test]

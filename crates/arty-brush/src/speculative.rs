@@ -15,10 +15,7 @@ use arty_core::tile::new_tile_box;
 use arty_core::{Selection, TILE_SIZE, TileCoord, TileGrid, TilePixels};
 use hokusai::BrushState;
 
-use crate::shape::{
-    DabStats, MAX_LOGGED_SAMPLES, ShapeSample, correct_path, correction_sigma_px, correction_taps, seg_len,
-    station_step, taper, unstable_reach,
-};
+use crate::shape::{Corrector, DabStats, MAX_LOGGED_SAMPLES, ShapeSample, correction_sigma_px, seg_len, taper};
 use crate::surface::MaskCur;
 
 #[cfg(windows)]
@@ -233,6 +230,8 @@ pub struct SpeculativeWorker {
     worker_join: Mutex<Option<JoinHandle<()>>>,
     worker_thread: Thread,
     active: AtomicBool,
+    /// Samples the worker has processed this stroke, and steps it has rendered.
+    progress: Arc<[AtomicUsize; 2]>,
 }
 
 impl Default for SpeculativeWorker {
@@ -255,6 +254,8 @@ impl SpeculativeWorker {
 
         let ring_clone = ring.clone();
         let state_clone = state.clone();
+        let progress = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+        let progress_clone = progress.clone();
 
         let (init_tx, init_rx) = std::sync::mpsc::channel();
 
@@ -263,7 +264,7 @@ impl SpeculativeWorker {
             .spawn(move || {
                 lower_thread_priority();
                 init_tx.send(std::thread::current()).unwrap();
-                worker_loop(ring_clone, state_clone);
+                worker_loop(ring_clone, state_clone, progress_clone);
             })
             .expect("spawn replay worker thread");
 
@@ -275,12 +276,14 @@ impl SpeculativeWorker {
             worker_join: Mutex::new(Some(handle)),
             worker_thread: current_thread,
             active: AtomicBool::new(false),
+            progress,
         }
     }
 
     /// Signal worker that a new stroke has begun.
     pub fn start_stroke(&self, config: StrokeConfig) {
         self.ring.clear();
+        self.progress[0].store(0, Ordering::Release);
         self.active.store(true, Ordering::Release);
 
         let (lock, cvar) = &*self.state;
@@ -337,6 +340,18 @@ impl SpeculativeWorker {
         s.result.take()
     }
 
+    /// Wait until the worker has processed `samples` samples of this stroke;
+    /// returns the steps (stations, or samples without correction) it has rendered.
+    #[cfg(test)]
+    pub(crate) fn wait_processed(&self, samples: usize) -> usize {
+        let start = Instant::now();
+        while self.progress[0].load(Ordering::Acquire) < samples {
+            assert!(start.elapsed() < Duration::from_secs(10), "replay worker stuck");
+            std::thread::yield_now();
+        }
+        self.progress[1].load(Ordering::Acquire)
+    }
+
     /// Cancel the stroke, discarding the worker's work.
     pub fn cancel(&self) {
         self.active.store(false, Ordering::Release);
@@ -369,7 +384,43 @@ impl Drop for SpeculativeWorker {
     }
 }
 
-fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Condvar)>) {
+/// Steps of the path rendered so far and the arc length at the last one.
+#[derive(Default)]
+struct Rendered {
+    steps: usize,
+    arc: f32,
+}
+
+/// Render `path` on from `at.steps` with the stroke's brush state, summing arc
+/// length in the order the synchronous replay does. While live (`total = None`)
+/// it stops at the first step that may still get an exit taper: one closer than
+/// taper-out to `known`, an arc length the final path is sure to reach.
+fn render(
+    cfg: &StrokeConfig,
+    state: &mut BrushState,
+    surface: &mut ShadowSurface,
+    path: &[ShapeSample],
+    at: &mut Rendered,
+    total: Option<f32>,
+    known: f32,
+) {
+    let (tin, tout, _) = cfg.shape;
+    while at.steps < path.len() {
+        let j = at.steps;
+        let a = if j > 0 { at.arc + seg_len(&path[j - 1], &path[j]) } else { 0.0 };
+        // The final total is ≥ `known`: the exit factor is ≥ 1, the live one exact.
+        let sure = total.is_some() || tout <= 0.0 || known - a >= tout;
+        if !sure {
+            break;
+        }
+        let s = &path[j];
+        let k = taper(a, total, tin, tout);
+        cfg.brush.stroke_to(state, surface, s.x, s.y, s.pressure * k, s.tilt_x, s.tilt_y, s.dt.clamp(0.0005, 1.0));
+        (at.steps, at.arc) = (j + 1, a);
+    }
+}
+
+fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Condvar)>, progress: Arc<[AtomicUsize; 2]>) {
     let mut discard = new_tile_box();
     let mut worker_log = Vec::with_capacity(MAX_LOGGED_SAMPLES);
     let mut worker_out = Vec::with_capacity(MAX_LOGGED_SAMPLES);
@@ -379,9 +430,15 @@ fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Cond
 
     let mut config: Option<StrokeConfig> = None;
     let mut worker_state = BrushState::default();
+    // Arc length of the log, and its post correction as it grows.
     let mut worker_arc = 0.0f32;
-    let mut replayed_stations = 0usize;
-    let mut replayed_samples = 0usize;
+    let mut corrector = Corrector::new(0.0);
+    // Corrected arc length at the last final station `front`.
+    let (mut front, mut front_arc) = (0usize, 0.0f32);
+    // Stations (samples, without correction) rendered.
+    let mut done = Rendered::default();
+    // The log outgrew what can be corrected incrementally: pen-up replays it instead.
+    let mut spoiled = false;
     let mut cpu_time_ns = 0u64;
 
     let (lock, cvar) = &*state;
@@ -425,28 +482,18 @@ fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Cond
                 shadow_grid = TileGrid::new();
                 stats = DabStats::default();
                 worker_arc = 0.0;
-                replayed_stations = 0;
-                replayed_samples = 0;
+                let (_, _, corr) = cfg.shape;
+                corrector = Corrector::new(if corr > 0 { correction_sigma_px(corr, cfg.view_zoom) } else { 0.0 });
+                (front, front_arc) = (0, 0.0);
+                done = Rendered::default();
+                spoiled = false;
                 cpu_time_ns = 0;
                 worker_state = cfg.state0.clone();
                 config = Some(*cfg);
             }
             WorkerCommand::End { final_log, final_total } => {
                 if let Some(cfg) = config.take() {
-                    // The prefix was rendered from the samples this thread popped. If one was
-                    // dropped (full ring) or belongs to another stroke (a start racing the
-                    // ring clear), the result would differ: let the engine replay instead.
-                    if final_log.get(..worker_log.len()) != Some(&worker_log[..]) {
-                        let mut s = lock.lock().unwrap();
-                        s.result = None;
-                        s.idle = true;
-                        cvar.notify_all();
-                        continue;
-                    }
                     let t0 = Instant::now();
-                    let (tin, tout, corr) = cfg.shape;
-                    let sigma = if corr > 0 { correction_sigma_px(corr, cfg.view_zoom) } else { 0.0 };
-
                     let mut surface = ShadowSurface {
                         shadow_grid: &mut shadow_grid,
                         pre_stroke_grid: &cfg.pre_stroke_grid,
@@ -457,51 +504,29 @@ fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Cond
                         mask_cur: MaskCur::default(),
                         stats: &mut stats,
                     };
-
-                    if corr == 0 {
-                        // Replay remainder samples with final exit taper:
-                        let mut arc = 0.0f32;
-                        for (i, s) in final_log.iter().enumerate() {
-                            if i > 0 {
-                                arc += seg_len(&final_log[i - 1], s);
+                    // The prefix was rendered from the samples this thread popped. If one was
+                    // dropped (full ring) or belongs to another stroke (a start racing the
+                    // ring clear), the result would differ: let the engine replay instead.
+                    let mut exact = !spoiled && final_log.get(..worker_log.len()) == Some(&worker_log[..]);
+                    if exact && cfg.shape.2 == 0 {
+                        // The remainder with the final exit taper, arc length carried on.
+                        render(&cfg, &mut worker_state, &mut surface, &final_log, &mut done, Some(final_total), final_total);
+                    } else if exact {
+                        exact = corrector.finish(&final_log, &mut worker_out, &mut worker_scratch);
+                        if exact {
+                            while front + 1 < worker_out.len() {
+                                front += 1;
+                                front_arc += seg_len(&worker_out[front - 1], &worker_out[front]);
                             }
-                            if i >= replayed_samples {
-                                let k = taper(arc, Some(final_total), tin, tout);
-                                cfg.brush.stroke_to(
-                                    &mut worker_state,
-                                    &mut surface,
-                                    s.x,
-                                    s.y,
-                                    s.pressure * k,
-                                    s.tilt_x,
-                                    s.tilt_y,
-                                    s.dt.clamp(0.0005, 1.0),
-                                );
-                            }
+                            render(&cfg, &mut worker_state, &mut surface, &worker_out, &mut done, Some(front_arc), front_arc);
                         }
-                    } else {
-                        // Resample & smooth full path:
-                        correct_path(&final_log, sigma, &mut worker_out, &mut worker_scratch);
-                        let total: f32 = worker_out.windows(2).fold(0.0, |t, w| t + seg_len(&w[0], &w[1]));
-                        let mut arc = 0.0f32;
-                        for (j, s) in worker_out.iter().enumerate() {
-                            if j > 0 {
-                                arc += seg_len(&worker_out[j - 1], s);
-                            }
-                            if j >= replayed_stations {
-                                let k = taper(arc, Some(total), tin, tout);
-                                cfg.brush.stroke_to(
-                                    &mut worker_state,
-                                    &mut surface,
-                                    s.x,
-                                    s.y,
-                                    s.pressure * k,
-                                    s.tilt_x,
-                                    s.tilt_y,
-                                    s.dt.clamp(0.0005, 1.0),
-                                );
-                            }
-                        }
+                    }
+                    if !exact {
+                        let mut s = lock.lock().unwrap();
+                        s.result = None;
+                        s.idle = true;
+                        cvar.notify_all();
+                        continue;
                     }
                     cfg.brush.finish_stroke(&mut worker_state, &mut surface);
                     cpu_time_ns += t0.elapsed().as_nanos() as u64;
@@ -520,7 +545,7 @@ fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Cond
             WorkerCommand::None => {}
         }
 
-        // 2. Active stroke: drain samples from ring and replay stable prefix
+        // 2. Active stroke: drain samples from ring and replay what is final
         let Some(cfg) = config.as_ref() else {
             continue;
         };
@@ -534,18 +559,14 @@ fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Cond
             worker_log.push(sample);
         }
 
-        if !got_samples && replayed_stations > 0 {
+        if !got_samples || spoiled {
             // Nothing new to process; sleep until unparked or timeout
+            progress[0].store(worker_log.len(), Ordering::Release);
             std::thread::park_timeout(Duration::from_millis(2));
             continue;
         }
 
         let t_start = Instant::now();
-        let (tin, tout, corr) = cfg.shape;
-        let sigma = if corr > 0 { correction_sigma_px(corr, cfg.view_zoom) } else { 0.0 };
-        let unstable = unstable_reach(tout, sigma);
-        let stable_arc = (worker_arc - unstable).max(0.0);
-
         let mut surface = ShadowSurface {
             shadow_grid: &mut shadow_grid,
             pre_stroke_grid: &cfg.pre_stroke_grid,
@@ -557,70 +578,22 @@ fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Cond
             stats: &mut stats,
         };
 
-        if corr == 0 {
-            // Replay stable raw samples (exit taper is 1.0 before stable_arc):
-            let mut s_arc = 0.0f32;
-            for i in 0..worker_log.len() {
-                if i > 0 {
-                    s_arc += seg_len(&worker_log[i - 1], &worker_log[i]);
-                }
-                if s_arc > stable_arc {
-                    break;
-                }
-                if i >= replayed_samples {
-                    let s = &worker_log[i];
-                    let k = taper(s_arc, None, tin, tout);
-                    cfg.brush.stroke_to(
-                        &mut worker_state,
-                        &mut surface,
-                        s.x,
-                        s.y,
-                        s.pressure * k,
-                        s.tilt_x,
-                        s.tilt_y,
-                        s.dt.clamp(0.0005, 1.0),
-                    );
-                    replayed_samples = i + 1;
-                }
+        if cfg.shape.2 == 0 {
+            // Raw samples are final as logged; only the exit taper waits for the end.
+            render(cfg, &mut worker_state, &mut surface, &worker_log, &mut done, None, worker_arc);
+        } else if corrector.advance(&worker_log, &mut worker_out, &mut worker_scratch) {
+            // Only the new stations: their arc length, then those past the taper reach.
+            let n = corrector.final_len(&worker_out);
+            while front + 1 < n {
+                front += 1;
+                front_arc += seg_len(&worker_out[front - 1], &worker_out[front]);
             }
+            render(cfg, &mut worker_state, &mut surface, &worker_out[..n], &mut done, None, front_arc);
         } else {
-            // Post correction: stable stations whose support does not reach the live end
-            let h = station_step(sigma);
-            let taps = correction_taps(sigma, h);
-            let corr_reach = taps as f32 * h;
-            let unstable = tout.max(corr_reach) + 2.0 * h;
-            let stable_arc = (worker_arc - unstable).max(0.0);
-            let num_stations = (worker_arc / h).floor() as usize;
-            let max_safe = num_stations.saturating_sub(taps + 2);
-            let stable_limit = ((stable_arc / h).floor() as usize).min(max_safe);
-
-            if stable_limit >= replayed_stations && worker_log.len() >= 3 {
-                correct_path(&worker_log, sigma, &mut worker_out, &mut worker_scratch);
-                let mut arc = 0.0f32;
-                for (j, s) in worker_out.iter().enumerate() {
-                    if j > 0 {
-                        arc += seg_len(&worker_out[j - 1], s);
-                    }
-                    if j > stable_limit {
-                        break;
-                    }
-                    if j >= replayed_stations {
-                        let k = taper(arc, None, tin, tout);
-                        cfg.brush.stroke_to(
-                            &mut worker_state,
-                            &mut surface,
-                            s.x,
-                            s.y,
-                            s.pressure * k,
-                            s.tilt_x,
-                            s.tilt_y,
-                            s.dt.clamp(0.0005, 1.0),
-                        );
-                    }
-                }
-                replayed_stations = stable_limit + 1;
-            }
+            spoiled = true;
         }
         cpu_time_ns += t_start.elapsed().as_nanos() as u64;
+        progress[1].store(done.steps, Ordering::Release);
+        progress[0].store(worker_log.len(), Ordering::Release);
     }
 }

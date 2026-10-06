@@ -11,11 +11,14 @@
 //! and detailed timing breakdown.
 //!
 //! ```text
-//! cargo run --release -p arty-brush --example bench_replay
+//! cargo run --release -p arty-brush --example bench_replay [inapp] [survey] [paced]
 //! ```
+//!
+//! With no argument every section runs. `paced` feeds samples on a 240 Hz
+//! schedule (deadline pacing, as a pen does), so the worker runs as in the app.
 
 use std::f64::consts::TAU;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arty_brush::{BrushPreset, EndBreakdown, InputSample, Reshape, StrokeEngine, default_presets};
 use arty_core::Document;
@@ -83,6 +86,15 @@ fn in_app_bench_path(cx: f32, cy: f32, side: f32) -> Vec<InputSample> {
     out
 }
 
+/// How samples are fed between pen-down and pen-up.
+#[derive(Clone, Copy)]
+enum Pace {
+    /// Fixed sleep before every sample (B023 tables).
+    Sleep(u64),
+    /// Real pen rate: sample i is fed at i / Hz after pen-down.
+    Hz(f64),
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 struct StrokeStat {
@@ -119,7 +131,7 @@ fn measure_stroke_once(
     pts: &[InputSample],
     doc_w: u32,
     doc_h: u32,
-    pace_us: u64,
+    pace: Pace,
 ) -> StrokeStat {
     let mut doc = Document::new(doc_w, doc_h, 350);
     let mut engine = StrokeEngine::new();
@@ -130,9 +142,17 @@ fn measure_stroke_once(
     }
     let t = Instant::now();
     engine.begin(&mut doc, pts[0]).expect("raster layer");
-    for s in &pts[1..] {
-        if pace_us > 0 {
-            std::thread::sleep(std::time::Duration::from_micros(pace_us));
+    for (i, s) in pts[1..].iter().enumerate() {
+        match pace {
+            Pace::Sleep(us) => std::thread::sleep(Duration::from_micros(us)),
+            Pace::Hz(hz) => {
+                // Deadline pacing: sample i+1 is due (i+1)/hz after pen-down.
+                let due = t + Duration::from_secs_f64((i + 1) as f64 / hz);
+                let now = Instant::now();
+                if due > now {
+                    std::thread::sleep(due - now);
+                }
+            }
         }
         engine.feed(&mut doc, *s);
     }
@@ -165,12 +185,12 @@ fn run_stroke_multi(
     pts: &[InputSample],
     doc_w: u32,
     doc_h: u32,
-    pace_us: u64,
+    pace: Pace,
     repeats: usize,
 ) -> AggregatedRow {
     let mut runs = Vec::with_capacity(repeats);
     for _ in 0..repeats {
-        runs.push(measure_stroke_once(p, speculative, budget_ms, pts, doc_w, doc_h, pace_us));
+        runs.push(measure_stroke_once(p, speculative, budget_ms, pts, doc_w, doc_h, pace));
     }
     runs.sort_by(|a, b| a.end_ms.partial_cmp(&b.end_ms).unwrap());
     let end_min_ms = runs[0].end_ms;
@@ -209,6 +229,9 @@ fn main() {
     println!("Calibrated startup rate: {:.3} ns/px", arty_brush::engine::startup_rate());
     println!();
 
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let run = |section: &str| args.is_empty() || args.iter().any(|a| a == section);
+
     let inking = preset("Inking Pen");
     let doc_side = 1009.0 * (A4_H as f32 / 929.0);
     let in_app_pts = in_app_bench_path(A4_W as f32 / 2.0, A4_H as f32 / 2.0, doc_side);
@@ -217,37 +240,77 @@ fn main() {
     let in_app_pace_us = 4166;
 
     // 1. In-app bench stroke profile (A4 350 dpi, Inking Pen 8 px, 2 s contact):
-    println!("### Typical in-app bench stroke: Inking Pen 8 px, 2 s contact on A4 350 dpi (5 repeats interleaved)");
-    println!("| Mode | Budget | Reshape | end() p50 (ms) | end() p99 (ms) | end() min (ms) | Worker CPU (ms) | px (M) | rep ms | rest ms |");
-    println!("|---|---|---|---:|---:|---:|---:|---:|---:|---:|");
+    if run("inapp") {
+        println!("### Typical in-app bench stroke: Inking Pen 8 px, 2 s contact on A4 350 dpi (5 repeats interleaved)");
+        println!("| Mode | Budget | Reshape | end() p50 (ms) | end() p99 (ms) | end() min (ms) | Worker CPU (ms) | px (M) | rep ms | rest ms |");
+        println!("|---|---|---|---:|---:|---:|---:|---:|---:|---:|");
 
-    let modes = [
-        ("Baseline (sync)", false, Some(100.0), "100 ms baseline"),
-        ("Adaptive E21", false, Some(16.0), "16 ms adaptive"),
-        ("Zero-Wait B023", true, None, "Zero-Wait"),
-    ];
+        let modes = [
+            ("Baseline (sync)", false, Some(100.0), "100 ms baseline"),
+            ("Adaptive E21", false, Some(16.0), "16 ms adaptive"),
+            ("Zero-Wait B023", true, None, "Zero-Wait"),
+        ];
 
-    for (name, spec, bud, lbl) in modes {
-        let r = run_stroke_multi("Inking Pen 8 (A4)", &inking, name, spec, bud, lbl, &in_app_pts, A4_W, A4_H, in_app_pace_us, 5);
-        let b = &r.breakdown;
-        println!(
-            "| {} | {} | {:?} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
-            r.mode,
-            r.budget_label,
-            r.reshape,
-            r.end_p50_ms,
-            r.end_p99_ms,
-            r.end_min_ms,
-            r.worker_cpu_ms,
-            r.px as f64 / 1e6,
-            b.replay_us as f64 / 1e3,
-            b.restore_us as f64 / 1e3,
-        );
+        for (name, spec, bud, lbl) in modes {
+            let r = run_stroke_multi("Inking Pen 8 (A4)", &inking, name, spec, bud, lbl, &in_app_pts, A4_W, A4_H, Pace::Sleep(in_app_pace_us), 5);
+            let b = &r.breakdown;
+            println!(
+                "| {} | {} | {:?} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
+                r.mode,
+                r.budget_label,
+                r.reshape,
+                r.end_p50_ms,
+                r.end_p99_ms,
+                r.end_min_ms,
+                r.worker_cpu_ms,
+                r.px as f64 / 1e6,
+                b.replay_us as f64 / 1e3,
+                b.restore_us as f64 / 1e3,
+            );
+        }
+        println!();
     }
-    println!();
 
-    // 2. Full survey across presets and lengths (4096x4096 page):
     let sized = |name: &str, size: f32| BrushPreset { size, stabilizer: 0, ..preset(name) };
+    // 2. Real pen rate: samples on a 240 Hz schedule, so the worker keeps up as in the app.
+    if run("paced") {
+        println!("### 240 Hz paced strokes (deadline pacing; 5 repeats in-app, 3 otherwise)");
+        println!("| Stroke | Samples | Mode | Reshape | end() p50 ms | end() p99 ms | end() min ms | Worker CPU ms | rep ms |");
+        println!("|---|---:|---|---|---:|---:|---:|---:|---:|");
+        let g8 = sized("G-Pen", 8.0);
+        let corrected = BrushPreset { taper_out: 80.0, post_correction: 3, ..g8.clone() };
+        let taper_only = BrushPreset { taper_out: 80.0, post_correction: 0, ..g8 };
+        let (p2k, p10k) = (path(2_000.0), path(10_000.0));
+        let cases = [
+            ("Inking Pen 8 (A4, in-app)", &inking, in_app_pts.as_slice(), A4_W, A4_H, 5),
+            ("G-Pen 8 taper+corr 2k px", &corrected, p2k.as_slice(), PAGE, PAGE, 3),
+            ("G-Pen 8 taper+corr 10k px", &corrected, p10k.as_slice(), PAGE, PAGE, 3),
+            ("G-Pen 8 taper only 2k px", &taper_only, p2k.as_slice(), PAGE, PAGE, 3),
+        ];
+        for (label, p, pts, w, h, repeats) in cases {
+            for (m_name, spec) in [("Baseline (sync)", false), ("Zero-Wait", true)] {
+                let r = run_stroke_multi(label, p, m_name, spec, Some(100.0), "100ms", pts, w, h, Pace::Hz(STROKE_HZ), repeats);
+                println!(
+                    "| {} | {} | {} | {:?} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
+                    r.label,
+                    r.samples,
+                    r.mode,
+                    r.reshape,
+                    r.end_p50_ms,
+                    r.end_p99_ms,
+                    r.end_min_ms,
+                    r.worker_cpu_ms,
+                    r.breakdown.replay_us as f64 / 1e3,
+                );
+            }
+        }
+        println!();
+    }
+
+    // 3. Full survey across presets and lengths (4096x4096 page):
+    if !run("survey") {
+        return;
+    }
     let brushes = [
         ("G-Pen 8", sized("G-Pen", 8.0)),
         ("G-Pen 30", sized("G-Pen", 30.0)),
@@ -271,7 +334,7 @@ fn main() {
                 ("Zero-Wait", true, None, "ZeroWait"),
             ] {
                 // Short pacing (200 us) to test concurrent worker pipeline
-                let r = run_stroke_multi(label, &full, m_name, spec, bud, lbl, &pts, PAGE, PAGE, 200, 3);
+                let r = run_stroke_multi(label, &full, m_name, spec, bud, lbl, &pts, PAGE, PAGE, Pace::Sleep(200), 3);
                 println!(
                     "| {} | {:.0} | {} | {:.2} | {:.2} | {:.2} | {:?} | {:.2} |",
                     r.label,
