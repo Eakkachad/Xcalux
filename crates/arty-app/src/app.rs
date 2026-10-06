@@ -100,6 +100,9 @@ impl ArtyApp {
         studio.history.set_budget(arty_core::undo_budget(arty_io::physical_memory()));
         studio.history.set_release(crate::studio::undo_release());
         log::info!("undo budget {} MiB", studio.history.budget() >> 20);
+        // Pen-up replay that would take longer than a frame on this machine
+        // reshapes only the stroke end (plans/bench/B022).
+        studio.engine.set_replay_budget(16.0);
         // Mailbox panics where unsupported and eframe exposes no surface capabilities.
         studio.fast_vsync_ok =
             cc.wgpu_render_state.as_ref().is_some_and(|r| r.adapter.get_info().backend == egui_wgpu::wgpu::Backend::Dx12);

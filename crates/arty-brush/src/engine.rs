@@ -106,7 +106,9 @@ pub struct StrokeEngine {
     stats: DabStats,
     view_zoom: f32,
     reshape: Reshape,
-    budget_ms: f64,
+    /// Pen-up time budget; `None` keeps the fixed MAX_FULL_REPLAY_PX ceiling,
+    /// so library users and tests stay deterministic.
+    budget_ms: Option<f64>,
     injected_rate_ns_per_px: Option<f64>,
     live_paint_ns: u64,
     calibrated_rate_ns_per_px: f64,
@@ -179,7 +181,7 @@ impl StrokeEngine {
             stats: DabStats::default(),
             view_zoom: 1.0,
             reshape: Reshape::Skipped,
-            budget_ms: 16.0,
+            budget_ms: None,
             injected_rate_ns_per_px: None,
             live_paint_ns: 0,
             calibrated_rate_ns_per_px: 20.0,
@@ -196,9 +198,7 @@ impl StrokeEngine {
     /// An engine whose strokes log at most `n` samples; longer shaped
     /// strokes are kept as drawn ([`Reshape::TooLong`]).
     pub(crate) fn with_log_capacity(n: usize) -> Self {
-        let mut e = Self::new_empty(n);
-        e.calibrated_rate_ns_per_px = startup_rate();
-        e
+        Self::new_empty(n)
     }
 
     /// Override the replay rate (ns/px) for deterministic tests.
@@ -206,9 +206,13 @@ impl StrokeEngine {
         self.injected_rate_ns_per_px = Some(rate_ns_per_px.max(0.1));
     }
 
-    /// Set the pen-up replay budget in milliseconds (default 16.0 ms, 1 frame).
+    /// Bound pen-up replay by time instead of the fixed pixel ceiling: strokes
+    /// that would take longer than `budget_ms` on this machine get a tail
+    /// replay. The rate comes from a startup calibration, then from live
+    /// strokes, so the choice depends on the machine (B022).
     pub fn set_replay_budget(&mut self, budget_ms: f64) {
-        self.budget_ms = budget_ms.max(0.1);
+        self.budget_ms = Some(budget_ms.max(0.1));
+        self.calibrated_rate_ns_per_px = startup_rate();
     }
 
     /// Effective replay rate in ns per live dab pixel.
@@ -216,8 +220,8 @@ impl StrokeEngine {
         self.effective_rate_ns_per_px()
     }
 
-    /// Pen-up replay budget in milliseconds.
-    pub fn replay_budget(&self) -> f64 {
+    /// Pen-up replay budget in milliseconds, if one is set.
+    pub fn replay_budget(&self) -> Option<f64> {
         self.budget_ms
     }
 
@@ -245,11 +249,12 @@ impl StrokeEngine {
     }
 
     fn full_replay_ceiling_px(&self) -> u64 {
+        let Some(budget_ms) = self.budget_ms else { return shape::MAX_FULL_REPLAY_PX };
         let rate = self.effective_rate_ns_per_px();
         if rate <= 0.0 || !rate.is_finite() {
             return shape::MAX_FULL_REPLAY_PX;
         }
-        let ns = self.budget_ms * 1_000_000.0;
+        let ns = budget_ms * 1_000_000.0;
         (ns / rate) as u64
     }
 
