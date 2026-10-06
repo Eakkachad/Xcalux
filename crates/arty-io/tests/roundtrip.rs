@@ -140,6 +140,7 @@ fn extras_round_trip_and_stale_layer_ext_is_dropped() {
             LayerExt { layer: id + 100, tag: *b"GONE", flags: 0, bytes: vec![1] },
         ],
         title: "Page 1".into(),
+        ..Default::default()
     };
     let loaded = read(&write(&doc, &ex, &pool), &pool);
     assert_eq!(loaded.view, ex.view);

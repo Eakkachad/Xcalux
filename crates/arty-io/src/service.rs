@@ -393,8 +393,10 @@ impl Worker {
                     Err(e) => self.failed(ticket, "open", e),
                 }
             }
-            Request::Save { doc, ex, path, rev, overwrite_external } => {
+            Request::Save { doc, mut ex, path, rev, overwrite_external } => {
                 let o = SaveOptions::default();
+                // Autosaves (recovery files) carry none.
+                ex.thumb = crate::thumb::make(&doc, &self.pool);
                 match self.session.save_main(&doc, &ex, &path, overwrite_external, &o, &self.pool, p) {
                     Ok(stats) => {
                         // The main file holds the restored state now.

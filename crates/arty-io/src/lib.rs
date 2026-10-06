@@ -42,6 +42,7 @@ pub mod service;
 pub mod sink;
 pub mod storage;
 pub mod table;
+pub mod thumb;
 pub mod writer;
 
 pub use codec::{BlobCodec, CodecScratch, TileClass};
