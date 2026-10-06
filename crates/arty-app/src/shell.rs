@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::SelModify;
 use crate::files::AutosaveSettings;
+use crate::machine::{Machine, Tier};
 use crate::text::{self, Key, Lang, t};
 use crate::theme::ThemeKind;
 
@@ -78,9 +79,65 @@ pub fn mib(bytes: u64) -> u64 {
     (bytes + (1 << 19)) >> 20
 }
 
-/// Ten painted layers plus the GPU canvas would take over half of `ram`.
-pub fn page_memory_heavy((layer, gpu): (u64, u64), ram: Option<u64>) -> bool {
-    ram.is_some_and(|r| layer * 10 + gpu > r / 2)
+/// Private bytes of the app with a blank page open (plans/bench/B013).
+pub const BASELINE: u64 = 450 << 20;
+
+/// Full layers a page fits on `m`, as Procreate counts them from RAM and
+/// canvas size: half of RAM (the load budget, E6) less the app's baseline,
+/// the GPU canvas where graphics memory is system RAM, and the undo budget,
+/// divided by one layer. `None` when the RAM is unknown.
+pub fn layer_capacity((layer, gpu): (u64, u64), m: &Machine) -> Option<u32> {
+    let ram = m.ram?;
+    let shared = if m.gpu_shares_ram() { gpu } else { 0 };
+    let used = BASELINE + shared + arty_core::undo_budget(m.ram) as u64;
+    let free = (ram / 2).saturating_sub(used);
+    Some((free / layer.max(1)).min(u32::MAX as u64) as u32)
+}
+
+/// How comfortably a page fits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// 20 layers or more.
+    Roomy,
+    /// 8 to 19.
+    Tight,
+    /// Fewer than 8.
+    Heavy,
+}
+
+impl Fit {
+    pub fn of(layers: u32) -> Fit {
+        match layers {
+            20.. => Fit::Roomy,
+            8..=19 => Fit::Tight,
+            _ => Fit::Heavy,
+        }
+    }
+}
+
+/// Layers that fit and how well, for a `width` × `height` page.
+pub fn page_fit(width: u32, height: u32, m: &Machine) -> Option<(u32, Fit)> {
+    layer_capacity(page_memory(width, height), m).map(|n| (n, Fit::of(n)))
+}
+
+/// Performance setting: Auto lightens on a Low tier machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PerfMode {
+    #[default]
+    Auto,
+    Light,
+    Full,
+}
+
+impl PerfMode {
+    /// Whether Light mode is on for a machine of `tier`.
+    pub fn light(self, tier: Tier) -> bool {
+        match self {
+            PerfMode::Auto => tier == Tier::Low,
+            PerfMode::Light => true,
+            PerfMode::Full => false,
+        }
+    }
 }
 
 /// The localized name of a preset at `index`.
@@ -116,6 +173,11 @@ pub mod new_doc_text {
 
     pub fn heavy() -> &'static str {
         t(Key::NewDocHeavy)
+    }
+
+    /// "This machine: about N layers".
+    pub fn fit(layers: u32) -> String {
+        t(if layers == 1 { Key::NewDocFitOne } else { Key::NewDocFit }).replace("{}", &layers.to_string())
     }
 }
 
@@ -166,6 +228,10 @@ pub struct Shell {
     pub new_doc_page: Option<PageSetup>,
     /// Show the home screen at start-up (saved setting).
     pub home_at_start: bool,
+    /// What this computer is (machine.rs).
+    pub machine: Machine,
+    /// Performance setting (saved).
+    pub perf: PerfMode,
 }
 
 impl Shell {
@@ -192,6 +258,21 @@ impl Shell {
             sel_dialog: None,
             new_doc_page: None,
             home_at_start: crate::home::default_show(),
+            machine: Machine::default(),
+            perf: PerfMode::default(),
+        }
+    }
+
+    /// Light mode is on: no animations, a smaller thumbnail budget.
+    pub fn light(&self) -> bool {
+        self.perf.light(self.machine.tier())
+    }
+
+    /// Light mode changes the style, so it is applied again.
+    pub fn set_perf(&mut self, perf: PerfMode) {
+        if self.perf != perf {
+            self.perf = perf;
+            self.theme_dirty = true;
         }
     }
 
@@ -220,6 +301,7 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::{GpuKind, GpuSummary, Storage, Vendor};
 
     #[test]
     fn page_memory_matches_known_pages() {
@@ -233,13 +315,61 @@ mod tests {
         assert_eq!(page_memory(64, 64).0, 32 * 1024);
     }
 
+    fn machine(gib: u64, kind: GpuKind) -> Machine {
+        let gpu = GpuSummary { name: "test".into(), vendor: Vendor::Intel, kind, backend: "Vulkan" };
+        Machine { ram: Some(gib << 30), physical_cores: 8, gpu: Some(gpu), storage: Storage::Ssd }
+    }
+
+    /// Capacity = (RAM / 2 - 450 MiB baseline - GPU canvas - undo budget) / layer, in MiB.
     #[test]
-    fn heavy_page_warns_on_small_ram() {
+    fn layer_capacity_matches_hand_arithmetic() {
+        let a4 = page_memory(2894, 4093); // layer 92.0 MiB, GPU canvas 64.0 MiB
+        let b4 = page_memory(6071, 8598); // layer 400.8 MiB, GPU canvas 288.0 MiB
+        // A4 350 dpi, 8 GiB, iGPU: undo 8192/16 = 512.
+        // 4096 - 450 - 64 - 512 = 3070 MiB; 3070 / 92.0 = 33.4 -> 33 (Roomy).
+        let n = layer_capacity(a4, &machine(8, GpuKind::Integrated));
+        assert_eq!((n, Fit::of(33)), (Some(33), Fit::Roomy));
+        // A4 350 dpi, 4 GiB, iGPU: undo 4096/16 = 256.
+        // 2048 - 450 - 64 - 256 = 1278 MiB; 1278 / 92.0 = 13.9 -> 13 (Tight).
+        assert_eq!(layer_capacity(a4, &machine(4, GpuKind::Integrated)), Some(13));
+        assert_eq!(Fit::of(13), Fit::Tight);
+        // B4 600 dpi, 8 GiB, iGPU: 4096 - 450 - 288 - 512 = 2846 MiB; 2846 / 400.8 = 7.1 -> 7 (Heavy).
+        assert_eq!(layer_capacity(b4, &machine(8, GpuKind::Integrated)), Some(7));
+        assert_eq!(Fit::of(7), Fit::Heavy);
+        // B4 600 dpi, 16 GiB, discrete: undo 1024 (the cap), no shared GPU memory.
+        // 8192 - 450 - 0 - 1024 = 6718 MiB; 6718 / 400.8 = 16.8 -> 16 (Tight).
+        assert_eq!(layer_capacity(b4, &machine(16, GpuKind::Discrete)), Some(16));
+        // The same page on an integrated GPU pays for the canvas: 6430 / 400.8 = 16.04 -> 16.
+        assert_eq!(layer_capacity(b4, &machine(16, GpuKind::Integrated)), Some(16));
+        // Software and unknown graphics are system RAM too.
+        assert_eq!(layer_capacity(b4, &machine(8, GpuKind::Software)), Some(7));
+        assert_eq!(layer_capacity(b4, &machine(8, GpuKind::Unknown)), Some(7));
+    }
+
+    #[test]
+    fn layer_capacity_edges() {
         let b4 = page_memory(6071, 8598);
-        assert!(page_memory_heavy(b4, Some(8 << 30)));
-        assert!(!page_memory_heavy(b4, Some(16 << 30)));
-        assert!(!page_memory_heavy(page_memory(2894, 4093), Some(4 << 30)));
-        assert!(!page_memory_heavy(b4, None));
+        // Nothing left over: clamped at 0, not wrapped around.
+        assert_eq!(layer_capacity(b4, &machine(1, GpuKind::Integrated)), Some(0));
+        // Unknown RAM: no figure.
+        assert_eq!(layer_capacity(b4, &Machine::default()), None);
+        // Fit boundaries.
+        assert_eq!([Fit::of(0), Fit::of(7), Fit::of(8), Fit::of(19), Fit::of(20)], [Fit::Heavy, Fit::Heavy, Fit::Tight, Fit::Tight, Fit::Roomy]);
+        assert_eq!(page_fit(2894, 4093, &machine(8, GpuKind::Integrated)), Some((33, Fit::Roomy)));
+        assert_eq!(page_fit(2894, 4093, &Machine::default()), None);
+    }
+
+    #[test]
+    fn auto_performance_is_light_only_on_low_tier() {
+        for (mode, tier, light) in [
+            (PerfMode::Auto, Tier::Low, true),
+            (PerfMode::Auto, Tier::Mid, false),
+            (PerfMode::Auto, Tier::High, false),
+            (PerfMode::Light, Tier::High, true),
+            (PerfMode::Full, Tier::Low, false),
+        ] {
+            assert_eq!(mode.light(tier), light, "{mode:?} on {tier:?}");
+        }
     }
 
     #[test]

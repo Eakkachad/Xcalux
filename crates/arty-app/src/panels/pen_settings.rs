@@ -3,22 +3,30 @@
 use super::curve_editor;
 use super::property::percent;
 use super::{fill_slider, section};
-use crate::shell::Shell;
+use crate::shell::{PerfMode, Shell};
 use crate::studio::{DisplaySync, Studio};
 use crate::text::{Key, t};
 
 pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
-    egui::CollapsingHeader::new(t(Key::PenSettingsInputDisplay)).default_open(false).show(ui, |ui| {
+    // Bench screenshots (ARTY_BENCH_SETTINGS) open it whatever the saved state says.
+    let open = crate::bench::settings_open().then_some(true);
+    egui::CollapsingHeader::new(t(Key::PenSettingsInputDisplay)).default_open(false).open(open).show(ui, |ui| {
         section(ui, t(Key::SectionPenPressure));
         curve_editor::ui(ui, &mut studio.input.pressure_curve);
         ui.add_space(6.0);
-        egui::Grid::new("input-settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+        // Above the grid: these labels or controls are wider than its two columns allow in a narrow panel.
+        ui.horizontal_wrapped(|ui| {
             ui.label(t(Key::LanguageLabel));
             super::lang_switch(ui, shell);
-            ui.end_row();
-            ui.label(t(Key::HomeShowAtStartup));
-            ui.checkbox(&mut shell.home_at_start, "");
-            ui.end_row();
+        });
+        ui.checkbox(&mut shell.home_at_start, t(Key::HomeShowAtStartup));
+        let label = ui.label(t(Key::PerfLabel));
+        if open.is_some() {
+            label.scroll_to_me(Some(egui::Align::Center));
+        }
+        perf_switch(ui, shell);
+        ui.add_space(6.0);
+        egui::Grid::new("input-settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label(t(Key::PenSettingsMousePressure));
             fill_slider(ui, percent(&mut studio.input.mouse_pressure));
             ui.end_row();
@@ -37,6 +45,17 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
             ui.end_row();
         });
     });
+}
+
+/// [Auto (Light) | Light | Full]: Auto names what it came to on this machine.
+fn perf_switch(ui: &mut egui::Ui, shell: &mut Shell) {
+    let resolved = if PerfMode::Auto.light(shell.machine.tier()) { Key::PerfLight } else { Key::PerfFull };
+    let auto = format!("{} ({})", t(Key::PerfAuto), t(resolved));
+    let options = [(PerfMode::Auto, auto.as_str()), (PerfMode::Light, t(Key::PerfLight)), (PerfMode::Full, t(Key::PerfFull))];
+    let pal = shell.theme.palette();
+    if let Some(mode) = ui.horizontal(|ui| super::segmented(ui, &pal, shell.perf, &options, t(Key::PerfTip))).inner {
+        shell.set_perf(mode);
+    }
 }
 
 fn sync_hover(s: DisplaySync) -> &'static str {

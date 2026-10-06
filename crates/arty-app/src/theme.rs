@@ -3,7 +3,7 @@
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};
 
-use crate::shell::UiMode;
+use crate::shell::{Fit, UiMode};
 
 /// Click target height in Studio (compact).
 pub const TARGET_STUDIO: f32 = 20.0;
@@ -73,10 +73,27 @@ pub struct Palette {
     pub row_selected: Color32,
     pub row_hover: Color32,
     pub clip_marker: Color32,
+    /// How well a page fits this machine (New Page, D3): green, amber, red.
+    /// Dots next to a text that says the same (3:1 on panels and popups, WCAG
+    /// 1.4.11); `fit_heavy` also colours its warning text (4.5:1).
+    pub fit_roomy: Color32,
+    pub fit_tight: Color32,
+    pub fit_heavy: Color32,
 }
 
 const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+}
+
+impl Palette {
+    /// Dot colour of a [`Fit`].
+    pub fn fit(&self, fit: Fit) -> Color32 {
+        match fit {
+            Fit::Roomy => self.fit_roomy,
+            Fit::Tight => self.fit_tight,
+            Fit::Heavy => self.fit_heavy,
+        }
+    }
 }
 
 impl ThemeKind {
@@ -99,6 +116,9 @@ impl ThemeKind {
                 row_selected: Color32::from_rgb(45, 74, 125),
                 row_hover: Color32::from_rgb(52, 54, 60),
                 clip_marker: Color32::from_rgb(232, 96, 96),
+                fit_roomy: hex(0x5CC46C),
+                fit_tight: hex(0xE8AD3A),
+                fit_heavy: hex(0xF58076),
             },
             // Warm paper grey; the page stays white.
             ThemeKind::Light => Palette {
@@ -118,6 +138,9 @@ impl ThemeKind {
                 row_selected: hex(0xF2D9C4),
                 row_hover: hex(0xE4E0DA),
                 clip_marker: hex(0xC8463C),
+                fit_roomy: hex(0x2E8B45),
+                fit_tight: hex(0xB57000),
+                fit_heavy: hex(0xB52D2D),
             },
         }
     }
@@ -151,7 +174,8 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
 }
 
-pub fn apply(ctx: &egui::Context, kind: ThemeKind, mode: UiMode) {
+/// `light`: Light performance mode, no animations (shell.rs `PerfMode`).
+pub fn apply(ctx: &egui::Context, kind: ThemeKind, mode: UiMode, light: bool) {
     let p = kind.palette();
     let mut v = match kind {
         ThemeKind::Dark => Visuals::dark(),
@@ -210,6 +234,7 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind, mode: UiMode) {
         style.spacing.button_padding = egui::vec2(6.0, 3.0);
         style.spacing.interact_size.y = target_height(mode);
         style.spacing.slider_width = 120.0;
+        style.animation_time = if light { 0.0 } else { egui::Style::default().animation_time };
         style.text_styles = [
             (TextStyle::Small, FontId::new(10.5, FontFamily::Proportional)),
             (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
@@ -288,6 +313,28 @@ mod tests {
                 assert!(contrast(p.text_weak, bg) >= 4.5, "{:?} weak text on {bg:?}: {}", kind as u8, contrast(p.text_weak, bg));
             }
         }
+    }
+
+    #[test]
+    fn fit_colors_read_on_both_themes() {
+        for kind in [ThemeKind::Light, ThemeKind::Dark] {
+            let p = kind.palette();
+            for bg in [p.panel, p.bar, p.popup] {
+                for c in [p.fit_roomy, p.fit_tight, p.fit_heavy] {
+                    assert!(contrast(c, bg) >= 3.0, "{:?} {c:?} on {bg:?}: {}", kind as u8, contrast(c, bg));
+                }
+                assert!(contrast(p.fit_heavy, bg) >= 4.5, "{:?} warning text on {bg:?}", kind as u8);
+            }
+        }
+    }
+
+    #[test]
+    fn light_mode_turns_animations_off() {
+        let ctx = egui::Context::default();
+        apply(&ctx, ThemeKind::Light, UiMode::Simple, true);
+        assert_eq!(ctx.global_style().animation_time, 0.0);
+        apply(&ctx, ThemeKind::Light, UiMode::Simple, false);
+        assert_eq!(ctx.global_style().animation_time, egui::Style::default().animation_time);
     }
 
     #[test]

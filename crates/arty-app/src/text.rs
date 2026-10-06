@@ -218,6 +218,8 @@ pub enum Key {
     NewDocPerLayer,
     NewDocGpu,
     NewDocHeavy,
+    NewDocFit,
+    NewDocFitOne,
     NewDocCreate,
     NewDocCancel,
 
@@ -567,6 +569,22 @@ pub enum Key {
     HomeSkip,
     HomeShowAtStartup,
     HomeInkLayer,
+    HomeMachine,
+    HomeMachineSpecs,
+
+    // Machine profile
+    MachineGfx,
+    MachineGfxSoftware,
+    MachineGfxOther,
+    MachineSsd,
+    MachineHdd,
+
+    // Performance setting
+    PerfLabel,
+    PerfAuto,
+    PerfLight,
+    PerfFull,
+    PerfTip,
 }
 
 impl Key {
@@ -678,6 +696,8 @@ impl Key {
         Key::NewDocPerLayer,
         Key::NewDocGpu,
         Key::NewDocHeavy,
+        Key::NewDocFit,
+        Key::NewDocFitOne,
         Key::NewDocCreate,
         Key::NewDocCancel,
         Key::PresetMangaB4_350,
@@ -977,6 +997,18 @@ impl Key {
         Key::HomeSkip,
         Key::HomeShowAtStartup,
         Key::HomeInkLayer,
+        Key::HomeMachine,
+        Key::HomeMachineSpecs,
+        Key::MachineGfx,
+        Key::MachineGfxSoftware,
+        Key::MachineGfxOther,
+        Key::MachineSsd,
+        Key::MachineHdd,
+        Key::PerfLabel,
+        Key::PerfAuto,
+        Key::PerfLight,
+        Key::PerfFull,
+        Key::PerfTip,
     ];
 }
 
@@ -1100,9 +1132,11 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::NewDocPerLayer => ("MB / เลเยอร์", "MB / layer"),
         Key::NewDocGpu => ("MB บน GPU", "MB GPU"),
         Key::NewDocHeavy => (
-            "10 เลเยอร์จะใช้หน่วยความจำเกินครึ่งหนึ่งของเครื่องนี้ เครื่องอาจทำงานช้าลงหรือค้างได้",
-            "10 layers would use over half of this computer's memory; it may slow down or freeze.",
+            "เครื่องนี้ใส่ได้น้อยกว่า 8 เลเยอร์ ลองเลือกหน้าที่เล็กลงหรือลดความละเอียด",
+            "Fewer than 8 layers fit on this machine. Pick a smaller page or a lower resolution.",
         ),
+        Key::NewDocFit => ("เครื่องนี้: ได้ประมาณ {} เลเยอร์", "This machine: about {} layers"),
+        Key::NewDocFitOne => ("เครื่องนี้: ได้ประมาณ {} เลเยอร์", "This machine: about {} layer"),
         Key::NewDocCreate => ("สร้าง", "Create"),
         Key::NewDocCancel => ("ยกเลิก", "Cancel"),
 
@@ -1458,6 +1492,28 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::HomeSkip => ("ข้ามไปหน้าว่าง (Esc)", "Skip to a blank page (Esc)"),
         Key::HomeShowAtStartup => ("แสดงหน้านี้ทุกครั้งที่เปิด ARTY", "Show this screen when ARTY starts"),
         Key::HomeInkLayer => ("เส้นหมึก", "Ink"),
+        Key::HomeMachine => (
+            "เครื่องนี้: {specs} — หน้ามังงะ B5 ได้ประมาณ {n} เลเยอร์",
+            "This machine: {specs} — a B5 manga page fits about {n} layers",
+        ),
+        Key::HomeMachineSpecs => ("เครื่องนี้: {specs}", "This machine: {specs}"),
+
+        // Machine profile
+        Key::MachineGfx => ("การ์ดจอ {}", "{} graphics"),
+        Key::MachineGfxSoftware => ("กราฟิกแบบซอฟต์แวร์", "Software graphics"),
+        Key::MachineGfxOther => ("การ์ดจอ", "Graphics card"),
+        Key::MachineSsd => ("SSD", "SSD"),
+        Key::MachineHdd => ("HDD", "HDD"),
+
+        // Performance setting
+        Key::PerfLabel => ("ประสิทธิภาพ", "Performance"),
+        Key::PerfAuto => ("อัตโนมัติ", "Auto"),
+        Key::PerfLight => ("เบา", "Light"),
+        Key::PerfFull => ("เต็ม", "Full"),
+        Key::PerfTip => (
+            "โหมดเบาปิดแอนิเมชันและลดเวลาที่ใช้อัปเดตภาพย่อเลเยอร์ต่อเฟรม เหมาะกับเครื่องที่ช้า อัตโนมัติจะเลือกโหมดเบาให้เองบนเครื่องที่สเปกต่ำ",
+            "Light turns animations off and spends less time per frame refreshing layer thumbnails. Auto picks Light on a low-end machine.",
+        ),
     }
 }
 

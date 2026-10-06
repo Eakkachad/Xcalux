@@ -27,6 +27,12 @@
 //!   size would, and report the size reached; the geometry is then not saved.
 //! - `ARTY_BENCH_ZOOM=<factor>`: egui zoom factor (UI scale on top of the OS scale).
 //! - `ARTY_BENCH_HOME=1`: show the home screen, which bench runs skip.
+//! - `ARTY_BENCH_NEWDOC=1|<preset>`: open the New Page dialog at start-up, on
+//!   its preset `b4_350`, `b5_350`, `a4_350`, `b4_600` or `a4_600` if one is named.
+//! - `ARTY_BENCH_NEWDOC_LIST=1`: with the New Page dialog, its preset list open.
+//! - `ARTY_BENCH_SETTINGS=1`: Input & display settings open (screenshots).
+//! - `ARTY_BENCH_PERF=auto|light|full`: the performance setting for the run
+//!   (not saved); the `threads` line reports what it came to.
 //! - `ARTY_BENCH_LANG=th|en`, `ARTY_BENCH_THEME=light|dark`,
 //!   `ARTY_BENCH_MODE=simple|studio`: UI language, theme and mode for the run
 //!   (screenshots), whatever the profile holds; bench runs are Studio otherwise.
@@ -43,14 +49,14 @@
 use std::f64::consts::TAU;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use arty_brush::{BrushPreset, Reshape, default_presets};
 use arty_pen::{PenEnd, PenPhase, PenQueue, PenSample};
 
 use crate::files::{FileController, FileDialogs, NativeDialogs};
-use crate::shell::UiMode;
+use crate::shell::{PAGE_PRESETS, PerfMode, UiMode};
 use crate::studio::{DisplaySync, Studio};
 use crate::text::Lang;
 use crate::theme::ThemeKind;
@@ -178,6 +184,30 @@ fn parse_on(s: &str) -> Option<bool> {
     (s.trim() == "1").then_some(true)
 }
 
+/// `auto`, `light` or `full`.
+fn parse_perf(s: &str) -> Option<PerfMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(PerfMode::Auto),
+        "light" => Some(PerfMode::Light),
+        "full" => Some(PerfMode::Full),
+        _ => None,
+    }
+}
+
+/// `1` (the dialog as it is) or a preset token: its page size and dpi.
+fn parse_newdoc(s: &str) -> Option<Option<(u32, u32, u32)>> {
+    let name = match s.trim().to_ascii_lowercase().as_str() {
+        "1" => return Some(None),
+        "b4_350" => "Manga B4 · 350 dpi",
+        "b5_350" => "Manga B5 · 350 dpi",
+        "a4_350" => "A4 · 350 dpi",
+        "b4_600" => "Manga B4 · 600 dpi",
+        "a4_600" => "A4 · 600 dpi",
+        _ => return None,
+    };
+    PAGE_PRESETS.iter().find(|p| p.0 == name).map(|&(_, w, h, dpi)| Some((w, h, dpi)))
+}
+
 /// Thread count, 1..=64.
 fn parse_threads(s: &str) -> Option<usize> {
     s.trim().parse::<usize>().ok().filter(|v| (1..=64).contains(v))
@@ -210,6 +240,26 @@ pub fn home() -> bool {
     env("ARTY_BENCH_HOME", parse_on).unwrap_or(false)
 }
 
+/// The New Page dialog opens at start-up, with this page if a preset is named.
+pub fn newdoc() -> Option<Option<(u32, u32, u32)>> {
+    env("ARTY_BENCH_NEWDOC", parse_newdoc)
+}
+
+/// True once, on the first call, when the New Page dialog's preset list
+/// should be open.
+pub fn open_preset_list_once() -> bool {
+    static DONE: AtomicBool = AtomicBool::new(false);
+    env("ARTY_BENCH_NEWDOC_LIST", parse_on).unwrap_or(false) && !DONE.swap(true, Ordering::Relaxed)
+}
+
+pub fn settings_open() -> bool {
+    env("ARTY_BENCH_SETTINGS", parse_on).unwrap_or(false)
+}
+
+pub fn perf() -> Option<PerfMode> {
+    env("ARTY_BENCH_PERF", parse_perf)
+}
+
 pub fn lang() -> Option<Lang> {
     env("ARTY_BENCH_LANG", parse_lang)
 }
@@ -227,13 +277,13 @@ pub fn io_threads() -> Option<usize> {
 }
 
 /// Reports thread pool sizes, CPU counts, budgets, and heap usage on stderr for bench runs.
-pub fn report_threads(io_threads: usize, load_budget: u64, autosave_str: &str) {
+pub fn report_threads(io_threads: usize, load_budget: u64, autosave_str: &str, perf: &str) {
     let avail = std::thread::available_parallelism().map_or(0, |n| n.get());
     let cpus = arty_io::usable_cpus();
     let live = arty_testkit::live_bytes();
     let peak = arty_testkit::peak_bytes();
     eprintln!(
-        "ARTY_BENCH threads · available_parallelism {avail} · usable physical {} · usable logical {} · rayon {} · io {io_threads} · load budget {} MiB · autosave {autosave_str} · heap live {:.1} MiB · heap peak {:.1} MiB",
+        "ARTY_BENCH threads · available_parallelism {avail} · usable physical {} · usable logical {} · rayon {} · io {io_threads} · load budget {} MiB · autosave {autosave_str} · perf {perf} · heap live {:.1} MiB · heap peak {:.1} MiB",
         cpus.physical,
         cpus.logical,
         rayon::current_num_threads(),
@@ -673,6 +723,11 @@ mod tests {
         assert_eq!(parse_mode("simple"), Some(UiMode::Simple));
         assert_eq!(parse_mode(""), None);
         assert_eq!((parse_on("1"), parse_on("0")), (Some(true), None));
+        assert_eq!(parse_perf(" Light "), Some(PerfMode::Light));
+        assert_eq!(parse_perf("fast"), None);
+        assert_eq!(parse_newdoc("1"), Some(None));
+        assert_eq!(parse_newdoc("B4_600"), Some(Some((6071, 8598, 600))));
+        assert_eq!(parse_newdoc("b3"), None);
         assert_eq!(parse_zoom("1.5"), Some(1.5));
         for bad in ["0", "0.1", "5", "nan", "big"] {
             assert_eq!(parse_zoom(bad), None, "{bad}");

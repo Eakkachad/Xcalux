@@ -9,8 +9,8 @@
 //! [`service::IoService`] runs all of this on a background thread for the
 //! app.
 
-// The only unsafe code is two Win32 calls in `service` (thread priority,
-// physical memory size).
+// The only unsafe code is Win32 calls in `service` (thread priority, physical
+// memory size) and `storage` (drive type).
 #![deny(unsafe_code)]
 
 #[cfg(target_endian = "big")]
@@ -40,6 +40,7 @@ pub mod refl;
 pub mod selm;
 pub mod service;
 pub mod sink;
+pub mod storage;
 pub mod table;
 pub mod writer;
 

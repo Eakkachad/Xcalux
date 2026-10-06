@@ -26,7 +26,10 @@ use crate::studio::{ContentEpochs, Studio};
 pub const THUMB_MAX: usize = TILE_SIZE;
 
 /// Raster filtering per frame; at least one layer is refreshed regardless.
-const FRAME_BUDGET: Duration = Duration::from_millis(4);
+/// Light performance mode (D3) halves it.
+pub fn frame_budget(light: bool) -> Duration {
+    Duration::from_millis(if light { 2 } else { 4 })
+}
 
 /// Pixel size of a page-shaped thumbnail fitting `box_px` (pixels).
 pub fn thumb_size(page: [u32; 2], box_px: [f32; 2]) -> [usize; 2] {
@@ -170,8 +173,8 @@ impl ThumbCache {
 
     /// Bring thumbnails up to date within this frame's budget. Does nothing
     /// during a stroke. Returns `true` when work is left for later frames.
-    pub fn update(&mut self, studio: &Studio, size: [usize; 2]) -> bool {
-        !studio.engine.is_stroking() && self.refresh(&studio.doc, studio.epochs(), size, FRAME_BUDGET)
+    pub fn update(&mut self, studio: &Studio, size: [usize; 2], budget: Duration) -> bool {
+        !studio.engine.is_stroking() && self.refresh(&studio.doc, studio.epochs(), size, budget)
     }
 
     /// Refresh stale thumbnails, top layer first, until `budget` is spent
@@ -474,6 +477,12 @@ mod tests {
     }
 
     #[test]
+    fn light_mode_halves_the_frame_budget() {
+        assert_eq!(frame_budget(false), Duration::from_millis(4));
+        assert_eq!(frame_budget(true), Duration::from_millis(2));
+    }
+
+    #[test]
     fn only_changed_layers_are_refiltered() {
         let mut s = Studio::new(Document::new(64, 64, 72));
         let a = s.doc.active();
@@ -685,17 +694,17 @@ mod tests {
     fn no_refresh_during_a_stroke() {
         let mut s = Studio::new(Document::new(64, 64, 72));
         let mut cache = ThumbCache::default();
-        assert!(!cache.update(&s, SIZE));
+        assert!(!cache.update(&s, SIZE, ALL));
         let gen0 = cache.generation;
         let at = |x: f32| InputSample { x, y: 20.0, pressure: 1.0, time: x as f64 * 0.01, ..Default::default() };
         assert!(s.begin_stroke(at(4.0)));
         for x in 5..40 {
             s.feed_stroke(at(x as f32));
         }
-        cache.update(&s, SIZE);
+        cache.update(&s, SIZE, ALL);
         assert_eq!(cache.generation, gen0, "stroke in progress");
         s.end_stroke();
-        cache.update(&s, SIZE);
+        cache.update(&s, SIZE, ALL);
         assert_eq!(cache.generation, gen0 + 1);
         assert!(cache.pixels(s.doc.active()).unwrap()[2][3][3] > 0, "stroke shows up");
     }
