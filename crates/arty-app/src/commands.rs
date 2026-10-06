@@ -19,6 +19,8 @@ pub enum SelModify {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
+    /// Back to the home screen.
+    Home,
     NewDocument,
     Open,
     Save,
@@ -87,6 +89,7 @@ impl Command {
     pub fn label(self) -> &'static str {
         use crate::text::{Key as TKey, t};
         match self {
+            Command::Home => t(TKey::CmdHome),
             Command::NewDocument => t(TKey::CmdNewDocument),
             Command::Open => t(TKey::CmdOpen),
             Command::Save => t(TKey::CmdSave),
@@ -241,6 +244,7 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
     let origin = shell.canvas_center_px;
     let step = 15f32.to_radians();
     match cmd {
+        Command::Home => shell.file_request = Some(FileRequest::Home),
         Command::NewDocument => shell.file_request = Some(FileRequest::New),
         Command::Open => shell.file_request = Some(FileRequest::Open),
         Command::Save => shell.file_request = Some(FileRequest::Save),

@@ -178,6 +178,16 @@ pub fn meta_body(entries: &[(&str, &str)]) -> Vec<u8> {
     b
 }
 
+/// `THUM` body: `u16 w, u16 h, u32 fmt = 0`, then `w * h` RGBA8 pixels.
+pub fn thumb_body(w: u16, h: u16, rgba: &[u8]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(rgba.len().saturating_add(8));
+    b.extend_from_slice(&w.to_le_bytes());
+    b.extend_from_slice(&h.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(rgba);
+    b
+}
+
 /// `LEXT` body.
 pub fn lext_body<'a>(entries: impl ExactSizeIterator<Item = &'a LayerExt>) -> Vec<u8> {
     let mut b = Vec::new();

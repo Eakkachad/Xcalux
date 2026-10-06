@@ -170,6 +170,7 @@ fn kept_sections_survive_autosave_save_and_compaction() {
             LayerExt { layer: id.0, tag: *b"FUT2", flags: 0, bytes: Vec::new() },
         ],
         title: "Kept".into(),
+        ..Default::default()
     };
     let main = dir.join("kept.arty");
     Session::new(session(), None).save_main(&doc, &ex, &main, false, &opts(), &pool, &p).unwrap();
@@ -185,6 +186,7 @@ fn kept_sections_survive_autosave_save_and_compaction() {
         sections: loaded.extra_sections.clone(),
         layer_ext: loaded.layer_ext.clone(),
         title: "Kept".into(),
+        ..Default::default()
     };
     let mut doc = loaded.doc;
     let recovery = s.recovery_path().unwrap();

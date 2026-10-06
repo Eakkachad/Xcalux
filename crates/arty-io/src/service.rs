@@ -393,8 +393,14 @@ impl Worker {
                     Err(e) => self.failed(ticket, "open", e),
                 }
             }
-            Request::Save { doc, ex, path, rev, overwrite_external } => {
+            Request::Save { doc, mut ex, path, rev, overwrite_external } => {
                 let o = SaveOptions::default();
+                // The app sends one cut from the canvas's overview; without (a
+                // page it was not current for) the page is flattened here.
+                // Autosaves (recovery files) carry none.
+                if ex.thumb.is_none() {
+                    ex.thumb = crate::thumb::make(&doc, &self.pool);
+                }
                 match self.session.save_main(&doc, &ex, &path, overwrite_external, &o, &self.pool, p) {
                     Ok(stats) => {
                         // The main file holds the restored state now.

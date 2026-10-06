@@ -230,7 +230,7 @@ impl CanvasPane {
 
         // Upload whatever the input changed, then draw it this same frame.
         if let (Some(gpu), Some(render)) = (self.gpu.as_mut(), self.render.as_ref())
-            && let Some(stats) = self.sync.sync(&mut studio.doc, gpu, &render.device, &render.queue) {
+            && let Some(stats) = self.sync.sync(&mut studio.doc, gpu, &render.device, &render.queue, &mut studio.overview) {
                 shell.last_sync = stats;
             }
         self.paint(ui, rect, ppp, origin, studio, shell, tool, &response);

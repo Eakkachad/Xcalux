@@ -438,3 +438,31 @@ fn restored_file_is_deleted_after_the_first_autosave() {
     assert!(files_with(&dir, ".arty").is_empty() && files_with(&dir, ".lock").is_empty());
     io.shutdown();
 }
+
+/// A save carries the page thumbnail (recent files); an autosave does not.
+#[test]
+fn a_save_writes_a_thumbnail_and_an_autosave_does_not() {
+    let dir = temp_dir("svc-thumb");
+    let io = spawn(&dir);
+    let d = doc(9, 8);
+    let path = dir.join("t.arty");
+    autosave(&io, &d);
+    save(&io, &d, &path);
+    settle(&io);
+    let info = arty_io::read_info(&path).unwrap();
+    let (w, h, px) = info.thumb.expect("a saved file has a thumbnail");
+    assert_eq!((w, h, px.len()), (256, 256, 256 * 256 * 4), "a 256 px page is shown 1:1");
+    assert!(px.chunks(4).all(|p| p[3] == 255));
+    assert!(px.chunks(4).any(|p| p[..3] != [255, 255, 255]), "the noise tiles show");
+    for rec in files_with(&dir.join("recovery"), ".arty") {
+        assert!(arty_io::read_info(&rec).unwrap().thumb.is_none());
+    }
+    // The thumbnail is the saved state: edit, save again, it follows.
+    let before = px;
+    let d2 = with_rev(doc(10, 8), 1);
+    save(&io, &d2, &path);
+    settle(&io);
+    let after = arty_io::read_info(&path).unwrap().thumb.unwrap().2;
+    assert_ne!(before, after);
+    io.shutdown();
+}

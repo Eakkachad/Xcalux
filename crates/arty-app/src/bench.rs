@@ -27,6 +27,9 @@
 //!   size would, and report the size reached; the geometry is then not saved.
 //! - `ARTY_BENCH_ZOOM=<factor>`: egui zoom factor (UI scale on top of the OS scale).
 //! - `ARTY_BENCH_HOME=1`: show the home screen, which bench runs skip.
+//! - `ARTY_BENCH_RECENT=<a.arty|b.arty|...>`: the recent files list for the run
+//!   (newest first; not saved). With the home screen it reports how long the
+//!   thumbnails took (`home_recent` line).
 //! - `ARTY_BENCH_NEWDOC=1|<preset>`: open the New Page dialog at start-up, on
 //!   its preset `b4_350`, `b5_350`, `a4_350`, `b4_600` or `a4_600` if one is named.
 //! - `ARTY_BENCH_NEWDOC_LIST=1`: with the New Page dialog, its preset list open.
@@ -239,6 +242,11 @@ pub fn zoom() -> Option<f32> {
 
 pub fn home() -> bool {
     env("ARTY_BENCH_HOME", parse_on).unwrap_or(false)
+}
+
+/// The recent files list this run starts with (see the module docs).
+pub fn recent() -> Option<Vec<PathBuf>> {
+    env("ARTY_BENCH_RECENT", crate::recent::parse_paths)
 }
 
 /// The New Page dialog opens at start-up, with this page if a preset is named.
