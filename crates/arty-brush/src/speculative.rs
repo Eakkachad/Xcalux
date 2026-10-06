@@ -433,6 +433,16 @@ fn worker_loop(ring: Arc<SampleRingBuffer>, state: Arc<(Mutex<WorkerState>, Cond
             }
             WorkerCommand::End { final_log, final_total } => {
                 if let Some(cfg) = config.take() {
+                    // The prefix was rendered from the samples this thread popped. If one was
+                    // dropped (full ring) or belongs to another stroke (a start racing the
+                    // ring clear), the result would differ: let the engine replay instead.
+                    if final_log.get(..worker_log.len()) != Some(&worker_log[..]) {
+                        let mut s = lock.lock().unwrap();
+                        s.result = None;
+                        s.idle = true;
+                        cvar.notify_all();
+                        continue;
+                    }
                     let t0 = Instant::now();
                     let (tin, tout, corr) = cfg.shape;
                     let sigma = if corr > 0 { correction_sigma_px(corr, cfg.view_zoom) } else { 0.0 };

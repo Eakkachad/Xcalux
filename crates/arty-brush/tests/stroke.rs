@@ -735,6 +735,7 @@ fn scribble_in_place_is_not_a_tap() {
 fn deterministic_budget_selection() {
     let mut doc = Document::new(512, 512, 350);
     let mut engine = StrokeEngine::new();
+    engine.set_speculative_replay(false); // tests the non-speculative fallback
     let pen = arty_brush::BrushPreset { size: 8.0, ..shaped("G-Pen", 30.0, 80.0, 3) };
     engine.configure(&pen, [0.0; 3]);
 
@@ -764,6 +765,7 @@ fn deterministic_budget_selection() {
 fn tail_replay_applies_correction_and_taper() {
     let mut doc = Document::new(512, 512, 350);
     let mut engine = StrokeEngine::new();
+    engine.set_speculative_replay(false); // tests the non-speculative fallback
     let pen = arty_brush::BrushPreset { size: 8.0, ..shaped("G-Pen", 0.0, 80.0, 4) };
     engine.configure(&pen, [0.0; 3]);
     // Force Tail replay by setting a very tight budget (0.1 ms).

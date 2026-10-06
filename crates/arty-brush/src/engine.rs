@@ -517,7 +517,10 @@ impl StrokeEngine {
         let ceiling = self.full_replay_ceiling_px();
         let affordable = self.stats.px <= ceiling;
 
-        if self.speculative && affordable {
+        // The worker has replayed the stable prefix while the pen was down, so
+        // only the remainder is left and the pixel ceiling does not apply (B023),
+        // except for huge brushes, whose remaining dabs alone could stall pen-up.
+        if self.speculative && (affordable || self.max_radius <= 64.0) {
             let t_rep0 = Instant::now();
             if let Some(res) = self.worker.finish_stroke(self.log.clone(), total, 100)
                 && let Some(id) = self.layer
