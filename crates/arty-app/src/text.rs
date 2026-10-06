@@ -602,6 +602,18 @@ pub enum Key {
     PerfLight,
     PerfFull,
     PerfTip,
+
+    // Help menu, About, crash notice
+    MenuHelp,
+    HelpAbout,
+    HelpOpenLogs,
+    HelpReport,
+    AboutVersion,
+    AboutPreviewNote,
+    AboutLicences,
+    AboutBack,
+    AboutClose,
+    CrashNotice,
 }
 
 impl Key {
@@ -1043,6 +1055,16 @@ impl Key {
         Key::PerfLight,
         Key::PerfFull,
         Key::PerfTip,
+        Key::MenuHelp,
+        Key::HelpAbout,
+        Key::HelpOpenLogs,
+        Key::HelpReport,
+        Key::AboutVersion,
+        Key::AboutPreviewNote,
+        Key::AboutLicences,
+        Key::AboutBack,
+        Key::AboutClose,
+        Key::CrashNotice,
     ];
 }
 
@@ -1564,6 +1586,24 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::PerfTip => (
             "โหมดเบาปิดแอนิเมชันและลดเวลาที่ใช้อัปเดตภาพย่อเลเยอร์ต่อเฟรม เหมาะกับเครื่องที่ช้า อัตโนมัติจะเลือกโหมดเบาให้เองบนเครื่องที่สเปกต่ำ",
             "Light turns animations off and spends less time per frame refreshing layer thumbnails. Auto picks Light on a low-end machine.",
+        ),
+
+        // Help menu, About, crash notice
+        Key::MenuHelp => ("ช่วยเหลือ", "Help"),
+        Key::HelpAbout => ("เกี่ยวกับ ARTY", "About ARTY"),
+        Key::HelpOpenLogs => ("เปิดโฟลเดอร์ไฟล์ log", "Open log folder"),
+        Key::HelpReport => ("แจ้งปัญหา", "Report a problem"),
+        Key::AboutVersion => ("เวอร์ชัน {}", "Version {}"),
+        Key::AboutPreviewNote => (
+            "เวอร์ชันพรีวิวสำหรับทดสอบ ถ้าเจอปัญหา เลือกเมนู ช่วยเหลือ แล้วกด แจ้งปัญหา",
+            "A preview build for testing. If something goes wrong, use Help, then Report a problem.",
+        ),
+        Key::AboutLicences => ("ใบอนุญาต", "Licences"),
+        Key::AboutBack => ("กลับ", "Back"),
+        Key::AboutClose => ("ปิด", "Close"),
+        Key::CrashNotice => (
+            "ARTY ปิดตัวลงโดยไม่คาดคิดในครั้งที่แล้ว งานของคุณอยู่ในส่วนกู้คืน (Recovery)",
+            "ARTY closed unexpectedly last time. Your work is in Recovery.",
         ),
     }
 }

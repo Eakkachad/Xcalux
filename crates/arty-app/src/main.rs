@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod about;
 mod app;
 mod bench;
 mod canvas;
@@ -12,6 +13,7 @@ mod export;
 mod files;
 pub mod gpu_setup;
 mod home;
+mod logging;
 mod machine;
 mod panels;
 mod recent;
@@ -29,12 +31,12 @@ mod tools;
 static ALLOC: arty_testkit::CountingAllocator = arty_testkit::CountingAllocator;
 
 fn main() -> eframe::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    let bench_active = bench::active();
+    logging::init(bench_active);
     init_rayon();
 
     let safe_gpu = std::env::args().any(|arg| arg == "--safe-gpu");
     let storage_dir = eframe::storage_dir(APP_NAME);
-    let bench_active = bench::active();
 
     let (wgpu_setup, backend) = gpu_setup::init_gpu(storage_dir.as_deref(), safe_gpu, bench_active);
     let fast_vsync_ok = backend == gpu_setup::GpuBackend::Dx12 || backend == gpu_setup::GpuBackend::Warp;
@@ -65,8 +67,11 @@ fn main() -> eframe::Result<()> {
         if let Some(dir) = storage_dir.as_deref() {
             gpu_setup::forget_last_working(dir);
         }
+        log::error!("could not run the window: {e}");
+        logging::flush();
         return Err(e);
     }
+    logging::flush();
     // A bench hook that failed (bench.rs) quits with its own code.
     match bench::exit_code() {
         0 => Ok(()),
