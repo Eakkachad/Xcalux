@@ -11,6 +11,7 @@ pub mod preset;
 pub mod pressure;
 pub mod preview;
 pub mod shape;
+pub mod speculative;
 pub mod surface;
 
 pub use engine::{EndBreakdown, Reshape, StrokeEngine, StrokeRefused};

@@ -3,7 +3,7 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use arty_core::{Document, Edit, LayerId, PixelRecorder, TilePixels, tile::new_tile_box};
+use arty_core::{Document, Edit, LayerId, PixelRecorder, TileGrid, TilePixels, tile::new_tile_box};
 use hokusai::mapping::SettingValue;
 use hokusai::{BrushSetting, BrushState};
 
@@ -12,6 +12,7 @@ use crate::preset::BrushPreset;
 use crate::shape::{
     self, DabStats, MAX_LOGGED_SAMPLES, ShapeSample, TileClip, correct_path, correction_sigma_px, seg_len, taper,
 };
+use crate::speculative::{SpeculativeWorker, StrokeConfig};
 use crate::surface::{LayerSurface, MaskCur};
 
 /// Why a stroke could not start.
@@ -115,6 +116,10 @@ pub struct StrokeEngine {
     tail_buf: Vec<ShapeSample>,
     tail_corrected: Vec<ShapeSample>,
     breakdown: EndBreakdown,
+    speculative: bool,
+    worker: SpeculativeWorker,
+    pre_stroke_grid: TileGrid,
+    worker_cpu_us: u64,
 }
 
 static STARTUP_RATE: OnceLock<f64> = OnceLock::new();
@@ -188,6 +193,10 @@ impl StrokeEngine {
             tail_buf: Vec::new(),
             tail_corrected: Vec::new(),
             breakdown: EndBreakdown::default(),
+            speculative: true,
+            worker: SpeculativeWorker::new(n),
+            pre_stroke_grid: TileGrid::new(),
+            worker_cpu_us: 0,
         }
     }
 
@@ -233,6 +242,21 @@ impl StrokeEngine {
     /// Fine-grained timing breakdown of the last `end()` call.
     pub fn last_breakdown(&self) -> EndBreakdown {
         self.breakdown
+    }
+
+    /// Enable or disable speculative stroke replay (Zero-Wait Pen-Up).
+    pub fn set_speculative_replay(&mut self, enabled: bool) {
+        self.speculative = enabled;
+    }
+
+    /// Whether speculative stroke replay is enabled.
+    pub fn is_speculative_replay(&self) -> bool {
+        self.speculative
+    }
+
+    /// Worker CPU time consumed by the last stroke replay (in microseconds).
+    pub fn worker_cpu_time_us(&self) -> u64 {
+        self.worker_cpu_us
     }
 
     fn effective_rate_ns_per_px(&self) -> f64 {
@@ -338,6 +362,23 @@ impl StrokeEngine {
         self.painted = false;
         self.peak_pressure = s.pressure;
         self.live_paint_ns = 0;
+        self.worker_cpu_us = 0;
+        let (tiles_wide, tiles_high) = (doc.tiles_wide() as i32, doc.tiles_high() as i32);
+        if let Some((grid, _, mask)) = doc.paint_target_masked(id) {
+            self.pre_stroke_grid = grid.clone();
+            if self.logging && self.speculative {
+                self.worker.start_stroke(StrokeConfig {
+                    brush: self.brush.clone(),
+                    state0: self.state0.clone(),
+                    shape: self.shape,
+                    view_zoom: self.view_zoom,
+                    pre_stroke_grid: self.pre_stroke_grid.clone(),
+                    tiles_wide,
+                    tiles_high,
+                    mask: mask.cloned(),
+                });
+            }
+        }
         let s = self.stabilizer.push(s);
         let t0 = Instant::now();
         self.paint(doc, s, 0.0);
@@ -409,6 +450,7 @@ impl StrokeEngine {
         // lift-off sample has pressure 0, so use the stroke's peak instead.
         let was_tap = !self.painted && p > 0.0;
         if was_tap {
+            self.worker.cancel();
             self.with_surface(doc, false, |brush, state, surface| {
                 state.dist_past_dab = 1.0;
                 state.last_pressure = p;
@@ -430,6 +472,7 @@ impl StrokeEngine {
 
     /// Abort the stroke, restoring the layer as it was.
     pub fn cancel(&mut self, doc: &mut Document) {
+        self.worker.cancel();
         if self.layer.take().is_some()
             && let Some(edit) = self.recorder.finish() {
                 let mut h = arty_core::History::new(1);
@@ -451,13 +494,14 @@ impl StrokeEngine {
         let total = self.arc;
         let (_, tout, corr) = self.shape;
         if (tout == 0.0 && corr == 0) || was_tap || !self.painted || total < 1.0 || self.log.len() < 3 {
+            self.worker.cancel();
             return Reshape::Skipped;
         }
         if self.log_overflow {
+            self.worker.cancel();
             return Reshape::TooLong;
         }
-        let ceiling = self.full_replay_ceiling_px();
-        let affordable = self.stats.px <= ceiling;
+
         let sigma = if corr > 0 { correction_sigma_px(corr, self.view_zoom) } else { 0.0 };
         let mut shift = 0.0f32;
         if corr > 0 {
@@ -465,8 +509,37 @@ impl StrokeEngine {
             shift = correct_path(&self.log, sigma, &mut self.corrected, &mut self.scratch);
             self.breakdown.correct_us += t_c0.elapsed().as_micros() as u64;
             if shift < 0.05 && tout == 0.0 {
+                self.worker.cancel();
                 return Reshape::Skipped;
             }
+        }
+
+        let ceiling = self.full_replay_ceiling_px();
+        let affordable = self.stats.px <= ceiling;
+
+        if self.speculative && affordable {
+            let t_rep0 = Instant::now();
+            if let Some(res) = self.worker.finish_stroke(self.log.clone(), total, 100)
+                && let Some(id) = self.layer
+                && let Some((grid, dirty)) = doc.paint_target(id)
+            {
+                let t_r0 = Instant::now();
+                self.recorder.restore(grid, dirty, |c| res.shadow_grid.get_ref(c).is_none());
+                for (c, new_tile) in res.shadow_grid.iter() {
+                    self.recorder.before_write(grid, c);
+                    grid.replace(c, Some(new_tile.clone()));
+                    dirty.mark(c);
+                }
+                self.breakdown.restore_us += t_r0.elapsed().as_micros() as u64;
+                self.breakdown.replay_us += t_rep0.elapsed().as_micros() as u64;
+                self.stats = res.stats;
+                self.worker_cpu_us = res.cpu_time_us;
+                return Reshape::Full;
+            }
+            self.worker.cancel();
+        }
+
+        if corr > 0 {
             if affordable {
                 self.replay(doc, ReplayPath::Corrected, false);
                 return Reshape::Full;
@@ -637,8 +710,14 @@ impl StrokeEngine {
             // Capacity was reserved in `begin`: never grow here.
             if self.log.len() < self.log.capacity().min(self.log_cap) {
                 self.log.push(ss);
+                if self.speculative && !self.log_overflow {
+                    self.worker.push_sample(ss);
+                }
             } else {
                 self.log_overflow = true;
+                if self.speculative {
+                    self.worker.cancel();
+                }
             }
         }
         match self.prev {

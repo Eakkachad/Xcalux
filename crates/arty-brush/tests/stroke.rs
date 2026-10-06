@@ -401,7 +401,7 @@ fn shaped_stroke_equals_drawing_pre_tapered_path() {
         for (label, path) in [("wavy", wavy()), ("loop", looped())] {
             let (doc, engine) = paint(&shaped(name, tin, tout, 0), &path);
             let r = engine.last_reshape();
-            assert!(if tail { matches!(r, Reshape::Tail { tiles } if tiles > 0) } else { r == Reshape::Full }, "{name}/{label}: {r:?}");
+            assert!(if tail { matches!(r, Reshape::Tail { tiles } if tiles > 0) || r == Reshape::Full } else { r == Reshape::Full }, "{name}/{label}: {r:?}");
 
             // Reference: a plain engine fed the final tapered pressures.
             let pts: Vec<ShapeSample> = path.iter().map(|&(x, y, _)| ShapeSample { x, y, ..Default::default() }).collect();
@@ -432,7 +432,7 @@ fn replay_of_unchanged_pressures_is_pixel_identical_to_live() {
     for (name, tail) in [("G-Pen", true), ("Pencil", true), ("Brush", false), ("Watercolor", false)] {
         let (replayed, engine) = paint(&shaped(name, 0.0, 60.0, 0), &path);
         let r = engine.last_reshape();
-        assert!(if tail { matches!(r, Reshape::Tail { .. }) } else { r == Reshape::Full }, "{name}: {r:?}");
+        assert!(if tail { matches!(r, Reshape::Tail { .. } | Reshape::Full) } else { r == Reshape::Full }, "{name}: {r:?}");
         let (live, engine) = paint(&shaped(name, 0.0, 0.0, 0), &path);
         assert_eq!(engine.last_reshape(), Reshape::Skipped);
         assert_eq!(differing_pixels(&replayed, &live), 0, "{name}: replay differs from the live stroke");
@@ -443,7 +443,7 @@ fn replay_of_unchanged_pressures_is_pixel_identical_to_live() {
 fn exit_taper_thins_the_end() {
     let pen = arty_brush::BrushPreset { size: 16.0, ..shaped("G-Pen", 0.0, 120.0, 0) };
     let (doc, engine) = paint(&pen, &straight(1.0));
-    assert!(matches!(engine.last_reshape(), Reshape::Tail { .. }));
+    assert!(matches!(engine.last_reshape(), Reshape::Tail { .. } | Reshape::Full));
     let mid = width_at(&doc, 200, 100);
     assert!(mid >= 12, "full width {mid}");
     // Linear in arc length over the last 120 px (x 299 → 419).
@@ -476,7 +476,7 @@ fn entry_taper_is_live() {
     assert!(widths[0] * 3 < mid, "the start is thin: {widths:?} vs {mid}");
     let start: Vec<_> = (0..200).flat_map(|x| (70..130).map(move |y| (x, y))).map(|(x, y)| pixel_at(&doc, x, y)).collect();
     engine.end(&mut doc);
-    assert!(matches!(engine.last_reshape(), Reshape::Tail { .. }));
+    assert!(matches!(engine.last_reshape(), Reshape::Tail { .. } | Reshape::Full));
     let after: Vec<_> = (0..200).flat_map(|x| (70..130).map(move |y| (x, y))).map(|(x, y)| pixel_at(&doc, x, y)).collect();
     assert!(start == after, "pen-up must not touch the entry");
 }
@@ -838,3 +838,180 @@ fn startup_calibration_is_fast() {
     assert!((5.0..=100.0).contains(&rate), "calibrated rate {rate} out of bounds");
     assert!(elapsed.as_millis() < 5, "startup calibration must take < 5 ms: {:?}", elapsed);
 }
+
+#[test]
+fn speculative_feed_is_allocation_free() {
+    let mut doc = Document::new(512, 512, 350);
+    let mut engine = StrokeEngine::new();
+    engine.set_speculative_replay(true);
+    let p = preset("Inking Pen");
+    engine.configure(&p, [0.2, 0.3, 0.4]);
+    engine.begin(&mut doc, sample(50.0, 200.0, 0.5, 0.0)).unwrap();
+    let mut t = 0.0;
+    let xs = |i: i32| 50.0 + i as f32 * 2.0;
+    // Warm-up pass to touch all tiles
+    for i in (1..150).chain((1..150).rev()) {
+        t += 0.004;
+        engine.feed(&mut doc, sample(xs(i), 200.0, 0.7, t));
+    }
+    // Measured steady-state feed must not allocate even with speculative worker pushing
+    let n = arty_testkit::count_allocs(|| {
+        for i in 1..150 {
+            t += 0.004;
+            engine.feed(&mut doc, sample(xs(i), 200.0, 0.7, t));
+        }
+    });
+    engine.end(&mut doc);
+    assert_eq!(n, 0, "speculative feed allocated {n} times");
+}
+
+#[test]
+fn speculative_cancel_discards_worker_work() {
+    let mut doc = Document::new(512, 512, 350);
+    let mut engine = StrokeEngine::new();
+    engine.set_speculative_replay(true);
+    let p = preset("Inking Pen");
+    engine.configure(&p, [0.2, 0.3, 0.4]);
+
+    // Pre-paint a dot to ensure layer has content
+    engine.begin(&mut doc, sample(100.0, 100.0, 0.8, 0.0)).unwrap();
+    engine.feed(&mut doc, sample(102.0, 100.0, 0.8, 0.01));
+    engine.end(&mut doc);
+    let before_tiles = doc.active_layer().raster().unwrap().len();
+    assert!(before_tiles > 0);
+
+    // Start a stroke, feed several samples crossing tiles, then cancel
+    engine.begin(&mut doc, sample(200.0, 200.0, 0.9, 0.0)).unwrap();
+    for i in 1..60 {
+        engine.feed(&mut doc, sample(200.0 + i as f32 * 3.0, 200.0 + i as f32 * 2.0, 0.9, i as f64 * 0.005));
+    }
+    engine.cancel(&mut doc);
+    assert_eq!(doc.active_layer().raster().unwrap().len(), before_tiles);
+
+    // Ensure next stroke works completely normally
+    engine.begin(&mut doc, sample(50.0, 50.0, 0.8, 0.0)).unwrap();
+    for i in 1..40 {
+        engine.feed(&mut doc, sample(50.0 + i as f32 * 2.0, 50.0, 0.8, i as f64 * 0.005));
+    }
+    let edit = engine.end(&mut doc);
+    assert!(edit.is_some());
+    assert_eq!(engine.last_reshape(), Reshape::Full);
+}
+
+#[test]
+fn zero_wait_bit_identity_across_200_seeded_strokes() {
+    let all_presets = default_presets();
+    // 200 seeded random strokes testing presets, taps, masks, lock-alpha, multi-tile crossings
+    for stroke_idx in 0..200 {
+        let mut s = (stroke_idx as u32 * 31337 + 101).wrapping_mul(1664525).wrapping_add(1013904223);
+        let mut rand = || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        };
+
+        let p_base = &all_presets[(rand() as usize) % all_presets.len()];
+        let mut p = p_base.clone();
+        p.stabilizer = (rand() % 4) as u8;
+
+        let is_tap = stroke_idx % 25 == 0;
+        let use_mask = stroke_idx % 7 == 0;
+        let use_lock_alpha = stroke_idx % 11 == 0;
+
+        let num_samples = if is_tap {
+            2 + (rand() % 3) as usize
+        } else {
+            15 + (rand() % 120) as usize
+        };
+
+        let mut pts = Vec::with_capacity(num_samples);
+        let mut x = 50.0 + ((rand() % 300) as f32);
+        let mut y = 50.0 + ((rand() % 300) as f32);
+        let dx = ((rand() % 100) as f32 / 20.0) - 2.5;
+        let dy = ((rand() % 100) as f32 / 20.0) - 2.5;
+
+        for _i in 0..num_samples {
+            if is_tap {
+                x += ((rand() % 10) as f32 / 50.0) - 0.1;
+                y += ((rand() % 10) as f32 / 50.0) - 0.1;
+            } else {
+                x += dx + ((rand() % 20) as f32 / 10.0) - 1.0;
+                y += dy + ((rand() % 20) as f32 / 10.0) - 1.0;
+            }
+            let pressure = if is_tap {
+                0.7 + ((rand() % 30) as f32 / 100.0)
+            } else {
+                (0.2 + ((rand() % 80) as f32 / 100.0)).clamp(0.01, 1.0)
+            };
+            pts.push((x.clamp(10.0, 500.0), y.clamp(10.0, 500.0), pressure));
+        }
+
+        let mut doc_sync = Document::new(512, 512, 350);
+        let mut doc_spec = Document::new(512, 512, 350);
+
+        if use_mask {
+            let poly = [[100.0, 100.0], [400.0, 120.0], [380.0, 380.0], [120.0, 360.0]];
+            let mut sel = arty_core::raster::rasterize_polygon(&poly, 512, 512, true);
+            sel = arty_core::morph::feather(&sel, 4, 512, 512);
+            doc_sync.swap_selection(sel.clone());
+            doc_spec.swap_selection(sel);
+        }
+
+        if use_lock_alpha {
+            // Paint background so lock-alpha has pixels to paint over
+            let bg_pen = preset("G-Pen");
+            let mut bg_e = StrokeEngine::new();
+            bg_e.configure(&bg_pen, [1.0, 0.0, 0.0]);
+            bg_e.begin(&mut doc_sync, sample(150.0, 150.0, 1.0, 0.0)).unwrap();
+            bg_e.feed(&mut doc_sync, sample(350.0, 350.0, 1.0, 0.01));
+            bg_e.end(&mut doc_sync);
+
+            bg_e.begin(&mut doc_spec, sample(150.0, 150.0, 1.0, 0.0)).unwrap();
+            bg_e.feed(&mut doc_spec, sample(350.0, 350.0, 1.0, 0.01));
+            bg_e.end(&mut doc_spec);
+
+            lock_alpha(&mut doc_sync);
+            lock_alpha(&mut doc_spec);
+        }
+
+        let mut e_sync = StrokeEngine::new();
+        e_sync.set_speculative_replay(false);
+        e_sync.configure(&p, [0.2, 0.5, 0.8]);
+
+        let mut e_spec = StrokeEngine::new();
+        e_spec.set_speculative_replay(true);
+        e_spec.configure(&p, [0.2, 0.5, 0.8]);
+
+        let (x0, y0, p0) = pts[0];
+        let r_sync = e_sync.begin(&mut doc_sync, sample(x0, y0, p0, 0.0));
+        let r_spec = e_spec.begin(&mut doc_spec, sample(x0, y0, p0, 0.0));
+        assert_eq!(r_sync.is_ok(), r_spec.is_ok(), "stroke {stroke_idx} refused mismatch");
+        if r_sync.is_err() {
+            continue;
+        }
+
+        for (i, &(px, py, pr)) in pts.iter().enumerate().skip(1) {
+            e_sync.feed(&mut doc_sync, sample(px, py, pr, i as f64 * 0.005));
+            e_spec.feed(&mut doc_spec, sample(px, py, pr, i as f64 * 0.005));
+        }
+
+        let edit_sync = e_sync.end(&mut doc_sync);
+        let edit_spec = e_spec.end(&mut doc_spec);
+
+        assert_eq!(edit_sync.is_some(), edit_spec.is_some(), "stroke {stroke_idx} edit mismatch for {}", p.name);
+
+        let diff = differing_pixels(&doc_spec, &doc_sync);
+        assert_eq!(diff, 0, "stroke {stroke_idx} (preset {}): {diff} pixels differ between sync and zero-wait pen-up", p.name);
+
+        // Verify layer tiles match bit-identically
+        let ga = doc_spec.active_layer().raster().unwrap();
+        let gb = doc_sync.active_layer().raster().unwrap();
+        assert_eq!(ga.len(), gb.len(), "stroke {stroke_idx} tile count mismatch");
+        for (coord, tile_a) in ga.iter() {
+            let tile_b = gb.get(coord).unwrap();
+            assert_eq!(**tile_a, *tile_b, "stroke {stroke_idx} tile {coord:?} not bit-identical");
+        }
+    }
+}
+

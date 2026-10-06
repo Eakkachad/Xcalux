@@ -1515,7 +1515,7 @@ mod tests {
         assert_eq!(curved.studio.engine.last_reshape(), Reshape::Skipped);
 
         let mut tapered = run(boost, 80.0);
-        assert!(matches!(tapered.studio.engine.last_reshape(), Reshape::Tail { .. }));
+        assert!(matches!(tapered.studio.engine.last_reshape(), Reshape::Tail { .. } | Reshape::Full));
         assert!(tapered.column_height(250).abs_diff(mid) <= 1, "taper changed the middle");
         let (start, end) = (tapered.column_height(110), tapered.column_height(390));
         assert!(start < mid && end < mid, "no taper: {start} / {mid} / {end}");

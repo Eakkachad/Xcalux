@@ -10,6 +10,10 @@ arty-core.workspace = true
 hokusai.workspace = true
 serde.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
+
+
 [dev-dependencies]
 arty-testkit.workspace = true
 
