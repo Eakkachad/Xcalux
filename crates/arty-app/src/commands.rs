@@ -5,7 +5,7 @@ use arty_brush::BrushGroup;
 use arty_core::LayerId;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
-use crate::shell::{FileRequest, Shell};
+use crate::shell::{FileRequest, Shell, UiMode};
 use crate::studio::{FrameMode, Studio, Tool};
 use crate::tools;
 
@@ -55,6 +55,8 @@ pub enum Command {
     SelectTool(Tool),
     ToggleTheme,
     ResetLayout,
+    /// Switch between Simple and Studio; each keeps its own panel layout.
+    SetUiMode(UiMode),
     PenEnd(arty_pen::PenEnd),
     SelectAll,
     Deselect,
@@ -119,6 +121,8 @@ impl Command {
             Command::SelectTool(t) => t.label(),
             Command::ToggleTheme => t(TKey::CmdToggleTheme),
             Command::ResetLayout => t(TKey::CmdResetLayout),
+            Command::SetUiMode(UiMode::Simple) => t(TKey::CmdModeSimple),
+            Command::SetUiMode(UiMode::Studio) => t(TKey::CmdModeStudio),
             Command::PenEnd(arty_pen::PenEnd::Tip) => t(TKey::CmdPenTip),
             Command::PenEnd(arty_pen::PenEnd::Eraser) => t(TKey::CmdPenEraser),
             Command::SelectAll => t(TKey::CmdSelectAll),
@@ -306,6 +310,7 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
         Command::SelectTool(t) => studio.select_tool(t),
         Command::ToggleTheme => shell.toggle_theme(),
         Command::ResetLayout => shell.reset_layout_requested = true,
+        Command::SetUiMode(mode) => shell.set_ui_mode(mode),
         Command::PenEnd(end) => studio.switch_pen_end(end),
         Command::SelectAll
         | Command::Deselect

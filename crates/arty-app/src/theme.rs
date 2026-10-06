@@ -3,6 +3,38 @@
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};
 
+use crate::shell::UiMode;
+
+/// Click target height in Studio (compact).
+pub const TARGET_STUDIO: f32 = 20.0;
+/// Click target height in Simple: WCAG 2.2 target size (2.5.8) minimum.
+pub const TARGET_SIMPLE: f32 = 24.0;
+/// Width of the left tool bar: icons only (Studio) or icons with labels (Simple).
+pub const TOOLBAR_STUDIO_WIDTH: f32 = 46.0;
+pub const TOOLBAR_SIMPLE_WIDTH: f32 = 112.0;
+/// Studio tool bar icon button (square).
+pub const TOOL_BUTTON: f32 = 32.0;
+/// Simple tool bar button height (icon + label row).
+pub const SIMPLE_TOOL_HEIGHT: f32 = 32.0;
+pub const TOOL_ICON: f32 = 18.0;
+/// Slider length in the Simple slider bar under the canvas.
+pub const SIMPLE_SLIDER_WIDTH: f32 = 160.0;
+/// Color chip in the swatch / recent color grids (Studio).
+pub const SWATCH_STUDIO: f32 = 20.0;
+
+/// Click target height for a UI mode.
+pub fn target_height(mode: UiMode) -> f32 {
+    match mode {
+        UiMode::Simple => TARGET_SIMPLE,
+        UiMode::Studio => TARGET_STUDIO,
+    }
+}
+
+/// Swatch size for a UI mode (a full click target in Simple).
+pub fn swatch_size(mode: UiMode) -> f32 {
+    target_height(mode).max(SWATCH_STUDIO)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ThemeKind {
     #[default]
@@ -78,7 +110,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
 }
 
-pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
+pub fn apply(ctx: &egui::Context, kind: ThemeKind, mode: UiMode) {
     let p = kind.palette();
     let mut v = match kind {
         ThemeKind::Dark => Visuals::dark(),
@@ -140,7 +172,7 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
         style.spacing.button_padding = egui::vec2(6.0, 3.0);
-        style.spacing.interact_size.y = 20.0;
+        style.spacing.interact_size.y = target_height(mode);
         style.spacing.slider_width = 120.0;
         style.text_styles = [
             (TextStyle::Small, FontId::new(10.5, FontFamily::Proportional)),

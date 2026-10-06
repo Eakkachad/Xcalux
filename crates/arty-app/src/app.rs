@@ -16,21 +16,23 @@ use crate::canvas::CanvasPane;
 use crate::commands::{self, Command, SelModify};
 use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
-use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
-use crate::shell::{self, FileRequest, PAGE_PRESETS, Shell, new_doc_text};
+use crate::panels::{self, Layouts, PreviewCache, Tab, ThumbCache, Viewer};
+use crate::shell::{self, FileRequest, PAGE_PRESETS, Shell, UiMode, new_doc_text};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
 use crate::text::{self, Key, Lang, display_preset_name, t};
 use crate::theme::{self, ThemeKind};
 use crate::tools::{self, ToolOptions};
 
 const STORAGE_KEY: &str = "arty-v2";
-/// Bump when the default dock layout changes so old layouts are replaced.
+/// Bump when a default dock layout changes so old layouts are replaced. It
+/// covers both modes; version 1 profiles from before modes load into Studio.
 const LAYOUT_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
 struct Persisted {
     theme: ThemeKind,
     layout_version: u32,
+    /// Studio's dock (the only one before UI modes).
     dock: DockState<Tab>,
     presets: Vec<BrushPreset>,
     input: InputSettings,
@@ -41,6 +43,27 @@ struct Persisted {
     tool_opts: ToolOptions,
     #[serde(default)]
     lang: Lang,
+    #[serde(default = "UiMode::existing_profile")]
+    ui_mode: UiMode,
+    #[serde(default)]
+    simple_dock: Option<DockState<Tab>>,
+}
+
+/// Mode and per-mode docks from the saved settings: a fresh profile starts in
+/// Simple, one saved before UI modes keeps its dock in Studio, and a dock of
+/// another layout version gives way to that mode's default.
+fn restore_layouts(saved: Option<&Persisted>) -> (UiMode, Layouts) {
+    let mut layouts = Layouts::default();
+    let Some(p) = saved else {
+        return (UiMode::default(), layouts);
+    };
+    if p.layout_version == LAYOUT_VERSION {
+        layouts.studio = p.dock.clone();
+        if let Some(dock) = &p.simple_dock {
+            layouts.simple = dock.clone();
+        }
+    }
+    (p.ui_mode, layouts)
 }
 
 pub struct ArtyApp {
@@ -49,7 +72,7 @@ pub struct ArtyApp {
     canvas: CanvasPane,
     previews: PreviewCache,
     thumbs: ThumbCache,
-    dock: DockState<Tab>,
+    layouts: Layouts,
     export_job: Option<Receiver<String>>,
     files: FileController,
     /// `ARTY_BENCH_*` hooks (bench.rs); `None` in normal runs.
@@ -117,7 +140,7 @@ impl ArtyApp {
         // Mailbox panics where unsupported and eframe exposes no surface capabilities.
         studio.fast_vsync_ok =
             cc.wgpu_render_state.as_ref().is_some_and(|r| r.adapter.get_info().backend == egui_wgpu::wgpu::Backend::Dx12);
-        let mut dock = panels::default_layout();
+        let (mut ui_mode, layouts) = restore_layouts(saved.as_ref());
         let mut theme_kind = ThemeKind::Dark;
         let mut autosave = AutosaveSettings::default();
         let mut lang = Lang::default();
@@ -125,9 +148,6 @@ impl ArtyApp {
             theme_kind = p.theme;
             autosave = p.autosave;
             lang = p.lang;
-            if p.layout_version == LAYOUT_VERSION {
-                dock = p.dock;
-            }
             if !p.presets.is_empty() {
                 studio.presets = p.presets;
                 studio.select_tool(studio.tool);
@@ -143,6 +163,8 @@ impl ArtyApp {
             let InputSettings { native_pen, display_sync, .. } = studio.input;
             studio.input = InputSettings { native_pen, display_sync, ..InputSettings::default() };
             autosave = AutosaveSettings::default();
+            // Bench figures stay comparable with runs from before UI modes.
+            ui_mode = UiMode::Studio;
         }
         // What main.rs started the surface with (the render state is created from it).
         let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
@@ -163,6 +185,7 @@ impl ArtyApp {
         let mut shell = Shell::new(theme_kind);
         shell.lang = lang;
         shell.autosave = autosave;
+        shell.ui_mode = ui_mode;
         let dialogs: Box<dyn files::FileDialogs> = match bench.as_ref().and_then(|b| b.open.as_ref()) {
             Some(_) => {
                 shell.file_request = Some(FileRequest::Open);
@@ -182,7 +205,7 @@ impl ArtyApp {
             canvas: CanvasPane::new(cc.wgpu_render_state.clone(), pen),
             previews: PreviewCache::default(),
             thumbs: ThumbCache::default(),
-            dock,
+            layouts,
             export_job: None,
             files,
             bench,
@@ -294,6 +317,14 @@ impl ArtyApp {
                     item(ui, cmd, studio, shell);
                 }
                 ui.separator();
+                for mode in UiMode::ALL {
+                    let cmd = Command::SetUiMode(mode);
+                    if ui.selectable_label(shell.ui_mode == mode, cmd.label()).clicked() {
+                        commands::execute(cmd, studio, shell);
+                        ui.close();
+                    }
+                }
+                ui.separator();
                 let page = &studio.opts.page;
                 for (cmd, on) in [(Command::TogglePageGuides, page.show_guides), (Command::ToggleTrimShade, page.shade_outside_trim)] {
                     if ui.selectable_label(on, cmd.label()).clicked() {
@@ -303,15 +334,16 @@ impl ArtyApp {
                 }
             });
             ui.menu_button(t(Key::MenuWindow), |ui| {
+                let dock = self.layouts.get_mut(shell.ui_mode);
                 for tab in Tab::PANELS {
-                    let open = self.dock.find_tab(&tab).is_some();
+                    let open = dock.find_tab(&tab).is_some();
                     if ui.selectable_label(open, tab.title()).clicked() {
-                        match self.dock.find_tab(&tab) {
+                        match dock.find_tab(&tab) {
                             Some(path) => {
-                                self.dock.remove_tab(path);
+                                dock.remove_tab(path);
                             }
                             None => {
-                                self.dock.add_window(vec![tab]);
+                                dock.add_window(vec![tab]);
                             }
                         }
                         ui.close();
@@ -333,6 +365,15 @@ impl ArtyApp {
                 }
                 if ui.add_enabled(studio.history.can_undo(), egui::Button::new(icon::ARROW_U_UP_LEFT)).on_hover_text(t(Key::CmdUndo)).clicked() {
                     studio.undo();
+                }
+                ui.separator();
+                // Right to left: Studio is added first so Simple reads first.
+                for mode in UiMode::ALL.into_iter().rev() {
+                    let label = RichText::new(mode.label()).strong();
+                    let r = ui.selectable_label(shell.ui_mode == mode, label).on_hover_text(t(Key::TooltipSimpleStudioToggle));
+                    if r.clicked() {
+                        commands::execute(Command::SetUiMode(mode), studio, shell);
+                    }
                 }
             });
         });
@@ -524,12 +565,13 @@ impl eframe::App for ArtyApp {
             b.frame(&ctx, &mut self.studio, self.running_sync);
         }
         if self.shell.theme_dirty {
-            theme::apply(&ctx, self.shell.theme);
+            theme::apply(&ctx, self.shell.theme, self.shell.ui_mode);
             self.shell.theme_dirty = false;
             self.previews.clear();
         }
         if self.shell.reset_layout_requested {
-            self.dock = panels::default_layout();
+            let mode = self.shell.ui_mode;
+            *self.layouts.get_mut(mode) = panels::default_layout(mode);
             self.shell.reset_layout_requested = false;
         }
         // A modal dialog owns the keyboard: no document shortcuts behind it.
@@ -554,7 +596,12 @@ impl eframe::App for ArtyApp {
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("tools").resizable(false).exact_size(46.0).show(ui, |ui| {
+        let simple = self.shell.ui_mode == UiMode::Simple;
+        if simple {
+            egui::Panel::bottom("simple-sliders").show(ui, |ui| panels::simple_sliders(ui, &mut self.studio));
+        }
+        let width = if simple { theme::TOOLBAR_SIMPLE_WIDTH } else { theme::TOOLBAR_STUDIO_WIDTH };
+        egui::Panel::left("tools").resizable(false).exact_size(width).show(ui, |ui| {
             panels::toolbar::ui(ui, &mut self.studio, &mut self.shell);
         });
 
@@ -567,7 +614,7 @@ impl eframe::App for ArtyApp {
             thumbs: &mut self.thumbs,
         };
         egui::CentralPanel::no_frame().show(ui, |ui| {
-            DockArea::new(&mut self.dock)
+            DockArea::new(self.layouts.get_mut(viewer.shell.ui_mode))
                 .style(style)
                 .show_leaf_collapse_buttons(false)
                 .show_leaf_close_all_buttons(false)
@@ -601,13 +648,15 @@ impl eframe::App for ArtyApp {
         let p = Persisted {
             theme: self.shell.theme,
             layout_version: LAYOUT_VERSION,
-            dock: self.dock.clone(),
+            dock: self.layouts.studio.clone(),
             presets: self.studio.presets.clone(),
             input: self.studio.input,
             swatches: self.studio.color.swatches.clone(),
             autosave: self.shell.autosave,
             tool_opts: self.studio.opts.clone(),
             lang: self.shell.lang,
+            ui_mode: self.shell.ui_mode,
+            simple_dock: Some(self.layouts.simple.clone()),
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
     }
@@ -636,13 +685,15 @@ mod tests {
         Persisted {
             theme: ThemeKind::Light,
             layout_version: LAYOUT_VERSION,
-            dock: panels::default_layout(),
+            dock: panels::default_layout(UiMode::Studio),
             presets: arty_brush::default_presets(),
             input: InputSettings::default(),
             swatches: vec![[0.1, 0.2, 0.3]],
             autosave: AutosaveSettings::default(),
             tool_opts: ToolOptions::default(),
             lang: Lang::En,
+            ui_mode: UiMode::Studio,
+            simple_dock: None,
         }
     }
 
@@ -702,6 +753,72 @@ mod tests {
         let back: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without tool_opts loads");
         assert!(back.tool_opts.page.show_guides && !back.tool_opts.page.shade_outside_trim, "defaults");
         assert_eq!(back.theme, ThemeKind::Light);
+    }
+
+    fn ron(dock: &DockState<Tab>) -> String {
+        let mut st = MemStorage::default();
+        eframe::set_value(&mut st, "dock", dock);
+        st.0["dock"].clone()
+    }
+
+    fn studio_without_navigator() -> DockState<Tab> {
+        let mut dock = panels::default_layout(UiMode::Studio);
+        let path = dock.find_tab(&Tab::Navigator).expect("navigator");
+        dock.remove_tab(path);
+        dock
+    }
+
+    #[test]
+    fn fresh_profile_starts_simple() {
+        let (mode, layouts) = restore_layouts(None);
+        assert_eq!(mode, UiMode::Simple);
+        assert_eq!(ron(&layouts.simple), ron(&panels::default_layout(UiMode::Simple)));
+        assert_eq!(ron(&layouts.studio), ron(&panels::default_layout(UiMode::Studio)));
+    }
+
+    /// A profile saved before UI modes opens in Studio with its own dock.
+    #[test]
+    fn profile_from_before_modes_opens_in_studio() {
+        let mut st = MemStorage::default();
+        let mut p = default_persisted();
+        p.ui_mode = UiMode::Simple;
+        p.dock = studio_without_navigator();
+        eframe::set_value(&mut st, STORAGE_KEY, &p);
+        let text = st.0[STORAGE_KEY].clone();
+        let start = text.find(",ui_mode:").expect("ui_mode written");
+        st.0.insert(STORAGE_KEY.to_owned(), format!("{})", &text[..start]));
+
+        let old: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without ui_mode loads");
+        assert!(old.simple_dock.is_none());
+        let (mode, layouts) = restore_layouts(Some(&old));
+        assert_eq!(mode, UiMode::Studio);
+        assert_eq!(ron(&layouts.studio), ron(&studio_without_navigator()));
+        assert_eq!(ron(&layouts.simple), ron(&panels::default_layout(UiMode::Simple)));
+    }
+
+    #[test]
+    fn mode_and_both_docks_persist() {
+        let mut st = MemStorage::default();
+        let mut p = default_persisted();
+        let mut simple = panels::default_layout(UiMode::Simple);
+        simple.add_window(vec![Tab::Navigator]);
+        p.ui_mode = UiMode::Simple;
+        p.dock = studio_without_navigator();
+        p.simple_dock = Some(simple.clone());
+        eframe::set_value(&mut st, STORAGE_KEY, &p);
+        let back: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("loads");
+        let (mode, layouts) = restore_layouts(Some(&back));
+        assert_eq!(mode, UiMode::Simple);
+        assert_eq!(ron(&layouts.simple), ron(&simple));
+        assert_eq!(ron(&layouts.studio), ron(&studio_without_navigator()));
+
+        // Docks of another layout version give way to the defaults; the mode stays.
+        let mut stale = back;
+        stale.layout_version = LAYOUT_VERSION + 1;
+        let (mode, layouts) = restore_layouts(Some(&stale));
+        assert_eq!(mode, UiMode::Simple);
+        assert_eq!(ron(&layouts.simple), ron(&panels::default_layout(UiMode::Simple)));
+        assert_eq!(ron(&layouts.studio), ron(&panels::default_layout(UiMode::Studio)));
     }
 
     #[test]

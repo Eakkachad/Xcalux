@@ -51,7 +51,7 @@ pub enum SelShape {
 impl SelShape {
     const ALL: [SelShape; 4] = [SelShape::Rect, SelShape::Ellipse, SelShape::Lasso, SelShape::Polygon];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             SelShape::Rect => t(Key::SelShapeRect),
             SelShape::Ellipse => t(Key::SelShapeEllipse),
