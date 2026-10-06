@@ -530,23 +530,35 @@ impl CanvasTool for TransformTool {
     }
 }
 
-/// The resize cursor along the screen direction from the box centre to
-/// corner or edge handle `h`, as `paint` places it (box rotation, mirroring
-/// and the view's rotation and flip included).
+/// The resize cursor along the screen direction of corner or edge handle `h`
+/// (box rotation, mirroring and view rotation and flip included).
 fn resize_cursor(studio: &Studio, h: Handle) -> CursorIcon {
     let Some(st) = studio.transform.as_ref() else { return CursorIcon::Crosshair };
-    let (p, r) = (st.session.params(), st.session.src_bounds());
-    let pts = handle_points(&p, r, 0.0);
-    let at = match h {
-        Handle::Corner(i) => pts.corners[i % 4],
-        Handle::Edge(i) => pts.mids[i % 4],
+    let p = st.session.params();
+    let dir = match h {
+        Handle::Corner(0) => [-1.0, -1.0],
+        Handle::Corner(1) => [1.0, -1.0],
+        Handle::Corner(2) => [1.0, 1.0],
+        Handle::Corner(3) => [-1.0, 1.0],
+        Handle::Edge(0) => [0.0, -1.0],
+        Handle::Edge(1) => [1.0, 0.0],
+        Handle::Edge(2) => [0.0, 1.0],
+        Handle::Edge(3) => [-1.0, 0.0],
         _ => return CursorIcon::Crosshair,
     };
-    let centre = p.affine().apply([(r.x + r.w * 0.5) as f64, (r.y + r.h * 0.5) as f64]);
-    // A translation does not change directions: any origin will do.
+    // Respect the box's flip (negative scale signs).
+    let sx = if p.s[0] < 0.0 { -1.0 } else { 1.0 };
+    let sy = if p.s[1] < 0.0 { -1.0 } else { 1.0 };
+    let flipped = [dir[0] * sx, dir[1] * sy];
+    // Rotate by the box's rotation.
+    let (sin, cos) = p.theta.sin_cos();
+    let doc_dx = cos * flipped[0] - sin * flipped[1];
+    let doc_dy = sin * flipped[0] + cos * flipped[1];
+    // Map the direction to screen space (view rotation, flip and zoom).
     let m = studio.view.doc_to_screen([0.0, 0.0]);
-    let (a, b) = (m.apply([centre[0] as f32, centre[1] as f32]), m.apply([at[0] as f32, at[1] as f32]));
-    resize_icon(b[0] - a[0], b[1] - a[1])
+    let screen_dx = m.a * doc_dx as f32 + m.b * doc_dy as f32;
+    let screen_dy = m.c * doc_dx as f32 + m.d * doc_dy as f32;
+    resize_icon(screen_dx, screen_dy)
 }
 
 /// The resize cursor for a screen direction (y down), to the nearest 45°.
@@ -1018,5 +1030,52 @@ mod tests {
         assert!(ctx.studio.transform.is_none());
         assert_eq!(ctx.studio.history.undo_len(), 1);
         assert_eq!((alpha(ctx.studio, 105, 50), alpha(ctx.studio, 31, 50)), (ONE_U16, ONE_U16));
+    }
+
+    #[test]
+    fn corner_resize_cursors_on_elongated_boxes() {
+        use CursorIcon::{ResizeHorizontal as H, ResizeNeSw as NE, ResizeNwSe as NW, ResizeVertical as V};
+        // Wide box: 500 px wide, 10 px tall.
+        let mut s = Studio::new(Document::new(600, 200, 72));
+        let id = s.doc.active();
+        let (g, _) = s.doc.paint_target(id).unwrap();
+        for y in 40..50 {
+            for x in 10..510 {
+                let c = TileCoord::from_pixel(x, y);
+                let (ox, oy) = c.origin();
+                g.get_mut_or_create(c)[(y - oy) as usize][(x - ox) as usize] = [ONE_U16; 4];
+            }
+        }
+        let mut shell = Shell::new(ThemeKind::Dark);
+        run(Command::Transform, &mut s, &mut shell);
+        let mut tool = TransformTool::default();
+        let mut at = |s: &Studio, h: Handle| {
+            tool.hover = Some(h);
+            tool.cursor(s)
+        };
+        // Even though the box is very wide, corners must show diagonal resize cursors.
+        assert_eq!(at(&s, Handle::Corner(0)), NW, "top-left corner of wide box is NW");
+        assert_eq!(at(&s, Handle::Corner(1)), NE, "top-right corner of wide box is NE");
+        assert_eq!(at(&s, Handle::Corner(2)), NW, "bottom-right corner of wide box is NW-SE");
+        assert_eq!(at(&s, Handle::Corner(3)), NE, "bottom-left corner of wide box is NE-SW");
+        assert_eq!(at(&s, Handle::Edge(0)), V, "top edge is vertical");
+        assert_eq!(at(&s, Handle::Edge(1)), H, "right edge is horizontal");
+
+        // Tall box: 10 px wide, 500 px tall.
+        let mut s = Studio::new(Document::new(200, 600, 72));
+        let id = s.doc.active();
+        let (g, _) = s.doc.paint_target(id).unwrap();
+        for y in 10..510 {
+            for x in 40..50 {
+                let c = TileCoord::from_pixel(x, y);
+                let (ox, oy) = c.origin();
+                g.get_mut_or_create(c)[(y - oy) as usize][(x - ox) as usize] = [ONE_U16; 4];
+            }
+        }
+        run(Command::Transform, &mut s, &mut shell);
+        assert_eq!(at(&s, Handle::Corner(0)), NW, "top-left corner of tall box is NW");
+        assert_eq!(at(&s, Handle::Corner(1)), NE, "top-right corner of tall box is NE");
+        assert_eq!(at(&s, Handle::Edge(0)), V, "top edge is vertical");
+        assert_eq!(at(&s, Handle::Edge(1)), H, "right edge is horizontal");
     }
 }
