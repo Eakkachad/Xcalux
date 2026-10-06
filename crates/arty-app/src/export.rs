@@ -7,6 +7,8 @@ use std::sync::mpsc::{Receiver, channel};
 use arty_core::{CompositeScratch, Document, TILE_SIZE, TileCoord, fix15, tile::new_tile_box};
 use rayon::prelude::*;
 
+use crate::text::{Key, t};
+
 /// Which part of the page Export PNG writes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ExportCrop {
@@ -20,9 +22,9 @@ impl ExportCrop {
 
     pub fn label(self) -> &'static str {
         match self {
-            ExportCrop::Canvas => "Canvas",
-            ExportCrop::Bleed => "Bleed",
-            ExportCrop::Trim => "Trim (finished size)",
+            ExportCrop::Canvas => t(Key::ExportCropCanvas),
+            ExportCrop::Bleed => t(Key::ExportCropBleed),
+            ExportCrop::Trim => t(Key::ExportCropTrim),
         }
     }
 
@@ -170,8 +172,8 @@ pub fn export_png(doc: &Document, crop: ExportCrop) -> Option<Receiver<String>> 
         .stack_size(512 * 1024)
         .spawn(move || {
             let msg = match write_png(&path, w, h, dpi, &data) {
-                Ok(()) => format!("Exported {}", path.display()),
-                Err(e) => format!("Export failed: {e}"),
+                Ok(()) => format!("{} {}", t(Key::ToastExported), path.display()),
+                Err(e) => format!("{}: {e}", t(Key::ToastExportFailed)),
             };
             let _ = tx.send(msg);
         });

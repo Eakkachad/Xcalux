@@ -177,14 +177,15 @@ fn sliders(ui: &mut egui::Ui, studio: &mut Studio) {
         ui.painter().rect_filled(r, CornerRadius::same(3), to32(studio.color.main));
         let (r2, resp) = ui.allocate_exact_size(Vec2::new(28.0, 18.0), Sense::click());
         ui.painter().rect_filled(r2, CornerRadius::same(3), to32(studio.color.sub));
-        if resp.on_hover_text("Sub color — click to swap (X)").clicked() {
+        if resp.on_hover_text(crate::text::t(crate::text::Key::ColorSubSwapTip)).clicked() {
             studio.swap_colors();
         }
     });
 }
 
 pub fn swatches_ui(ui: &mut egui::Ui, studio: &mut Studio) {
-    section(ui, "COLOR SET");
+    use crate::text::{t, Key};
+    section(ui, t(Key::SectionColorSet));
     let mut pick = None;
     let mut remove = None;
     let cell = 20.0;
@@ -197,13 +198,13 @@ pub fn swatches_ui(ui: &mut egui::Ui, studio: &mut Studio) {
                 pick = Some(c);
             }
             resp.context_menu(|ui| {
-                if ui.button(format!("{}  Remove", icon::TRASH)).clicked() {
+                if ui.button(format!("{}  {}", icon::TRASH, t(Key::ColorRemove))).clicked() {
                     remove = Some(i);
                     ui.close();
                 }
             });
         }
-        if ui.add_sized([cell, cell], egui::Button::new(icon::PLUS)).on_hover_text("Add main color to set").clicked() {
+        if ui.add_sized([cell, cell], egui::Button::new(icon::PLUS)).on_hover_text(t(Key::ColorAddMainTip)).clicked() {
             let c = studio.color.main;
             if !studio.color.swatches.contains(&c) {
                 studio.color.swatches.push(c);
@@ -211,7 +212,7 @@ pub fn swatches_ui(ui: &mut egui::Ui, studio: &mut Studio) {
         }
     });
     ui.add_space(8.0);
-    section(ui, "HISTORY");
+    section(ui, t(Key::SectionHistory));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::splat(3.0);
         for &c in &studio.color.recent {
@@ -222,7 +223,7 @@ pub fn swatches_ui(ui: &mut egui::Ui, studio: &mut Studio) {
             }
         }
         if studio.color.recent.is_empty() {
-            ui.weak("Colors you paint with appear here");
+            ui.weak(t(Key::ColorHistoryEmpty));
         }
     });
     if let Some(i) = remove {

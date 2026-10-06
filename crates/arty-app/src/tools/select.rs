@@ -25,6 +25,7 @@ use super::{CanvasTool, ToolCtx, ToolInput};
 use crate::commands::{self, Command, SelModify};
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+use crate::text::{Key, t};
 
 /// A drag shorter than this (points) is a click.
 const CLICK_PX: f32 = 2.0;
@@ -52,10 +53,10 @@ impl SelShape {
 
     fn label(self) -> &'static str {
         match self {
-            SelShape::Rect => "Rectangle",
-            SelShape::Ellipse => "Ellipse",
-            SelShape::Lasso => "Lasso",
-            SelShape::Polygon => "Polygon",
+            SelShape::Rect => t(Key::SelShapeRect),
+            SelShape::Ellipse => t(Key::SelShapeEllipse),
+            SelShape::Lasso => t(Key::SelShapeLasso),
+            SelShape::Polygon => t(Key::SelShapePolygon),
         }
     }
 }
@@ -521,7 +522,7 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
             if studio.doc.has_selection() {
                 shell.sel_dialog = Some(m);
             } else {
-                studio.notice = Some("Nothing is selected".into());
+                studio.notice = Some(t(Key::NoticeNothingSelected).into());
             }
         }
         Command::GrowSelection { px } => modify(studio, px, &|s| morph::grow(s, px, shape, w, h)),
@@ -534,10 +535,10 @@ pub fn execute(cmd: Command, studio: &mut Studio, shell: &mut Shell) {
 fn mode_ui(ui: &mut egui::Ui, mode: &mut SelectOp) {
     ui.horizontal(|ui| {
         for (op, label, tip) in [
-            (SelectOp::Replace, "New", "Replace the selection"),
-            (SelectOp::Add, "Add", "Add to the selection (hold Shift)"),
-            (SelectOp::Subtract, "Subtract", "Subtract from the selection (hold Alt)"),
-            (SelectOp::Intersect, "Intersect", "Keep only the overlap (hold Shift+Alt)"),
+            (SelectOp::Replace, t(Key::SelOpNew), t(Key::SelOpNewTip)),
+            (SelectOp::Add, t(Key::SelOpAdd), t(Key::SelOpAddTip)),
+            (SelectOp::Subtract, t(Key::SelOpSubtract), t(Key::SelOpSubtractTip)),
+            (SelectOp::Intersect, t(Key::SelOpIntersect), t(Key::SelOpIntersectTip)),
         ] {
             ui.selectable_value(mode, op, label).on_hover_text(tip);
         }
@@ -550,7 +551,7 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
     let o = &mut studio.opts.select;
     egui::Grid::new("select-props").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         if !wand {
-            ui.label("Shape");
+            ui.label(t(Key::SelShape));
             ui.horizontal(|ui| {
                 for s in SelShape::ALL {
                     ui.selectable_value(&mut o.shape, s, s.label());
@@ -558,60 +559,56 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
             });
             ui.end_row();
         }
-        ui.label("Mode");
+        ui.label(t(Key::SelMode));
         mode_ui(ui, &mut o.mode);
         ui.end_row();
         if wand {
-            ui.label("Refer to");
+            ui.label(t(Key::FillReferTo));
             egui::ComboBox::from_id_salt("wand-ref")
                 .selected_text(match o.wand.reference {
-                    FillRef::Active => "Editing layer",
-                    FillRef::AllVisible => "All visible layers",
-                    FillRef::Reference => "Reference layers",
+                    FillRef::Active => t(Key::FillRefActive),
+                    FillRef::AllVisible => t(Key::FillRefAllVisible),
+                    FillRef::Reference => t(Key::FillRefReference),
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut o.wand.reference, FillRef::Active, "Editing layer");
-                    ui.selectable_value(&mut o.wand.reference, FillRef::AllVisible, "All visible layers");
-                    ui.selectable_value(&mut o.wand.reference, FillRef::Reference, "Reference layers");
+                    ui.selectable_value(&mut o.wand.reference, FillRef::Active, t(Key::FillRefActive));
+                    ui.selectable_value(&mut o.wand.reference, FillRef::AllVisible, t(Key::FillRefAllVisible));
+                    ui.selectable_value(&mut o.wand.reference, FillRef::Reference, t(Key::FillRefReference));
                 });
             ui.end_row();
-            ui.label("Tolerance");
+            ui.label(t(Key::FillTolerance));
             ui.add(
                 egui::Slider::new(&mut o.wand.tolerance, 0.0..=1.0)
                     .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
                     .custom_parser(|s| s.trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)),
             );
             ui.end_row();
-            ui.label("Close gap");
+            ui.label(t(Key::FillCloseGap));
             ui.add(
                 egui::Slider::new(&mut o.wand.gap, 0..=5)
-                    .custom_formatter(|v, _| if v == 0.0 { "Off".into() } else { format!("{v:.0}") }),
+                    .custom_formatter(|v, _| if v == 0.0 { t(Key::CommonOff).into() } else { format!("{v:.0}") }),
             );
             ui.end_row();
-            ui.label("Contiguous");
+            ui.label(t(Key::FillContiguous));
             ui.checkbox(&mut o.wand.contiguous, "");
             ui.end_row();
-            ui.label("Antialiasing");
+            ui.label(t(Key::FillAntialiasing));
             ui.checkbox(&mut o.wand.antialias, "");
             ui.end_row();
         } else {
-            ui.label("Antialiasing");
+            ui.label(t(Key::FillAntialiasing));
             ui.checkbox(&mut o.antialias, "");
             ui.end_row();
         }
     });
     ui.add_space(4.0);
     ui.weak(if wand {
-        "Click to select a colour region. Shift adds, Alt subtracts, Shift+Alt intersects."
+        t(Key::HintSelectWand)
     } else {
         match o.shape {
-            SelShape::Rect | SelShape::Ellipse => {
-                "Drag to select. Shift: square / circle, Alt: from the centre (after the press)."
-            }
-            SelShape::Lasso => "Drag around the area to select.",
-            SelShape::Polygon => {
-                "Click to add points; double-click, Enter or click the first point to close. Backspace removes a point."
-            }
+            SelShape::Rect | SelShape::Ellipse => t(Key::HintSelectDrag),
+            SelShape::Lasso => t(Key::HintSelectLasso),
+            SelShape::Polygon => t(Key::HintSelectPolygon),
         }
     });
 }
@@ -684,7 +681,7 @@ pub fn paint_ants(st: &mut SelectTool, painter: &egui::Painter, studio: &Studio,
     }
     if c.truncated {
         let at = painter.clip_rect().left_bottom() + egui::vec2(8.0, -8.0);
-        let text = "Selection too detailed: outline shown in part";
+        let text = t(Key::NoticeSelectionTooDetailed);
         painter.text(at, egui::Align2::LEFT_BOTTOM, text, egui::FontId::proportional(12.0), Color32::from_rgb(230, 160, 40));
     }
     if ctx.input(|i| i.focused) {
@@ -771,29 +768,29 @@ pub fn dialogs(ctx: &egui::Context, studio: &mut Studio, shell: &mut Shell) {
     let o = &mut studio.opts.select;
     // The largest values the core applies, so the field shows what is done.
     let (title, px, max) = match kind {
-        SelModify::Grow => ("Grow Selection", &mut o.grow_px, morph::MAX_RADIUS),
-        SelModify::Shrink => ("Shrink Selection", &mut o.shrink_px, morph::MAX_RADIUS),
-        SelModify::Feather => ("Feather Selection", &mut o.feather_px, morph::MAX_SIGMA),
+        SelModify::Grow => (t(Key::CmdGrowSelectionDialog), &mut o.grow_px, morph::MAX_RADIUS),
+        SelModify::Shrink => (t(Key::CmdShrinkSelectionDialog), &mut o.shrink_px, morph::MAX_RADIUS),
+        SelModify::Feather => (t(Key::CmdFeatherSelectionDialog), &mut o.feather_px, morph::MAX_SIGMA),
     };
     let modal = egui::Modal::new(egui::Id::new("sel-modify")).show(ctx, |ui| {
         ui.set_width(260.0);
         ui.heading(title);
         ui.add_space(6.0);
         egui::Grid::new("sel-modify-grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-            ui.label(if kind == SelModify::Feather { "Radius" } else { "Amount" });
+            ui.label(if kind == SelModify::Feather { t(Key::SelRadius) } else { t(Key::SelAmount) });
             ui.add(egui::DragValue::new(px).range(1..=max).suffix(" px"));
             ui.end_row();
             if kind != SelModify::Feather {
-                ui.label("Shape");
+                ui.label(t(Key::SelShape));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut o.morph, MorphShape::Circle, "Circle");
-                    ui.selectable_value(&mut o.morph, MorphShape::Square, "Square");
+                    ui.selectable_value(&mut o.morph, MorphShape::Circle, t(Key::SelShapeCircle));
+                    ui.selectable_value(&mut o.morph, MorphShape::Square, t(Key::SelShapeSquare));
                 });
                 ui.end_row();
             }
         });
         ui.add_space(10.0);
-        ui.horizontal(|ui| (ui.button(egui::RichText::new("OK").strong()).clicked(), ui.button("Cancel").clicked())).inner
+        ui.horizontal(|ui| (ui.button(egui::RichText::new(t(Key::CommonOk)).strong()).clicked(), ui.button(t(Key::NewDocCancel)).clicked())).inner
     });
     let (ok, cancel) = modal.inner;
     if ok {

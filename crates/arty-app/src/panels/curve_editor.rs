@@ -135,7 +135,7 @@ pub fn ui(ui: &mut egui::Ui, curve: &mut PressureCurve) -> egui::Response {
     } else if hovered_point.is_some() {
         ui.ctx().set_cursor_icon(CursorIcon::Grab);
     } else if hover.is_some() && curve.points().len() >= MAX_CURVE_POINTS {
-        resp = resp.on_hover_text(format!("Up to {MAX_CURVE_POINTS} points"));
+        resp = resp.on_hover_text(crate::text::t(crate::text::Key::CurveMaxPoints));
     }
 
     // Plot.
@@ -153,8 +153,8 @@ pub fn ui(ui: &mut egui::Ui, curve: &mut PressureCurve) -> egui::Response {
     painter.rect_stroke(plot, CornerRadius::same(2), grid, StrokeKind::Inside);
     painter.line_segment([to_screen(plot, [0.0, 0.0]), to_screen(plot, [1.0, 1.0])], Stroke::new(1.0, weak.gamma_multiply(0.5)));
     let small = FontId::proportional(9.5);
-    painter.text(plot.right_bottom() + Vec2::new(-3.0, -2.0), Align2::RIGHT_BOTTOM, "Input", small.clone(), weak);
-    painter.text(plot.left_top() + Vec2::new(3.0, 2.0), Align2::LEFT_TOP, "Output", small, weak);
+    painter.text(plot.right_bottom() + Vec2::new(-3.0, -2.0), Align2::RIGHT_BOTTOM, crate::text::t(crate::text::Key::CurveInput), small.clone(), weak);
+    painter.text(plot.left_top() + Vec2::new(3.0, 2.0), Align2::LEFT_TOP, crate::text::t(crate::text::Key::CurveOutput), small, weak);
 
     let line: Vec<Pos2> = (0..=CURVE_SAMPLES)
         .map(|i| {
@@ -180,9 +180,10 @@ pub fn ui(ui: &mut egui::Ui, curve: &mut PressureCurve) -> egui::Response {
 
     // Readout: the live pen, else the hovered input.
     let readout = live.or_else(|| hover.filter(|p| plot.contains(*p)).map(|p| from_screen(plot, p)[0]));
+    use crate::text::{t, Key};
     ui.label(egui::RichText::new(match readout {
-        Some(x) => format!("In {:.0}% → Out {:.0}%", x * 100.0, curve.eval(x) * 100.0),
-        None => "In – → Out –".to_owned(),
+        Some(x) => format!("{} {:.0}% / {} {:.0}%", t(Key::CurveIn), x * 100.0, t(Key::CurveOut), curve.eval(x) * 100.0),
+        None => format!("{} - / {} -", t(Key::CurveIn), t(Key::CurveOut)),
     })
     .small()
     .color(weak));
@@ -194,15 +195,15 @@ pub fn ui(ui: &mut egui::Ui, curve: &mut PressureCurve) -> egui::Response {
             let [x, y] = curve.points()[i];
             let interior = i > 0 && i + 1 < curve.points().len();
             let (mut xi, mut yo) = (x * 100.0, y * 100.0);
-            ui.label("Input %");
+            ui.label(t(Key::CurveInputPct));
             let rx = ui.add_enabled(interior, DragValue::new(&mut xi).range(0.0..=100.0).speed(0.5).max_decimals(1));
-            ui.label("Output %");
+            ui.label(t(Key::CurveOutputPct));
             let ry = ui.add(DragValue::new(&mut yo).range(0.0..=100.0).speed(0.5).max_decimals(1));
             if rx.changed() || ry.changed() {
                 changed |= curve.set_point(i, [xi / 100.0, yo / 100.0]);
             }
         }
-        if ui.button("Reset").on_hover_text("Straight line: output = input").clicked() && *curve != PressureCurve::linear() {
+        if ui.button(t(Key::CurveReset)).on_hover_text(t(Key::CurveResetTip)).clicked() && *curve != PressureCurve::linear() {
             *curve = PressureCurve::linear();
             st.selected = None;
             st.drag = None;
@@ -241,7 +242,7 @@ fn test_pad(ui: &mut egui::Ui, curve: &PressureCurve, st: &mut EditorState, fram
     painter.rect_filled(rect, CornerRadius::same(2), v.extreme_bg_color);
     painter.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color), StrokeKind::Inside);
     if st.pad.is_empty() {
-        painter.text(rect.center(), Align2::CENTER_CENTER, "Test pad", FontId::proportional(10.0), v.weak_text_color());
+        painter.text(rect.center(), Align2::CENTER_CENTER, crate::text::t(crate::text::Key::CurveTestPad), FontId::proportional(10.0), v.weak_text_color());
         return;
     }
     let ink: Color32 = v.text_color();
@@ -259,6 +260,7 @@ fn test_pad(ui: &mut egui::Ui, curve: &PressureCurve, st: &mut EditorState, fram
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::{Key, t};
     use egui::{Event, Modifiers, PointerButton, RawInput, TouchDeviceId, TouchId, TouchPhase, pos2};
 
     /// Headless frames driving the editor alone.
@@ -305,7 +307,7 @@ mod tests {
             let nodes = update.map(|u| u.nodes).unwrap_or_default();
             // Buttons carry their text as the label, plain labels as the value.
             self.labels = nodes.iter().filter_map(|(_, n)| n.label().or(n.value()).map(str::to_owned)).collect();
-            self.reset = nodes.iter().find(|(_, n)| n.label() == Some("Reset")).and_then(|(_, n)| n.bounds()).map(|b| {
+            self.reset = nodes.iter().find(|(_, n)| n.label() == Some(t(Key::CurveReset))).and_then(|(_, n)| n.bounds()).map(|b| {
                 Rect::from_min_max(pos2(b.x0 as f32, b.y0 as f32), pos2(b.x1 as f32, b.y1 as f32))
             });
             changed
@@ -479,12 +481,14 @@ mod tests {
         // The widget shows it for a second, then falls back to the hovered input.
         let mut h = Harness::new(PressureCurve::from_points(&[[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]]));
         h.frame(vec![touch(Some(0.5))]);
-        assert!(h.labels.iter().any(|l| l == "In 50% → Out 25%"), "{:?}", h.labels);
+        let want_50 = format!("{} 50% / {} 25%", t(Key::CurveIn), t(Key::CurveOut));
+        let want_dash = format!("{} - / {} -", t(Key::CurveIn), t(Key::CurveOut));
+        assert!(h.labels.iter().any(|l| l == &want_50), "{:?}", h.labels);
         h.frame(vec![]);
-        assert!(h.labels.iter().any(|l| l == "In 50% → Out 25%"), "held: {:?}", h.labels);
+        assert!(h.labels.iter().any(|l| l == &want_50), "held: {:?}", h.labels);
         h.time += 1.5;
         h.frame(vec![]);
-        assert!(h.labels.iter().any(|l| l == "In – → Out –"), "released: {:?}", h.labels);
+        assert!(h.labels.iter().any(|l| l == &want_dash), "released: {:?}", h.labels);
     }
 
     #[test]

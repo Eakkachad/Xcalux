@@ -457,7 +457,7 @@ impl FileController {
     fn io_or_report(&mut self) -> Option<&IoService> {
         if self.io.is_none() {
             let why = self.io_error.clone().unwrap_or_else(|| "the file thread has stopped".to_owned());
-            self.modal = Some(Modal::Message { title: "Files are unavailable", lines: vec![why] });
+            self.modal = Some(Modal::Message { title: t(Key::MsgFilesUnavailable), lines: vec![why] });
         }
         self.io.as_ref()
     }
@@ -683,10 +683,10 @@ impl FileController {
             }
             e => {
                 let title = match op {
-                    "save" => "Could not save",
-                    "open" => "Could not open the file",
-                    "restore" => "Could not restore the document",
-                    _ => "File error",
+                    "save" => t(Key::MsgCouldNotSave),
+                    "open" => t(Key::MsgCouldNotOpen),
+                    "restore" => t(Key::MsgCouldNotRestore),
+                    _ => t(Key::MsgFileError),
                 };
                 self.modal = Some(Modal::Message { title, lines: vec![e.to_string()] });
             }
@@ -728,7 +728,7 @@ impl FileController {
         self.captured = (!restore).then(|| change_key(&studio.doc));
         self.captured_at = self.now;
         self.modal = (!warnings.is_empty()).then(|| Modal::Message {
-            title: "Opened with warnings",
+            title: t(Key::MsgOpenedWithWarnings),
             lines: warnings.iter().map(ToString::to_string).collect(),
         });
     }
@@ -760,19 +760,19 @@ impl FileController {
             ui.set_max_width(460.0);
             match &modal {
                 Modal::Unsaved(then) => {
-                    ui.heading("Save changes?");
-                    ui.label(format!("{} has unsaved changes.", self.name));
+                    ui.heading(t(Key::ModalUnsavedTitle));
+                    ui.label(format!("{} {}", self.name, t(Key::ModalUnsavedBody)));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(RichText::new("Save").strong()).clicked() {
+                        if ui.button(RichText::new(t(Key::ModalSave)).strong()).clicked() {
                             keep = false;
                             self.save_then(*then, studio);
                         }
-                        if ui.button("Don't Save").clicked() {
+                        if ui.button(t(Key::ModalDontSave)).clicked() {
                             keep = false;
                             self.proceed(*then, shell);
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t(Key::NewDocCancel)).clicked() {
                             keep = false;
                             if *then == Then::Restore {
                                 self.restore = None;
@@ -781,46 +781,46 @@ impl FileController {
                     });
                 }
                 Modal::Lossy(then) => {
-                    ui.heading("Save as a new file?");
+                    ui.heading(t(Key::ModalLossyTitle));
                     ui.label(self.read_only_reason.as_deref().unwrap_or_default());
-                    ui.label("Saving over the original would lose that data. Save a copy instead.");
+                    ui.label(t(Key::ModalLossyBody));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(RichText::new("Save As…").strong()).clicked() {
+                        if ui.button(RichText::new(t(Key::CmdSaveAs)).strong()).clicked() {
                             keep = false;
                             self.save_as(*then, studio);
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t(Key::NewDocCancel)).clicked() {
                             keep = false;
                         }
                     });
                 }
                 Modal::External { path, then } => {
-                    ui.heading("File changed on disk");
-                    ui.label(format!("{} was changed by another program since it was opened or saved.", path.display()));
+                    ui.heading(t(Key::ModalExternalTitle));
+                    ui.label(format!("{} {}", path.display(), t(Key::ModalExternalBody)));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Overwrite").clicked() {
+                        if ui.button(t(Key::ModalOverwrite)).clicked() {
                             keep = false;
                             self.send_save(path.clone(), true, *then, studio);
                         }
-                        if ui.button(RichText::new("Save As…").strong()).clicked() {
+                        if ui.button(RichText::new(t(Key::CmdSaveAs)).strong()).clicked() {
                             keep = false;
                             self.save_as(*then, studio);
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t(Key::NewDocCancel)).clicked() {
                             keep = false;
                         }
                     });
                 }
                 Modal::Loading(ticket) => {
-                    ui.heading("Opening…");
+                    ui.heading(t(Key::StatusOpening));
                     if let Some(io) = &self.io {
                         let p = io.progress();
                         let (done, total) = (p.done.load(Ordering::Relaxed), p.total.load(Ordering::Relaxed));
                         let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
                         ui.add(egui::ProgressBar::new(frac).show_percentage());
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t(Key::NewDocCancel)).clicked() {
                             io.cancel(*ticket);
                         }
                     }
@@ -831,7 +831,7 @@ impl FileController {
                         ui.label(l.as_str());
                     }
                     ui.add_space(8.0);
-                    if ui.button("OK").clicked() {
+                    if ui.button(t(Key::CommonOk)).clicked() {
                         keep = false;
                     }
                 }
@@ -839,7 +839,7 @@ impl FileController {
                     keep = self.recovery_ui(ui, entries, dirty);
                 }
                 Modal::Closing => {
-                    ui.heading("Finishing save…");
+                    ui.heading(t(Key::ModalFinishingSave));
                     ui.spinner();
                 }
             }
@@ -860,8 +860,8 @@ impl FileController {
     /// The recovery prompt; false once it should close. `dirty`: the open
     /// document has unsaved changes (Restore asks about them first).
     fn recovery_ui(&mut self, ui: &mut egui::Ui, entries: &[RecoveryEntry], dirty: bool) -> bool {
-        ui.heading("Recover unsaved work?");
-        ui.label("ARTY closed without saving these documents.");
+        ui.heading(t(Key::RecoveryTitle));
+        ui.label(t(Key::RecoveryBody));
         ui.add_space(6.0);
         let mut restore = None;
         let mut discard = None;
@@ -875,16 +875,16 @@ impl FileController {
             ui.horizontal(|ui| {
                 // Not while a load or save runs: it would replace its job.
                 let idle = self.job.is_none();
-                if ui.add_enabled(idle, egui::Button::new(RichText::new("Restore").strong())).clicked() {
+                if ui.add_enabled(idle, egui::Button::new(RichText::new(t(Key::RecoveryRestore)).strong())).clicked() {
                     restore = Some(i);
                 }
-                if ui.button("Discard").clicked() {
+                if ui.button(t(Key::RecoveryDiscard)).clicked() {
                     discard = Some(i);
                 }
             });
         }
         ui.separator();
-        let later = ui.button("Later").on_hover_text("Keep these files and ask again next time").clicked();
+        let later = ui.button(t(Key::RecoveryLater)).on_hover_text(t(Key::RecoveryLaterTip)).clicked();
         if let Some(i) = restore
             && self.choose_restore(entries[i].clone(), dirty)
         {
@@ -917,10 +917,10 @@ fn ago(ms: u64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     let mins = now.saturating_sub(ms) / 60_000;
     match mins {
-        0 => "just now".to_owned(),
-        1..60 => format!("{mins} min ago"),
-        60..2880 => format!("{} h ago", mins / 60),
-        _ => format!("{} days ago", mins / 1440),
+        0 => t(Key::TimeJustNow).to_owned(),
+        1..60 => format!("{mins} {}", t(Key::TimeMinAgo)),
+        60..2880 => format!("{} {}", mins / 60, t(Key::TimeHourAgo)),
+        _ => format!("{} {}", mins / 1440, t(Key::TimeDaysAgo)),
     }
 }
 

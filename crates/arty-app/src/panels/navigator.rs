@@ -40,7 +40,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
                 commands::execute(cmd, studio, shell);
             }
         }
-        if ui.selectable_label(studio.view.flip_x, icon::FLIP_HORIZONTAL).on_hover_text("Flip horizontal (F)").clicked() {
+        if ui.selectable_label(studio.view.flip_x, icon::FLIP_HORIZONTAL).on_hover_text(crate::text::t(crate::text::Key::NavFlipHorizontal)).clicked() {
             commands::execute(Command::FlipView, studio, shell);
         }
     });

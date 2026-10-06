@@ -6,12 +6,13 @@ use egui::Slider;
 use super::section;
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+use crate::text::{t, Key};
 use crate::tools;
 
 pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     // A transform session shows its own settings whatever the tool.
     if studio.transform.is_some() {
-        ui.label(egui::RichText::new("Transform").strong());
+        ui.label(egui::RichText::new(t(Key::CmdTransform)).strong());
         tools::transform::property_ui(ui, studio, shell);
         return;
     }
@@ -21,10 +22,10 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
             ui.label(text);
         };
         match studio.tool {
-            Tool::Eyedropper => hint("Click or drag on the canvas to pick the displayed color.", ui),
-            Tool::Hand => hint("Drag to scroll. Middle mouse drags with any tool.", ui),
-            Tool::Rotate => hint("Drag to rotate the view. Hold Shift to snap to 15° (Ctrl with Shift+Space).", ui),
-            Tool::Zoom => hint("Click to zoom in, Alt+click to zoom out, drag to zoom smoothly.", ui),
+            Tool::Eyedropper => hint(t(Key::HintEyedropper), ui),
+            Tool::Hand => hint(t(Key::HintHand), ui),
+            Tool::Rotate => hint(t(Key::HintRotate), ui),
+            Tool::Zoom => hint(t(Key::HintZoom), ui),
             Tool::Select | Tool::MagicWand => tools::select::property_ui(ui, studio, shell),
             Tool::Fill => tools::fill::property_ui(ui, studio, shell),
             Tool::Move => tools::transform::property_ui(ui, studio, shell),
@@ -38,74 +39,74 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
 
     let mut p = studio.preset().clone();
     ui.horizontal(|ui| {
-        ui.label("Name");
+        ui.label(t(Key::PropName));
         ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(f32::INFINITY));
     });
     ui.add_space(4.0);
 
     egui::Grid::new("brush-props").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Size");
+        ui.label(t(Key::PropSize));
         ui.add(Slider::new(&mut p.size, MIN_BRUSH_SIZE..=MAX_BRUSH_SIZE).logarithmic(true).suffix(" px").max_decimals(1));
         ui.end_row();
 
-        ui.label("Opacity");
+        ui.label(t(Key::PropOpacity));
         ui.add(percent(&mut p.opacity));
         ui.end_row();
 
-        ui.label("Hardness");
+        ui.label(t(Key::PropHardness));
         ui.add(percent(&mut p.hardness));
         ui.end_row();
 
-        ui.label("Stabilizer");
+        ui.label(t(Key::PropStabilizer));
         ui.add(Slider::new(&mut p.stabilizer, 0..=Stabilizer::MAX_LEVEL).prefix("S-"));
         ui.end_row();
     });
 
     ui.add_space(6.0);
-    section(ui, "PEN PRESSURE");
+    section(ui, t(Key::SectionPenPressure));
     egui::Grid::new("brush-pressure").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-        ui.label("Min size");
-        ui.add(percent(&mut p.min_size)).on_hover_text("Size at the lightest touch (100% = no size pressure)");
+        ui.label(t(Key::PropMinSize));
+        ui.add(percent(&mut p.min_size)).on_hover_text(t(Key::PropMinSizeTip));
         ui.end_row();
-        ui.label("Min opacity");
-        ui.add(percent(&mut p.min_opacity)).on_hover_text("Opacity at the lightest touch (100% = no opacity pressure)");
+        ui.label(t(Key::PropMinOpacity));
+        ui.add(percent(&mut p.min_opacity)).on_hover_text(t(Key::PropMinOpacityTip));
         ui.end_row();
     });
 
     ui.add_space(6.0);
-    egui::CollapsingHeader::new("Advanced").default_open(false).show(ui, |ui| {
+    egui::CollapsingHeader::new(t(Key::SectionAdvanced)).default_open(false).show(ui, |ui| {
         egui::Grid::new("brush-adv").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("Density");
+            ui.label(t(Key::PropDensity));
             ui.add(Slider::new(&mut p.density, 0.5..=12.0).max_decimals(1))
-                .on_hover_text("Dabs per radius — higher is smoother but slower");
+                .on_hover_text(t(Key::PropDensityTip));
             ui.end_row();
-            ui.label("Blending");
-            ui.add(percent(&mut p.blending)).on_hover_text("Mix with color already on the canvas");
+            ui.label(t(Key::PropBlending));
+            ui.add(percent(&mut p.blending)).on_hover_text(t(Key::PropBlendingTip));
             ui.end_row();
-            ui.label("Persistence");
-            ui.add(percent(&mut p.persistence)).on_hover_text("How long picked-up color lasts");
+            ui.label(t(Key::PropPersistence));
+            ui.add(percent(&mut p.persistence)).on_hover_text(t(Key::PropPersistenceTip));
             ui.end_row();
-            ui.label("Size jitter");
+            ui.label(t(Key::PropSizeJitter));
             ui.add(percent(&mut p.jitter));
             ui.end_row();
-            ui.label("Eraser");
+            ui.label(t(Key::PropEraser));
             ui.checkbox(&mut p.eraser, "");
             ui.end_row();
         });
 
-        section(ui, "STARTING AND ENDING");
+        section(ui, t(Key::SectionStartEnd));
         egui::Grid::new("brush-shape").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-            ui.label("Taper in");
+            ui.label(t(Key::PropTaperIn));
             ui.add(Slider::new(&mut p.taper_in, 0.0..=500.0).suffix(" px").max_decimals(0))
-                .on_hover_text("Uses this sub tool's pressure settings (Min size / Min opacity)");
+                .on_hover_text(t(Key::PropTaperInTip));
             ui.end_row();
-            ui.label("Taper out");
+            ui.label(t(Key::PropTaperOut));
             ui.add(Slider::new(&mut p.taper_out, 0.0..=500.0).suffix(" px").max_decimals(0))
-                .on_hover_text("Applied when the pen lifts. Uses Min size / Min opacity");
+                .on_hover_text(t(Key::PropTaperOutTip));
             ui.end_row();
-            ui.label("Post correction");
+            ui.label(t(Key::PropPostCorrection));
             ui.add(Slider::new(&mut p.post_correction, 0..=arty_brush::shape::MAX_CORRECTION))
-                .on_hover_text("Smooths the finished line when the pen lifts, relative to the current zoom");
+                .on_hover_text(t(Key::PropPostCorrectionTip));
             ui.end_row();
         });
     });

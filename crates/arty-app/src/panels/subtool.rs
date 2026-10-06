@@ -7,6 +7,7 @@ use egui_phosphor::regular as icon;
 
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
+use crate::text::{display_preset_name, t, Key};
 
 struct Cached {
     preset: BrushPreset,
@@ -48,13 +49,13 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, cache: &mut
         _ => studio.preset().group,
     };
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(group.label()).strong());
+        ui.label(egui::RichText::new(Tool::Brush(group).label()).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text("Restore default sub tools").clicked() {
+            if ui.small_button(icon::ARROW_COUNTER_CLOCKWISE).on_hover_text(t(Key::SubToolRestoreDefaults)).clicked() {
                 studio.reset_presets();
                 cache.clear();
             }
-            if ui.small_button(icon::COPY).on_hover_text("Duplicate sub tool").clicked() {
+            if ui.small_button(icon::COPY).on_hover_text(t(Key::SubToolDuplicate)).clicked() {
                 studio.duplicate_preset(studio.active_preset);
                 cache.clear();
             }
@@ -92,7 +93,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, cache: &mut
             ui.painter().text(
                 rect.min + Vec2::new(8.0, 3.0),
                 egui::Align2::LEFT_TOP,
-                &preset.name,
+                display_preset_name(&preset.name),
                 egui::FontId::proportional(12.0),
                 ui.visuals().text_color(),
             );
@@ -114,11 +115,11 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, cache: &mut
                 action = Some((i, RowAction::Select));
             }
             resp.context_menu(|ui| {
-                if ui.button(format!("{}  Duplicate", icon::COPY)).clicked() {
+                if ui.button(format!("{}  {}", icon::COPY, t(Key::SubToolDuplicateMenu))).clicked() {
                     action = Some((i, RowAction::Duplicate));
                     ui.close();
                 }
-                if ui.button(format!("{}  Delete", icon::TRASH)).clicked() {
+                if ui.button(format!("{}  {}", icon::TRASH, t(Key::SubToolDeleteMenu))).clicked() {
                     action = Some((i, RowAction::Delete));
                     ui.close();
                 }

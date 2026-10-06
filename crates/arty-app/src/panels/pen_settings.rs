@@ -8,31 +8,29 @@ use crate::studio::{DisplaySync, Studio};
 use crate::text::{Key, Lang, t};
 
 pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
-    egui::CollapsingHeader::new("Input & display").default_open(false).show(ui, |ui| {
-        section(ui, "PEN PRESSURE");
+    egui::CollapsingHeader::new(t(Key::PenSettingsInputDisplay)).default_open(false).show(ui, |ui| {
+        section(ui, t(Key::SectionPenPressure));
         curve_editor::ui(ui, &mut studio.input.pressure_curve);
         ui.add_space(6.0);
         egui::Grid::new("input-settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label(t(Key::LanguageLabel));
             language_combo(ui, shell);
             ui.end_row();
-            ui.label("Mouse pressure");
+            ui.label(t(Key::PenSettingsMousePressure));
             ui.add(percent(&mut studio.input.mouse_pressure));
             ui.end_row();
-            ui.label("Native pen");
-            ui.checkbox(&mut studio.input.native_pen, "").on_hover_text(
-                "Read Windows Ink directly: full-rate pressure, tilt and eraser end. Turn off if your tablet driver misbehaves.",
-            );
+            ui.label(t(Key::PenSettingsNativePen));
+            ui.checkbox(&mut studio.input.native_pen, "").on_hover_text(t(Key::PenSettingsNativePenTip));
             ui.end_row();
-            ui.label("Eraser end");
-            ui.checkbox(&mut studio.input.eraser_end_switch, "").on_hover_text("Flipping the pen switches to the eraser end's tool");
+            ui.label(t(Key::PenSettingsEraserEnd));
+            ui.checkbox(&mut studio.input.eraser_end_switch, "").on_hover_text(t(Key::PenSettingsEraserEndTip));
             ui.end_row();
-            ui.label("Display sync");
+            ui.label(t(Key::PenSettingsDisplaySync));
             display_sync_combo(ui, studio);
             ui.end_row();
-            ui.label("Latency overlay");
+            ui.label(t(Key::PenSettingsLatencyOverlay));
             ui.checkbox(&mut studio.input.show_latency, "")
-                .on_hover_text("Show pen rate, input age and frame time in the status bar");
+                .on_hover_text(t(Key::PenSettingsLatencyOverlayTip));
             ui.end_row();
         });
     });
@@ -53,15 +51,28 @@ fn language_combo(ui: &mut egui::Ui, shell: &mut Shell) {
 
 fn sync_hover(s: DisplaySync) -> &'static str {
     match s {
-        DisplaySync::Smooth => "Queues two frames: steadiest frame rate, more lag",
-        DisplaySync::LowLatency => "Queues one frame (default)",
-        DisplaySync::FastVsync => "Mailbox: newest frame wins, no tearing; DirectX 12 only",
-        DisplaySync::Off => "No vsync: lowest lag, may tear, uses more power while drawing",
+        DisplaySync::Smooth => t(Key::SyncSmoothTip),
+        DisplaySync::LowLatency => t(Key::SyncLowLatencyTip),
+        DisplaySync::FastVsync => t(Key::SyncFastVsyncTip),
+        DisplaySync::Off => t(Key::SyncOffTip),
+    }
+}
+
+fn sync_label(s: DisplaySync) -> &'static str {
+    match s {
+        DisplaySync::Smooth => t(Key::DisplaySyncSmooth),
+        DisplaySync::LowLatency => t(Key::DisplaySyncLowLatency),
+        DisplaySync::FastVsync => t(Key::DisplaySyncFastVsync),
+        DisplaySync::Off => t(Key::DisplaySyncOff),
     }
 }
 
 fn sync_text(s: DisplaySync) -> String {
-    if s == DisplaySync::default() { format!("{} (default)", s.label()) } else { s.label().to_owned() }
+    if s == DisplaySync::default() {
+        format!("{} {}", sync_label(s), t(Key::CommonDefaultSuffix))
+    } else {
+        sync_label(s).to_owned()
+    }
 }
 
 fn display_sync_combo(ui: &mut egui::Ui, studio: &mut Studio) {
@@ -70,7 +81,7 @@ fn display_sync_combo(ui: &mut egui::Ui, studio: &mut Studio) {
         for s in DisplaySync::ALL {
             let enabled = s != DisplaySync::FastVsync || studio.fast_vsync_ok;
             let r = ui.add_enabled(enabled, egui::Button::selectable(*current == s, sync_text(s)));
-            let r = if enabled { r.on_hover_text(sync_hover(s)) } else { r.on_disabled_hover_text("Needs the DirectX 12 backend") };
+            let r = if enabled { r.on_hover_text(sync_hover(s)) } else { r.on_disabled_hover_text(t(Key::SyncNeedsDx12)) };
             if r.clicked() {
                 *current = s;
             }
@@ -83,7 +94,7 @@ fn display_sync_combo(ui: &mut egui::Ui, studio: &mut Studio) {
 /// When the choice takes effect (main.rs: the window library applies it only at start-up).
 fn applies(s: DisplaySync) -> String {
     match s {
-        DisplaySync::FastVsync => format!("{}. Not applied yet: ARTY starts with Low latency instead.", sync_hover(s)),
-        _ => format!("{}. Takes effect the next time ARTY starts.", sync_hover(s)),
+        DisplaySync::FastVsync => format!("{}. {}", sync_hover(s), t(Key::SyncNotAppliedPrefix)),
+        _ => format!("{}. {}", sync_hover(s), t(Key::SyncAfterRestartPrefix)),
     }
 }
