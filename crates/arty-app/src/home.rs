@@ -9,6 +9,7 @@ use egui::{Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke,
 use egui_phosphor::regular as icon;
 
 use crate::files::FileController;
+use crate::machine::Machine;
 use crate::shell::{self, FileRequest, Shell};
 use crate::studio::{Studio, Tool};
 use crate::text::{Key, t};
@@ -113,6 +114,20 @@ fn rename(doc: &mut Document, id: LayerId, name: &str) {
         props.name = name.to_owned();
         doc.set_props(id, props);
     }
+}
+
+/// The weak line under the header: what this machine is and how many layers
+/// a first manga page fits on it (D3). `None` when nothing is known.
+pub fn machine_label(m: &Machine) -> Option<String> {
+    let specs = m.summary();
+    if specs.is_empty() {
+        return None;
+    }
+    let (w, h, _) = PageSetup::from_mm(b5(), MANGA_DPI);
+    Some(match shell::layer_capacity(shell::page_memory(w, h), m) {
+        Some(n) => t(Key::HomeMachine).replace("{specs}", &specs).replace("{n}", &n.to_string()),
+        None => t(Key::HomeMachineSpecs).replace("{specs}", &specs),
+    })
 }
 
 /// A blank A4 350 dpi page.
@@ -301,6 +316,10 @@ pub fn ui(ui: &mut egui::Ui, home: &mut Home, studio: &mut Studio, shell: &mut S
                         crate::panels::lang_switch(ui, shell);
                     });
                 });
+                if let Some(label) = machine_label(&shell.machine) {
+                    ui.add_space(2.0);
+                    ui.add(egui::Label::new(RichText::new(label).size(14.0).color(pal.text_weak)).wrap());
+                }
                 ui.add_space(14.0);
                 let min_h = if stacked { 0.0 } else { card_h };
                 let cards = |ui: &mut egui::Ui| {
@@ -405,6 +424,31 @@ mod tests {
     fn inside(r: RectF, outer: RectF) -> bool {
         const E: f32 = 1e-2;
         r.x >= outer.x - E && r.y >= outer.y - E && r.x + r.w <= outer.x + outer.w + E && r.y + r.h <= outer.y + outer.h + E
+    }
+
+    #[test]
+    fn machine_label_counts_b5_layers() {
+        use crate::machine::{GpuKind, GpuSummary, Storage, Vendor};
+        let _lang = crate::text::lang_for_test(crate::text::Lang::En);
+        let gpu = GpuSummary { name: "UHD".into(), vendor: Vendor::Intel, kind: GpuKind::Integrated, backend: "Vulkan" };
+        let mut m = Machine { ram: Some(8 << 30), physical_cores: 4, gpu: Some(gpu), storage: Storage::Ssd };
+        // B5 350 dpi: layer 73.0 MiB, GPU canvas 64.0 MiB; (4096 - 450 - 64 - 512) / 73.0 = 42.0.
+        assert_eq!(
+            machine_label(&m).as_deref(),
+            Some("This machine: RAM 8 GB · Intel graphics · SSD — a B5 manga page fits about 42 layers")
+        );
+        crate::text::set_current_lang(crate::text::Lang::Th);
+        assert_eq!(
+            machine_label(&m).as_deref(),
+            Some("เครื่องนี้: RAM 8 GB · การ์ดจอ Intel · SSD — หน้ามังงะ B5 ได้ประมาณ 42 เลเยอร์")
+        );
+        // Unknown RAM: the specs alone; nothing known: no line.
+        crate::text::set_current_lang(crate::text::Lang::En);
+        m.ram = None;
+        assert_eq!(machine_label(&m).as_deref(), Some("This machine: Intel graphics · SSD"));
+        m.gpu = None;
+        m.storage = Storage::Unknown;
+        assert_eq!(machine_label(&m), None);
     }
 
     #[test]

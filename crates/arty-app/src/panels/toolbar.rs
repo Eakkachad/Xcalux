@@ -286,9 +286,9 @@ mod tests {
         const { assert!(theme::TARGET_SIMPLE >= 24.0 && theme::SIMPLE_TOOL_HEIGHT >= theme::TARGET_SIMPLE) };
         assert!(theme::swatch_size(UiMode::Simple) >= 24.0);
         let ctx = egui::Context::default();
-        theme::apply(&ctx, ThemeKind::Dark, UiMode::Simple);
+        theme::apply(&ctx, ThemeKind::Dark, UiMode::Simple, false);
         assert!(ctx.global_style().spacing.interact_size.y >= 24.0);
-        theme::apply(&ctx, ThemeKind::Dark, UiMode::Studio);
+        theme::apply(&ctx, ThemeKind::Dark, UiMode::Studio, false);
         assert_eq!(ctx.global_style().spacing.interact_size.y, theme::TARGET_STUDIO);
     }
 

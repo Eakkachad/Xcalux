@@ -11,6 +11,7 @@ mod export;
 mod files;
 pub mod gpu_setup;
 mod home;
+mod machine;
 mod panels;
 mod shell;
 mod studio;

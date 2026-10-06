@@ -17,8 +17,9 @@ use crate::commands::{self, Command, SelModify};
 use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::home::{self, Home};
+use crate::machine::{self, Machine};
 use crate::panels::{self, Layouts, PreviewCache, Tab, ThumbCache, Viewer};
-use crate::shell::{self, FileRequest, PAGE_PRESETS, Shell, UiMode, new_doc_text};
+use crate::shell::{self, FileRequest, Fit, PAGE_PRESETS, PerfMode, Shell, UiMode, new_doc_text};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
 use crate::text::{self, Key, Lang, display_preset_name, t};
 use crate::theme::{self, ThemeKind};
@@ -50,6 +51,9 @@ struct Persisted {
     simple_dock: Option<DockState<Tab>>,
     #[serde(default = "home::default_show")]
     home_at_start: bool,
+    /// Auto in profiles from before the setting.
+    #[serde(default)]
+    perf: PerfMode,
 }
 
 /// Mode and per-mode docks from the saved settings: a fresh profile starts in
@@ -79,6 +83,8 @@ pub struct ArtyApp {
     export_job: Option<Receiver<String>>,
     files: FileController,
     home: Home,
+    /// The drive query, until it has answered (machine.rs).
+    probe: Option<machine::Probe>,
     /// `ARTY_BENCH_*` hooks (bench.rs); `None` in normal runs.
     bench: Option<Bench>,
     /// A bench variable is set: nothing is saved (bench.rs).
@@ -124,6 +130,27 @@ fn latency_text(st: PenStats, frame_ms: f32, running: DisplaySync, selected: Dis
     s
 }
 
+/// Radius of the fit dot, and the room left for it before a preset name.
+const DOT_RADIUS: f32 = 4.5;
+const DOT_SLOT: f32 = 2.0 * DOT_RADIUS + 6.0;
+
+/// `text` with room before it for a fit dot ([`paint_dot`]); the colour is
+/// left to the widget (hover, selected).
+fn dotted(ui: &egui::Ui, text: &str) -> egui::text::LayoutJob {
+    let format = egui::TextFormat::simple(egui::TextStyle::Button.resolve(ui.style()), Color32::PLACEHOLDER);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(text, DOT_SLOT, format);
+    job
+}
+
+/// The fit dot in the room [`dotted`] left at the left end of a button.
+fn paint_dot(ui: &egui::Ui, pal: &theme::Palette, rect: egui::Rect, fit: Option<(u32, Fit)>) {
+    if let Some((_, fit)) = fit {
+        let x = rect.left() + ui.spacing().button_padding.x + DOT_RADIUS;
+        ui.painter().circle_filled(egui::pos2(x, rect.center().y), DOT_RADIUS, pal.fit(fit));
+    }
+}
+
 impl ArtyApp {
     pub fn new(cc: &eframe::CreationContext<'_>, gpu_backend: crate::gpu_setup::GpuBackend) -> Self {
         theme::install_fonts(&cc.egui_ctx);
@@ -149,8 +176,10 @@ impl ArtyApp {
         let mut autosave = AutosaveSettings::default();
         let mut lang = Lang::default();
         let mut home_at_start = home::default_show();
+        let mut perf = PerfMode::default();
         if let Some(p) = saved {
             home_at_start = p.home_at_start;
+            perf = p.perf;
             theme_kind = p.theme;
             autosave = p.autosave;
             lang = p.lang;
@@ -173,11 +202,14 @@ impl ArtyApp {
             ui_mode = bench::ui_mode().unwrap_or(UiMode::Studio);
             theme_kind = bench::theme().unwrap_or(theme_kind);
             lang = bench::lang().unwrap_or(lang);
+            perf = bench::perf().unwrap_or(PerfMode::Auto);
         }
         // What main.rs started the surface with (the render state is created from it).
         let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
         let running_sync = DisplaySync::from_surface_config(started, studio.fast_vsync_ok).unwrap_or_default();
         let demo_pending = std::env::var_os("ARTY_DEMO").is_some();
+        let machine = Machine::detect(cc.wgpu_render_state.as_ref().map(|r| machine::GpuSummary::from_info(&r.adapter.get_info())));
+        log::info!("{}", machine.log_line());
 
         let ctx = cc.egui_ctx.clone();
         let mut io_config = IoConfig::new(RecoveryDir::default_path());
@@ -188,6 +220,8 @@ impl ArtyApp {
         let load_budget = io_config.load.limits.max_decoded_bytes;
         let io = IoService::spawn(io_config, move || ctx.request_repaint());
         let pen = arty_pen::install(cc);
+        let probe_ctx = cc.egui_ctx.clone();
+        let probe = machine::Probe::spawn(move || probe_ctx.request_repaint());
         let bench = Bench::from_env(studio.doc_epoch, pen.as_ref());
         text::set_current_lang(lang);
         let mut shell = Shell::new(theme_kind);
@@ -195,6 +229,14 @@ impl ArtyApp {
         shell.autosave = autosave;
         shell.ui_mode = ui_mode;
         shell.home_at_start = home_at_start;
+        shell.machine = machine;
+        shell.perf = perf;
+        if let Some(page) = bench::newdoc() {
+            shell.new_doc_open = true;
+            if let Some((w, h, dpi)) = page {
+                (shell.new_doc.width, shell.new_doc.height, shell.new_doc.dpi) = (w, h, dpi);
+            }
+        }
         let dialogs: Box<dyn files::FileDialogs> = match bench.as_ref().and_then(|b| b.open.as_ref()) {
             Some(_) => {
                 shell.file_request = Some(FileRequest::Open);
@@ -206,7 +248,9 @@ impl ArtyApp {
         let home = Home::new(home::show_at_start(home_at_start, bench::active(), demo_pending) || bench::home(), &studio, &mut files);
         if bench::active() {
             let autosave_str = if autosave.enabled { format!("{} s", autosave.interval_secs) } else { "off".to_owned() };
-            bench::report_threads(io_threads, load_budget, &autosave_str);
+            let mode = if shell.light() { "light" } else { "full" };
+            let perf_str = if perf == PerfMode::Auto { format!("{mode} (auto)") } else { mode.to_owned() };
+            bench::report_threads(io_threads, load_budget, &autosave_str, &perf_str);
         }
 
         Self {
@@ -219,6 +263,7 @@ impl ArtyApp {
             export_job: None,
             files,
             home,
+            probe,
             bench,
             bench_run: bench::active(),
             running_sync,
@@ -440,20 +485,38 @@ impl ArtyApp {
             ui.set_width(360.0);
             ui.heading(t(Key::NewDocHeading));
             ui.add_space(6.0);
+            let pal = self.shell.theme.palette();
+            let machine = self.shell.machine.clone();
             let form = &mut self.shell.new_doc;
             let current = shell::preset_for(form.width, form.height, form.dpi);
             let shown = current.map_or_else(new_doc_text::custom, shell::preset_name);
-            egui::ComboBox::from_id_salt("page-preset").width(340.0).selected_text(shown).show_ui(ui, |ui| {
-                for (i, (_name, w, h, dpi)) in PAGE_PRESETS.iter().enumerate() {
-                    if ui.selectable_label(current == Some(i), shell::preset_name(i)).clicked() {
-                        form.width = *w;
-                        form.height = *h;
-                        form.dpi = *dpi;
-                        // A plain preset has no page setup.
-                        self.shell.new_doc_page = None;
+            let face = shell::page_fit(form.width, form.height, &machine);
+            let combo = egui::ComboBox::from_id_salt("page-preset")
+                .width(340.0)
+                .selected_text(dotted(ui, shown))
+                .show_ui(ui, |ui| {
+                    for (i, (_name, w, h, dpi)) in PAGE_PRESETS.iter().enumerate() {
+                        let fit = shell::page_fit(*w, *h, &machine);
+                        let r = ui.selectable_label(current == Some(i), dotted(ui, shell::preset_name(i)));
+                        paint_dot(ui, &pal, r.rect, fit);
+                        let r = match fit {
+                            Some((n, _)) => r.on_hover_text(new_doc_text::fit(n)),
+                            None => r,
+                        };
+                        if r.clicked() {
+                            form.width = *w;
+                            form.height = *h;
+                            form.dpi = *dpi;
+                            // A plain preset has no page setup.
+                            self.shell.new_doc_page = None;
+                        }
                     }
-                }
-            });
+                });
+            paint_dot(ui, &pal, combo.response.rect, face);
+            if bench::open_preset_list_once() {
+                egui::Popup::open_id(ui.ctx(), combo.response.id.with("popup"));
+                ui.ctx().request_repaint();
+            }
             if let Some((w, h, dpi)) = tools::page::new_doc_ui(ui, &mut self.shell) {
                 let form = &mut self.shell.new_doc;
                 (form.width, form.height, form.dpi) = (w, h, dpi);
@@ -479,10 +542,19 @@ impl ArtyApp {
                 ui.label("");
                 ui.weak(format!("≈{} {} · {} {}", shell::mib(m.0), new_doc_text::per_layer(), shell::mib(m.1), new_doc_text::gpu()));
                 ui.end_row();
-                if shell::page_memory_heavy(m, arty_io::physical_memory()) {
+                if let Some((n, fit)) = shell::page_fit(form.width, form.height, &machine) {
                     ui.label("");
-                    ui.add(egui::Label::new(RichText::new(new_doc_text::heavy()).color(ui.visuals().warn_fg_color)).wrap());
+                    ui.horizontal_wrapped(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(2.0 * DOT_RADIUS), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), DOT_RADIUS, pal.fit(fit));
+                        ui.add(egui::Label::new(new_doc_text::fit(n)).wrap());
+                    });
                     ui.end_row();
+                    if fit == Fit::Heavy {
+                        ui.label("");
+                        ui.add(egui::Label::new(RichText::new(new_doc_text::heavy()).color(pal.fit_heavy)).wrap());
+                        ui.end_row();
+                    }
                 }
             });
             ui.add_space(10.0);
@@ -596,6 +668,11 @@ impl eframe::App for ArtyApp {
                 self.bench.is_some(),
             );
         }
+        if let Some(storage) = self.probe.as_ref().and_then(|p| p.poll()) {
+            self.probe = None;
+            self.shell.machine.storage = storage;
+            log::info!("{}", self.shell.machine.log_line());
+        }
         let frame_start = self.bench.is_some().then(std::time::Instant::now);
         // Applied on the next paint, only when the setting changed. eframe 0.36 does not
         // pass this back to its painter (see main.rs), so the start-up config is what counts.
@@ -607,7 +684,7 @@ impl eframe::App for ArtyApp {
             b.frame(&ctx, &mut self.studio, self.running_sync);
         }
         if self.shell.theme_dirty {
-            theme::apply(&ctx, self.shell.theme, self.shell.ui_mode);
+            theme::apply(&ctx, self.shell.theme, self.shell.ui_mode, self.shell.light());
             self.shell.theme_dirty = false;
             self.previews.clear();
         }
@@ -684,6 +761,7 @@ impl eframe::App for ArtyApp {
             ui_mode: self.shell.ui_mode,
             simple_dock: Some(self.layouts.simple.clone()),
             home_at_start: self.shell.home_at_start,
+            perf: self.shell.perf,
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
     }
@@ -722,6 +800,7 @@ mod tests {
             ui_mode: UiMode::Studio,
             simple_dock: None,
             home_at_start: false,
+            perf: PerfMode::Light,
         }
     }
 
@@ -865,6 +944,23 @@ mod tests {
         let old: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without home_at_start loads");
         assert!(old.home_at_start, "existing profiles see the home screen");
         assert!(Shell::new(ThemeKind::Dark).home_at_start, "fresh profiles too");
+    }
+
+    /// The performance setting round-trips; profiles from before it are Auto.
+    #[test]
+    fn perf_mode_persists() {
+        let mut st = MemStorage::default();
+        let p = default_persisted();
+        assert_eq!(p.perf, PerfMode::Light);
+        eframe::set_value(&mut st, STORAGE_KEY, &p);
+        let back: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("loads");
+        assert_eq!(back.perf, PerfMode::Light);
+
+        let text = st.0[STORAGE_KEY].clone();
+        let start = text.find(",perf:").expect("perf written");
+        st.0.insert(STORAGE_KEY.to_owned(), format!("{})", &text[..start]));
+        let old: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without perf loads");
+        assert_eq!(old.perf, PerfMode::Auto);
     }
 
     #[test]
