@@ -211,8 +211,20 @@ impl CanvasPane {
 
         // Space navigation keeps priority; otherwise a transform session
         // takes the input whatever the tool (so Alt is not the eyedropper).
-        let space = !ui.ctx().egui_wants_keyboard_input() && ui.input(|i| i.key_down(egui::Key::Space));
-        let tool = if studio.transform.is_some() && !space { studio.tool } else { self.effective_tool(ui, studio.tool) };
+        // During an active tool drag (e.g. rect or lasso selection), Space is
+        // ignored to keep the drag alive until pointer release, matching
+        // CSP/Photoshop behaviour. For lasso, Space while dragging is ignored;
+        // for rect, moving the rect while Space is held (Photoshop style) is
+        // deferred to keep the pipeline simple, so Space is ignored and the
+        // rect drag stays alive until committed on pointer release.
+        let space = !self.tool_down
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|i| i.key_down(egui::Key::Space));
+        let tool = if (studio.transform.is_some() || self.tool_down) && !space {
+            studio.tool
+        } else {
+            self.effective_tool(ui, studio.tool)
+        };
         // Space only suspends the page tool's input; its gesture stays.
         let slot = tool_slot(studio, if space { studio.tool } else { tool });
         let focused = ui.input(|i| i.focused);
@@ -443,9 +455,9 @@ impl CanvasPane {
                 }
             }
             // Release can be lost (e.g. focus change): never leave a gesture
-            // pressed. Space ends a drag the same way (as it ends a brush
-            // stroke); a multi-click gesture, such as a polygon, waits.
-            if self.tool_down && (!primary_down || space) {
+            // pressed. A tool drag ignores Space while the pointer is held and
+            // commits only on pointer release.
+            if self.tool_down && !primary_down {
                 self.tool_down = false;
                 t.release(&mut ctx, input(latest.unwrap_or(rect.center()), mods_now, false));
             }
@@ -1075,6 +1087,56 @@ mod tests {
         assert!(h.studio.transform.is_some());
         h.frame(vec![key(Key::Space, false, false)]);
         assert!(h.studio.transform.is_some());
+    }
+
+    /// Pressing Space during a rectangle selection drag does not finish the
+    /// selection: the drag stays alive until pointer release.
+    #[test]
+    fn space_during_rect_drag_keeps_drag_alive() {
+        let mut h = Harness::new();
+        commands::execute(Command::SelectTool(Tool::Select), &mut h.studio, &mut h.shell);
+        let (a, b) = (h.screen([50.0, 50.0]), h.screen([150.0, 150.0]));
+        // Start rect drag.
+        h.frame(vec![Event::PointerMoved(a)]);
+        h.frame(vec![primary(a, true, Modifiers::NONE)]);
+        assert!(h.pane.tool_down, "rect drag started");
+        assert!(!h.studio.doc.has_selection(), "no selection yet while dragging");
+
+        // Press Space mid-drag: drag must stay alive and not commit!
+        h.frame(vec![key(Key::Space, true, false), Event::PointerMoved(b)]);
+        assert!(h.pane.tool_down, "drag must stay alive when Space is pressed");
+        assert!(!h.studio.doc.has_selection(), "Space must not commit the selection");
+
+        // Release Space, then release pointer: selection commits on pointer release.
+        h.frame(vec![key(Key::Space, false, false)]);
+        assert!(h.pane.tool_down, "drag still alive after releasing Space");
+        h.frame(vec![primary(b, false, Modifiers::NONE)]);
+        assert!(!h.pane.tool_down, "pointer release ends the drag");
+        assert!(h.studio.doc.has_selection(), "selection committed on pointer release");
+    }
+
+    /// Pressing Space during a lasso selection drag does not finish the
+    /// selection: the drag stays alive until pointer release.
+    #[test]
+    fn space_during_lasso_drag_keeps_drag_alive() {
+        let mut h = Harness::new();
+        commands::execute(Command::SelectTool(Tool::Select), &mut h.studio, &mut h.shell);
+        h.studio.opts.select.shape = crate::tools::select::SelShape::Lasso;
+        let (a, b, c) = (h.screen([50.0, 50.0]), h.screen([100.0, 50.0]), h.screen([100.0, 100.0]));
+        h.frame(vec![Event::PointerMoved(a)]);
+        h.frame(vec![primary(a, true, Modifiers::NONE)]);
+        assert!(h.pane.tool_down, "lasso drag started");
+
+        // Move pointer and press Space mid-drag.
+        h.frame(vec![Event::PointerMoved(b)]);
+        h.frame(vec![key(Key::Space, true, false), Event::PointerMoved(c)]);
+        assert!(h.pane.tool_down, "lasso drag must stay alive when Space is pressed");
+        assert!(!h.studio.doc.has_selection(), "Space must not commit lasso");
+
+        // Release pointer: committed now.
+        h.frame(vec![primary(c, false, Modifiers::NONE)]);
+        assert!(!h.pane.tool_down);
+        assert!(h.studio.doc.has_selection(), "lasso committed on pointer release");
     }
 
     /// Holding Backspace to pop polygon vertices stops at the polygon: the
