@@ -492,6 +492,37 @@ mod tests {
         }
     }
 
+    /// What keeping the overview adds to a sync: one `store` per uploaded rect.
+    /// `cargo test --release -p arty-render store_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "measurement; run by hand"]
+    fn overview_store_cost() {
+        for (w, h) in [(2894u32, 4093u32), (6071, 8598)] {
+            let (tw, th) = (w.div_ceil(64), h.div_ceil(64));
+            let mut o = Overview::default();
+            o.fit(w, h);
+            // One rect per 16 × 16 tile chunk, as a full-page sync plans them.
+            let mut rects = Vec::new();
+            for cy in (0..th).step_by(16) {
+                for cx in (0..tw).step_by(16) {
+                    rects.push(UploadRect { layer: 0, x: cx, y: cy, w: 16.min(tw - cx), h: 16.min(th - cy) });
+                }
+            }
+            let images: Vec<Vec<u8>> = rects.iter().map(|r| vec![7u8; (r.w * r.h) as usize * level_bytes(OVERVIEW_LEVEL)]).collect();
+            let mut times: Vec<f64> = (0..21)
+                .map(|_| {
+                    let t = Instant::now();
+                    for (r, img) in rects.iter().zip(&images) {
+                        o.store(r, img);
+                    }
+                    t.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            times.sort_by(f64::total_cmp);
+            println!("overview store, full {w} x {h} page ({} tiles): median {:.3} ms, min {:.3} ms", tw * th, times[10], times[0]);
+        }
+    }
+
     #[test]
     fn full_page_is_one_rect_per_chunk() {
         // 40×20 tiles = 2560×1280 px: chunks 16 wide, last column/row partial.
