@@ -11,6 +11,7 @@ use egui_dock::{DockArea, DockState};
 use egui_phosphor::regular as icon;
 use serde::{Deserialize, Serialize};
 
+use crate::about::{self, About};
 use crate::bench::{self, Bench, BenchDialogs};
 use crate::canvas::CanvasPane;
 use crate::commands::{self, Command, SelModify};
@@ -83,6 +84,8 @@ pub struct ArtyApp {
     export_job: Option<Receiver<String>>,
     files: FileController,
     home: Home,
+    /// Help > About, and the notice after a crash (about.rs).
+    about: About,
     /// The drive query, until it has answered (machine.rs).
     probe: Option<machine::Probe>,
     /// `ARTY_BENCH_*` hooks (bench.rs); `None` in normal runs.
@@ -210,6 +213,7 @@ impl ArtyApp {
         let demo_pending = std::env::var_os("ARTY_DEMO").is_some();
         let machine = Machine::detect(cc.wgpu_render_state.as_ref().map(|r| machine::GpuSummary::from_info(&r.adapter.get_info())));
         log::info!("{}", machine.log_line());
+        crate::logging::set_machine_line(&machine.log_line());
 
         let ctx = cc.egui_ctx.clone();
         let mut io_config = IoConfig::new(RecoveryDir::default_path());
@@ -263,6 +267,7 @@ impl ArtyApp {
             export_job: None,
             files,
             home,
+            about: About::new(bench::about_open()),
             probe,
             bench,
             bench_run: bench::active(),
@@ -408,6 +413,7 @@ impl ArtyApp {
                 ui.separator();
                 item(ui, Command::ResetLayout, studio, shell);
             });
+            ui.menu_button(t(Key::MenuHelp), |ui| about::help_menu(ui, &mut self.about));
 
             // Quick undo/redo on the right, CSP command-bar style.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -672,6 +678,7 @@ impl eframe::App for ArtyApp {
             self.probe = None;
             self.shell.machine.storage = storage;
             log::info!("{}", self.shell.machine.log_line());
+            crate::logging::set_machine_line(&self.shell.machine.log_line());
         }
         let frame_start = self.bench.is_some().then(std::time::Instant::now);
         // Applied on the next paint, only when the setting changed. eframe 0.36 does not
@@ -694,7 +701,7 @@ impl eframe::App for ArtyApp {
             self.shell.reset_layout_requested = false;
         }
         // A modal dialog owns the keyboard: no document shortcuts behind it.
-        if !self.canvas.is_busy() && !self.shell.new_doc_open && !self.files.has_modal() {
+        if !self.canvas.is_busy() && !self.shell.new_doc_open && !self.files.has_modal() && !self.about.is_open() {
             commands::handle_shortcuts(&ctx, &mut self.studio, &mut self.shell);
         }
         self.files.tick(&ctx, &mut self.studio, &mut self.shell);
@@ -728,6 +735,7 @@ impl eframe::App for ArtyApp {
         tools::select::dialogs(&ctx, &mut self.studio, &mut self.shell);
         tools::page::dialogs(&ctx, &mut self.studio, &mut self.shell);
         self.files.ui(&ctx, &mut self.studio, &mut self.shell);
+        self.about.ui(&ctx, &self.shell.machine);
         self.toasts(&ctx);
         if let (Some(b), Some(t)) = (&mut self.bench, frame_start) {
             b.frame_done(&ctx, t.elapsed(), &self.studio, &mut self.files, self.running_sync);
