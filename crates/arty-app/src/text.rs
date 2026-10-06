@@ -75,6 +75,16 @@ pub fn current_lang() -> Lang {
     }
 }
 
+/// Tests that read or switch the language hold this, so parallel tests do
+/// not see each other's language.
+#[cfg(test)]
+pub(crate) fn lang_for_test(lang: Lang) -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    set_current_lang(lang);
+    guard
+}
+
 /// Set active UI language.
 pub fn set_current_lang(lang: Lang) {
     CURRENT_LANG.store(if lang == Lang::Th { TH } else { EN }, Ordering::Relaxed);
@@ -413,12 +423,12 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::CmdRotateLeft => ("หมุนซ้าย 15°", "Rotate Left 15°"),
         Key::CmdRotateRight => ("หมุนขวา 15°", "Rotate Right 15°"),
         Key::CmdRotateReset => ("รีเซ็ตการหมุน", "Reset Rotation"),
-        Key::CmdFlipView => ("กลับด้านแนวนอน", "Flip Horizontal"),
+        Key::CmdFlipView => ("พลิกมุมมองซ้าย-ขวา", "Flip View Horizontally"),
         Key::CmdSwapColors => ("สลับสีหลัก/สีรอง", "Swap Main/Sub Color"),
         Key::CmdBrushSmaller => ("ลดขนาดหัวแปรง", "Brush Smaller"),
         Key::CmdBrushLarger => ("เพิ่มขนาดหัวแปรง", "Brush Larger"),
         Key::CmdToggleTheme => ("สลับธีมสว่าง/มืด", "Toggle Light/Dark"),
-        Key::CmdResetLayout => ("รีเซ็ตการจัดพาเนล", "Reset Panel Layout"),
+        Key::CmdResetLayout => ("คืนค่าการจัดวางแผง", "Reset Panel Layout"),
         Key::CmdPenTip => ("หัวปากกา", "Pen Tip"),
         Key::CmdPenEraser => ("ท้ายปากกา (ยางลบ)", "Pen Eraser End"),
         Key::CmdSelectAll => ("เลือกทั้งหมด", "Select All"),
@@ -426,10 +436,10 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::CmdInvertSelection => ("กลับด้านการเลือก", "Invert Selection"),
         Key::CmdGrowSelectionDialog => ("ขยายพื้นที่เลือก…", "Grow Selection…"),
         Key::CmdShrinkSelectionDialog => ("ย่อพื้นที่เลือก…", "Shrink Selection…"),
-        Key::CmdFeatherSelectionDialog => ("ขอบฟุ้งพื้นที่เลือก…", "Feather Selection…"),
+        Key::CmdFeatherSelectionDialog => ("ทำขอบพื้นที่เลือกให้นุ่ม…", "Feather Selection…"),
         Key::CmdGrowSelection => ("ขยายพื้นที่เลือก", "Grow Selection"),
         Key::CmdShrinkSelection => ("ย่อพื้นที่เลือก", "Shrink Selection"),
-        Key::CmdFeatherSelection => ("ขอบฟุ้งพื้นที่เลือก", "Feather Selection"),
+        Key::CmdFeatherSelection => ("ทำขอบพื้นที่เลือกให้นุ่ม", "Feather Selection"),
         Key::CmdFillSelection => ("เทสีพื้นที่เลือก", "Fill Selection"),
         Key::CmdToggleReferenceLayer => ("เลเยอร์อ้างอิง", "Reference Layer"),
         Key::CmdTransform => ("แปลงรูปทรง", "Transform"),
@@ -453,7 +463,7 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::ToolBlend => ("เกลี่ยสี", "Blend"),
         Key::ToolEraser => ("ยางลบ", "Eraser"),
         Key::ToolEyedropper => ("หลอดดูดสี", "Eyedropper"),
-        Key::ToolHand => ("มือจับ", "Hand"),
+        Key::ToolHand => ("เลื่อนภาพ", "Hand"),
         Key::ToolRotate => ("หมุนมุมมอง", "Rotate"),
         Key::ToolZoom => ("ย่อขยาย", "Zoom"),
         Key::ToolSelect => ("เลือกพื้นที่", "Selection"),
@@ -472,7 +482,7 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::TabColor => ("สี", "Color"),
         Key::TabColorSet => ("ชุดสี", "Color Set"),
         Key::TabLayers => ("เลเยอร์", "Layer"),
-        Key::TabNavigator => ("แผงควบคุมมุมมอง", "Navigator"),
+        Key::TabNavigator => ("ภาพรวม", "Navigator"),
 
         // New Page Dialog
         Key::NewDocHeading => ("สร้างหน้าใหม่", "New Page"),
@@ -508,7 +518,7 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         Key::StatusTiles => ("ไทล์", "tiles"),
         Key::StatusPenSystem => ("ปากกา: ระบบ", "pen: system"),
         Key::StatusPen => ("ปากกา", "pen"),
-        Key::StatusInToFrame => ("ข้อมูลเข้าถึงเฟรม", "in→frame"),
+        Key::StatusInToFrame => ("อินพุต-เฟรม", "in-frame"),
         Key::StatusMax => ("สูงสุด", "max"),
         Key::StatusFrame => ("เฟรม", "frame"),
         Key::StatusNotApplied => ("ยังไม่มีผล", "not applied"),
@@ -585,7 +595,7 @@ mod tests {
 
     #[test]
     fn language_switch() {
-        set_current_lang(Lang::En);
+        let _lang = lang_for_test(Lang::En);
         assert_eq!(current_lang(), Lang::En);
         assert_eq!(t(Key::CmdUndo), "Undo");
 
@@ -598,18 +608,19 @@ mod tests {
 
     #[test]
     fn every_string_has_glyphs_and_no_banned_chars() {
+        // The UI text uses the proportional family; a glyph that only the
+        // monospace face (Hack) has, such as an arrow, would render as a box.
         let defs = crate::theme::font_definitions();
-        let fonts: Vec<FontRef> = defs
-            .font_data
-            .values()
-            .map(|fd| FontRef::new(&fd.font).expect("valid font"))
+        let fonts: Vec<FontRef> = defs.families[&egui::FontFamily::Proportional]
+            .iter()
+            .map(|name| FontRef::new(&defs.font_data[name].font).expect("valid font"))
             .collect();
         assert!(!fonts.is_empty(), "fonts must be loaded");
 
         for &k in Key::ALL {
             let (th, en) = lookup(k);
             for &(lang_name, s) in &[("Thai", th), ("English", en)] {
-                // Rules from B014: never use U+200B; no ✓; in Thai no →
+                // Rules from B014: never use U+200B or ✓; arrows fail the glyph check below
                 assert!(
                     !s.contains('\u{200B}'),
                     "Banned U+200B (ZWSP) found in {lang_name} string for {k:?}: {s:?}"
@@ -618,13 +629,6 @@ mod tests {
                     !s.contains('\u{2713}'),
                     "Banned U+2713 (✓) found in {lang_name} string for {k:?}: {s:?}"
                 );
-                if lang_name == "Thai" {
-                    assert!(
-                        !s.contains('\u{2192}'),
-                        "Banned U+2192 (→) found in Thai string for {k:?}: {s:?}"
-                    );
-                }
-
                 for ch in s.chars() {
                     if ch.is_whitespace() || ch == '\n' || ch == '\t' {
                         continue;

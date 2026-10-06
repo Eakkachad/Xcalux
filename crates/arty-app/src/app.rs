@@ -65,7 +65,7 @@ pub struct ArtyApp {
     demo_pending: bool,
 }
 
-/// Status bar latency readout. `in→frame` is OS sample time to canvas processing only.
+/// Status bar latency readout. `in-frame` is OS sample time to canvas processing only.
 /// The frame figures belong to `running`; a different `selected` Display sync
 /// is named as what the next start gives (main.rs starts Fast vsync as Low latency).
 fn latency_text(st: PenStats, frame_ms: f32, running: DisplaySync, selected: DisplaySync) -> String {
@@ -707,14 +707,15 @@ mod tests {
     #[test]
     fn latency_text_formats() {
         use DisplaySync::{FastVsync, LowLatency, Off, Smooth};
+        let _lang = crate::text::lang_for_test(crate::text::Lang::En);
         let st = PenStats { native: true, rate_hz: 238.4, age_ms: 2.44, age_max_ms: 6.06, dropped: 0 };
         assert_eq!(
             latency_text(st, 6.94, LowLatency, LowLatency),
-            "pen 238 Hz · in→frame 2.4 ms (max 6.1) · frame 6.9 ms · Low latency"
+            "pen 238 Hz · in-frame 2.4 ms (max 6.1) · frame 6.9 ms · Low latency"
         );
         assert_eq!(
             latency_text(PenStats { dropped: 3, ..st }, 16.7, Smooth, Smooth),
-            "pen 238 Hz · in→frame 2.4 ms (max 6.1) · frame 16.7 ms · Smooth · dropped 3"
+            "pen 238 Hz · in-frame 2.4 ms (max 6.1) · frame 16.7 ms · Smooth · dropped 3"
         );
         assert_eq!(latency_text(PenStats::default(), 8.33, Off, Off), "pen: system · frame 8.3 ms · Off");
         // The figures are the running mode's; a new selection waits for a restart.
