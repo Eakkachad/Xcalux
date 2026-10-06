@@ -396,8 +396,8 @@ impl FileController {
             Due::After(secs) => out.repaint_after = Some(secs),
             Due::No => {}
         }
-        if (self.job.is_some() || self.autosave.is_some() || self.closing) && f.focused {
-            // Progress in the status bar (visible only when focused).
+        if (self.job.is_some() || self.autosave.is_some()) && f.focused || self.closing {
+            // Progress in the status bar (visible only when focused) or poll while waiting to close.
             out.repaint_after = Some(out.repaint_after.map_or(0.1, |s| s.min(0.1)));
         }
         if f.now - self.last_trim >= TRIM_SECS {
@@ -1455,5 +1455,28 @@ mod tests {
         let mut nan = b;
         nan[1..5].copy_from_slice(&f32::NAN.to_le_bytes());
         assert_eq!(decode_view(&nan), None);
+    }
+
+    #[test]
+    fn closing_unfocused_schedules_repaint() {
+        let mut r = Rig::new("close-unfocused");
+        let (go, rx) = std::sync::mpsc::channel();
+        r.fc.io.as_ref().unwrap().send(Request::Pause(rx));
+        let close = FrameInput { now: 1.0, focused: false, close_requested: true, ..Default::default() };
+        let out = r.frame(close);
+        assert!(out.cancel_close);
+        assert!(r.fc.closing);
+        let unfocused_idle = FrameInput { now: 1.1, focused: false, ..Default::default() };
+        let out2 = r.frame(unfocused_idle);
+        assert_eq!(out2.repaint_after, Some(0.1));
+
+        drop(go);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while r.fc.busy() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let out3 = r.frame(unfocused_idle);
+        assert!(out3.close, "should issue close once no longer busy, even when unfocused");
     }
 }
