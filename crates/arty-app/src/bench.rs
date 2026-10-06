@@ -26,6 +26,10 @@
 //!   nothing of what lies off screen), fit the page again as a start at that
 //!   size would, and report the size reached; the geometry is then not saved.
 //! - `ARTY_BENCH_ZOOM=<factor>`: egui zoom factor (UI scale on top of the OS scale).
+//! - `ARTY_BENCH_HOME=1`: show the home screen, which bench runs skip.
+//! - `ARTY_BENCH_LANG=th|en`, `ARTY_BENCH_THEME=light|dark`,
+//!   `ARTY_BENCH_MODE=simple|studio`: UI language, theme and mode for the run
+//!   (screenshots), whatever the profile holds; bench runs are Studio otherwise.
 //! - `ARTY_IO_THREADS=<n>`: io pool size instead of `IoConfig::new`'s, which
 //!   sizes from usable physical cores respecting process affinity.
 //! - `ARTY_RAM_MB=<MiB>`: the memory size budgets are sized from (arty-io
@@ -46,7 +50,10 @@ use arty_brush::{BrushPreset, Reshape, default_presets};
 use arty_pen::{PenEnd, PenPhase, PenQueue, PenSample};
 
 use crate::files::{FileController, FileDialogs, NativeDialogs};
+use crate::shell::UiMode;
 use crate::studio::{DisplaySync, Studio};
+use crate::text::Lang;
+use crate::theme::ThemeKind;
 
 /// Synthetic pen rate (a typical Windows Ink pen: ~4 samples per 60 Hz frame).
 pub const STROKE_HZ: f64 = 240.0;
@@ -139,6 +146,38 @@ fn parse_zoom(s: &str) -> Option<f32> {
     s.trim().parse::<f32>().ok().filter(|v| (0.25..=4.0).contains(v))
 }
 
+/// `th` or `en`.
+fn parse_lang(s: &str) -> Option<Lang> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "th" => Some(Lang::Th),
+        "en" => Some(Lang::En),
+        _ => None,
+    }
+}
+
+/// `light` or `dark`.
+fn parse_theme(s: &str) -> Option<ThemeKind> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "light" => Some(ThemeKind::Light),
+        "dark" => Some(ThemeKind::Dark),
+        _ => None,
+    }
+}
+
+/// `simple` or `studio`.
+fn parse_mode(s: &str) -> Option<UiMode> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "simple" => Some(UiMode::Simple),
+        "studio" => Some(UiMode::Studio),
+        _ => None,
+    }
+}
+
+/// `1`.
+fn parse_on(s: &str) -> Option<bool> {
+    (s.trim() == "1").then_some(true)
+}
+
 /// Thread count, 1..=64.
 fn parse_threads(s: &str) -> Option<usize> {
     s.trim().parse::<usize>().ok().filter(|v| (1..=64).contains(v))
@@ -165,6 +204,22 @@ pub fn window_size() -> Option<[f32; 2]> {
 
 pub fn zoom() -> Option<f32> {
     env("ARTY_BENCH_ZOOM", parse_zoom)
+}
+
+pub fn home() -> bool {
+    env("ARTY_BENCH_HOME", parse_on).unwrap_or(false)
+}
+
+pub fn lang() -> Option<Lang> {
+    env("ARTY_BENCH_LANG", parse_lang)
+}
+
+pub fn theme() -> Option<ThemeKind> {
+    env("ARTY_BENCH_THEME", parse_theme)
+}
+
+pub fn ui_mode() -> Option<UiMode> {
+    env("ARTY_BENCH_MODE", parse_mode)
 }
 
 pub fn io_threads() -> Option<usize> {
@@ -610,6 +665,14 @@ mod tests {
         for bad in ["1366", "1366x", "x768", "100x768", "1366x99999", "axb", "1366,768"] {
             assert_eq!(parse_size(bad), None, "{bad}");
         }
+        assert_eq!(parse_lang(" TH "), Some(Lang::Th));
+        assert_eq!(parse_lang("en"), Some(Lang::En));
+        assert_eq!(parse_lang("jp"), None);
+        assert_eq!(parse_theme("Light"), Some(ThemeKind::Light));
+        assert_eq!(parse_theme("grey"), None);
+        assert_eq!(parse_mode("simple"), Some(UiMode::Simple));
+        assert_eq!(parse_mode(""), None);
+        assert_eq!((parse_on("1"), parse_on("0")), (Some(true), None));
         assert_eq!(parse_zoom("1.5"), Some(1.5));
         for bad in ["0", "0.1", "5", "nan", "big"] {
             assert_eq!(parse_zoom(bad), None, "{bad}");

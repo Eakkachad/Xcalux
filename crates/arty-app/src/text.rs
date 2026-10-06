@@ -24,6 +24,14 @@ impl Lang {
         }
     }
 
+    /// Name on the language switch.
+    pub fn short(self) -> &'static str {
+        match self {
+            Lang::Th => "ไทย",
+            Lang::En => "EN",
+        }
+    }
+
     /// Windows UI language detection: Thai when primary language is `LANG_THAI` (0x1E).
     pub fn system_default() -> Self {
         #[cfg(windows)]
@@ -1438,7 +1446,7 @@ pub const fn lookup(key: Key) -> (&'static str, &'static str) {
         // Home screen
         Key::HomeHeading => ("วันนี้อยากวาดอะไร?", "What would you like to draw?"),
         Key::HomeMangaTitle => ("หน้ามังงะแรก", "First manga page"),
-        Key::HomeMangaBody => ("กระดาษ B5 มีเส้นขอบตัดและช่องแบ่งไว้ให้แล้ว เลือกแบบช่องแล้ววาดได้เลย", "A B5 page with trim guides and panels ready. Pick a layout and start drawing."),
+        Key::HomeMangaBody => ("กระดาษ B5 มีเส้นขอบตัดและช่องแบ่งไว้ให้แล้ว", "A B5 page with trim guides and panels ready."),
         Key::HomeLayoutClassic => ("5 ช่อง", "5 panels"),
         Key::HomeLayoutYonkoma => ("4 ช่องจบ", "4-koma"),
         Key::HomeSketchTitle => ("สเก็ตช์เร็ว", "Quick sketch"),

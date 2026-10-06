@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CanvasTool, ToolCtx, ToolInput};
 use crate::commands::{self, Command, SelModify};
+use crate::panels::fill_slider;
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
 use crate::text::{Key, t};
@@ -577,14 +578,16 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
                 });
             ui.end_row();
             ui.label(t(Key::FillTolerance));
-            ui.add(
+            fill_slider(
+                ui,
                 egui::Slider::new(&mut o.wand.tolerance, 0.0..=1.0)
                     .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
                     .custom_parser(|s| s.trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)),
             );
             ui.end_row();
             ui.label(t(Key::FillCloseGap));
-            ui.add(
+            fill_slider(
+                ui,
                 egui::Slider::new(&mut o.wand.gap, 0..=5)
                     .custom_formatter(|v, _| if v == 0.0 { t(Key::CommonOff).into() } else { format!("{v:.0}") }),
             );

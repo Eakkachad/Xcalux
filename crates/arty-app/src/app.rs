@@ -170,7 +170,9 @@ impl ArtyApp {
             studio.input = InputSettings { native_pen, display_sync, ..InputSettings::default() };
             autosave = AutosaveSettings::default();
             // Bench figures stay comparable with runs from before UI modes.
-            ui_mode = UiMode::Studio;
+            ui_mode = bench::ui_mode().unwrap_or(UiMode::Studio);
+            theme_kind = bench::theme().unwrap_or(theme_kind);
+            lang = bench::lang().unwrap_or(lang);
         }
         // What main.rs started the surface with (the render state is created from it).
         let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
@@ -201,7 +203,7 @@ impl ArtyApp {
             None => Box::new(NativeDialogs),
         };
         let mut files = FileController::new(io, dialogs, &studio);
-        let home = Home::new(home::show_at_start(home_at_start, bench::active(), demo_pending), &studio, &mut files);
+        let home = Home::new(home::show_at_start(home_at_start, bench::active(), demo_pending) || bench::home(), &studio, &mut files);
         if bench::active() {
             let autosave_str = if autosave.enabled { format!("{} s", autosave.interval_secs) } else { "off".to_owned() };
             bench::report_threads(io_threads, load_budget, &autosave_str);
@@ -376,14 +378,13 @@ impl ArtyApp {
                     studio.undo();
                 }
                 ui.separator();
-                // Right to left: Studio is added first so Simple reads first.
-                for mode in UiMode::ALL.into_iter().rev() {
-                    let label = RichText::new(mode.label()).strong();
-                    let r = ui.selectable_label(shell.ui_mode == mode, label).on_hover_text(t(Key::TooltipSimpleStudioToggle));
-                    if r.clicked() {
-                        commands::execute(Command::SetUiMode(mode), studio, shell);
-                    }
+                let modes = UiMode::ALL.map(|m| (m, m.label()));
+                let pal = shell.theme.palette();
+                if let Some(mode) = panels::segmented(ui, &pal, shell.ui_mode, &modes, t(Key::TooltipSimpleStudioToggle)) {
+                    commands::execute(Command::SetUiMode(mode), studio, shell);
                 }
+                ui.add_space(4.0);
+                panels::lang_switch(ui, shell);
             });
         });
     }
@@ -542,17 +543,20 @@ impl ArtyApp {
 
     /// Status bar, tool bar and the dock with the canvas.
     fn workspace(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        let bar = theme::bar_frame(ui.style(), self.shell.theme);
+        egui::Panel::bottom("status").frame(bar).show(ui, |ui| self.status_bar(ui));
         let simple = self.shell.ui_mode == UiMode::Simple;
         if simple {
             egui::Panel::bottom("simple-sliders").show(ui, |ui| panels::simple_sliders(ui, &mut self.studio));
         }
-        let width = if simple { theme::TOOLBAR_SIMPLE_WIDTH } else { theme::TOOLBAR_STUDIO_WIDTH };
+        let width = if simple { panels::toolbar::simple_width(ui, &self.studio) } else { theme::TOOLBAR_STUDIO_WIDTH };
         egui::Panel::left("tools").resizable(false).exact_size(width).show(ui, |ui| {
             panels::toolbar::ui(ui, &mut self.studio, &mut self.shell);
         });
 
         let style = theme::dock_style(ui, self.shell.theme);
+        // The separator color behind the dock: no clear color shows at its node corners.
+        let behind = egui::Frame::new().fill(self.shell.theme.palette().separator);
         let mut viewer = Viewer {
             studio: &mut self.studio,
             shell: &mut self.shell,
@@ -560,7 +564,7 @@ impl ArtyApp {
             previews: &mut self.previews,
             thumbs: &mut self.thumbs,
         };
-        egui::CentralPanel::no_frame().show(ui, |ui| {
+        egui::CentralPanel::no_frame().frame(behind).show(ui, |ui| {
             DockArea::new(self.layouts.get_mut(viewer.shell.ui_mode))
                 .style(style)
                 .show_leaf_collapse_buttons(false)
@@ -633,7 +637,8 @@ impl eframe::App for ArtyApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
+        let bar = theme::bar_frame(ui.style(), self.shell.theme);
+        egui::Panel::top("menu").frame(bar).show(ui, |ui| self.menu_bar(ui));
         if self.home.open {
             egui::CentralPanel::default_margins().show(ui, |ui| {
                 home::ui(ui, &mut self.home, &mut self.studio, &mut self.shell, &mut self.files);

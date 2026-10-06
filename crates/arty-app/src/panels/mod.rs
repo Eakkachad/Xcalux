@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::canvas::CanvasPane;
 use crate::shell::{Shell, UiMode};
 use crate::studio::Studio;
+use crate::theme::Palette;
 pub use property::simple_sliders;
 pub use subtool::PreviewCache;
 pub use thumbs::ThumbCache;
@@ -157,11 +158,91 @@ impl TabViewer for Viewer<'_> {
         *tab != Tab::Canvas
     }
 
+    /// The canvas surround reaches the panel edges.
+    fn tab_style_override(&self, tab: &Tab, global: &egui_dock::TabStyle) -> Option<egui_dock::TabStyle> {
+        (*tab == Tab::Canvas).then(|| {
+            let mut s = global.clone();
+            s.tab_body.inner_margin = egui::Margin::ZERO;
+            s
+        })
+    }
+
     fn scroll_bars(&self, tab: &Tab) -> [bool; 2] {
         match tab {
             Tab::Canvas | Tab::Layers | Tab::SubTool => [false, false],
             _ => [false, true],
         }
+    }
+}
+
+/// Width of a slider's value box, so value boxes line up in a column.
+pub const VALUE_W: f32 = 52.0;
+/// Shortest slider rail before the row is allowed to overflow.
+const MIN_RAIL: f32 = 36.0;
+
+/// A slider whose rail fills the rest of the row, value box included.
+pub fn fill_slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    ui.scope(|ui| {
+        let rail = (ui.available_width() - VALUE_W - ui.spacing().item_spacing.x).max(MIN_RAIL);
+        let s = ui.spacing_mut();
+        s.interact_size.x = VALUE_W;
+        s.slider_width = rail;
+        ui.add(slider)
+    })
+    .inner
+}
+
+/// Width of each of `n` buttons sharing the row evenly; icon buttons
+/// get a narrow padding so a row of them fits a narrow panel.
+pub fn even_width(ui: &mut egui::Ui, n: usize) -> f32 {
+    ui.spacing_mut().button_padding.x = 2.0;
+    ui.spacing_mut().item_spacing.x = 3.0;
+    let n = n.max(1) as f32;
+    ((ui.available_width() - ui.spacing().item_spacing.x * (n - 1.0)) / n).floor().max(0.0)
+}
+
+/// Joined toggle buttons, one of `options` selected; returns the one
+/// clicked. Laid out in the parent's direction, read left to right.
+pub fn segmented<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    pal: &Palette,
+    current: T,
+    options: &[(T, &str)],
+    tip: &str,
+) -> Option<T> {
+    // Own colors: the menu bar makes buttons frameless.
+    let frame = egui::Frame::new()
+        .fill(pal.button)
+        .stroke(egui::Stroke::new(1.0, pal.separator))
+        .corner_radius(5)
+        .inner_margin(2);
+    frame
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().interact_size.y -= 4.0;
+            let mut picked = None;
+            let mut add = |ui: &mut egui::Ui, &(value, label): &(T, &str)| {
+                let r = ui.selectable_label(value == current, egui::RichText::new(label).strong()).on_hover_text(tip);
+                if r.clicked() && value != current {
+                    picked = Some(value);
+                }
+            };
+            if ui.layout().prefer_right_to_left() {
+                options.iter().rev().for_each(|o| add(ui, o));
+            } else {
+                options.iter().for_each(|o| add(ui, o));
+            }
+            picked
+        })
+        .inner
+}
+
+/// The one-click [ไทย | EN] switch; applies at once and is saved with the settings.
+pub fn lang_switch(ui: &mut egui::Ui, shell: &mut Shell) {
+    let langs = crate::text::Lang::ALL.map(|l| (l, l.short()));
+    let pal = shell.theme.palette();
+    if let Some(l) = segmented(ui, &pal, shell.lang, &langs, crate::text::t(crate::text::Key::LanguageLabel)) {
+        shell.set_lang(l);
     }
 }
 

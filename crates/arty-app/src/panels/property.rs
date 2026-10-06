@@ -3,7 +3,7 @@
 use arty_brush::{MAX_BRUSH_SIZE, MIN_BRUSH_SIZE, Stabilizer};
 use egui::Slider;
 
-use super::section;
+use super::{fill_slider, section};
 use crate::shell::Shell;
 use crate::studio::{Studio, Tool};
 use crate::text::{t, Key};
@@ -46,19 +46,19 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
 
     egui::Grid::new("brush-props").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label(t(Key::PropSize));
-        ui.add(Slider::new(&mut p.size, MIN_BRUSH_SIZE..=MAX_BRUSH_SIZE).logarithmic(true).suffix(" px").max_decimals(1));
+        fill_slider(ui, Slider::new(&mut p.size, MIN_BRUSH_SIZE..=MAX_BRUSH_SIZE).logarithmic(true).suffix(" px").max_decimals(1));
         ui.end_row();
 
         ui.label(t(Key::PropOpacity));
-        ui.add(percent(&mut p.opacity));
+        fill_slider(ui, percent(&mut p.opacity));
         ui.end_row();
 
         ui.label(t(Key::PropHardness));
-        ui.add(percent(&mut p.hardness));
+        fill_slider(ui, percent(&mut p.hardness));
         ui.end_row();
 
         ui.label(t(Key::PropStabilizer));
-        ui.add(Slider::new(&mut p.stabilizer, 0..=Stabilizer::MAX_LEVEL).prefix("S-"));
+        fill_slider(ui, Slider::new(&mut p.stabilizer, 0..=Stabilizer::MAX_LEVEL).prefix("S-"));
         ui.end_row();
     });
 
@@ -66,10 +66,10 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     section(ui, t(Key::SectionPenPressure));
     egui::Grid::new("brush-pressure").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label(t(Key::PropMinSize));
-        ui.add(percent(&mut p.min_size)).on_hover_text(t(Key::PropMinSizeTip));
+        fill_slider(ui, percent(&mut p.min_size)).on_hover_text(t(Key::PropMinSizeTip));
         ui.end_row();
         ui.label(t(Key::PropMinOpacity));
-        ui.add(percent(&mut p.min_opacity)).on_hover_text(t(Key::PropMinOpacityTip));
+        fill_slider(ui, percent(&mut p.min_opacity)).on_hover_text(t(Key::PropMinOpacityTip));
         ui.end_row();
     });
 
@@ -77,17 +77,17 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     egui::CollapsingHeader::new(t(Key::SectionAdvanced)).default_open(false).show(ui, |ui| {
         egui::Grid::new("brush-adv").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label(t(Key::PropDensity));
-            ui.add(Slider::new(&mut p.density, 0.5..=12.0).max_decimals(1))
+            fill_slider(ui, Slider::new(&mut p.density, 0.5..=12.0).max_decimals(1))
                 .on_hover_text(t(Key::PropDensityTip));
             ui.end_row();
             ui.label(t(Key::PropBlending));
-            ui.add(percent(&mut p.blending)).on_hover_text(t(Key::PropBlendingTip));
+            fill_slider(ui, percent(&mut p.blending)).on_hover_text(t(Key::PropBlendingTip));
             ui.end_row();
             ui.label(t(Key::PropPersistence));
-            ui.add(percent(&mut p.persistence)).on_hover_text(t(Key::PropPersistenceTip));
+            fill_slider(ui, percent(&mut p.persistence)).on_hover_text(t(Key::PropPersistenceTip));
             ui.end_row();
             ui.label(t(Key::PropSizeJitter));
-            ui.add(percent(&mut p.jitter));
+            fill_slider(ui, percent(&mut p.jitter));
             ui.end_row();
             ui.label(t(Key::PropEraser));
             ui.checkbox(&mut p.eraser, "");
@@ -97,15 +97,15 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
         section(ui, t(Key::SectionStartEnd));
         egui::Grid::new("brush-shape").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             ui.label(t(Key::PropTaperIn));
-            ui.add(Slider::new(&mut p.taper_in, 0.0..=500.0).suffix(" px").max_decimals(0))
+            fill_slider(ui, Slider::new(&mut p.taper_in, 0.0..=500.0).suffix(" px").max_decimals(0))
                 .on_hover_text(t(Key::PropTaperInTip));
             ui.end_row();
             ui.label(t(Key::PropTaperOut));
-            ui.add(Slider::new(&mut p.taper_out, 0.0..=500.0).suffix(" px").max_decimals(0))
+            fill_slider(ui, Slider::new(&mut p.taper_out, 0.0..=500.0).suffix(" px").max_decimals(0))
                 .on_hover_text(t(Key::PropTaperOutTip));
             ui.end_row();
             ui.label(t(Key::PropPostCorrection));
-            ui.add(Slider::new(&mut p.post_correction, 0..=arty_brush::shape::MAX_CORRECTION))
+            fill_slider(ui, Slider::new(&mut p.post_correction, 0..=arty_brush::shape::MAX_CORRECTION))
                 .on_hover_text(t(Key::PropPostCorrectionTip));
             ui.end_row();
         });
@@ -128,15 +128,21 @@ pub fn simple_sliders(ui: &mut egui::Ui, studio: &mut Studio) {
     let (mut size, mut opacity, mut stabilizer) = (p.size, p.opacity, p.stabilizer);
     ui.add_enabled_ui(brush, |ui| {
         ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = theme::SIMPLE_SLIDER_WIDTH;
-            ui.label(t(Key::PropSize));
-            ui.add(Slider::new(&mut size, MIN_BRUSH_SIZE..=MAX_BRUSH_SIZE).logarithmic(true).suffix(" px").max_decimals(1));
+            // Three equal groups, each label + slider, up to a comfortable length.
+            let sep = ui.spacing().item_spacing.x * 2.0 + 1.0;
+            let w = ((ui.available_width() - 2.0 * sep) / 3.0).min(theme::SIMPLE_GROUP_MAX);
+            let h = ui.spacing().interact_size.y;
+            let group = |ui: &mut egui::Ui, label: Key, slider: Slider<'_>| {
+                ui.allocate_ui_with_layout(egui::vec2(w, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(t(label));
+                    fill_slider(ui, slider);
+                });
+            };
+            group(ui, Key::PropSize, Slider::new(&mut size, MIN_BRUSH_SIZE..=MAX_BRUSH_SIZE).logarithmic(true).suffix(" px").max_decimals(1));
             ui.separator();
-            ui.label(t(Key::PropOpacity));
-            ui.add(percent(&mut opacity));
+            group(ui, Key::PropOpacity, percent(&mut opacity));
             ui.separator();
-            ui.label(t(Key::PropStability));
-            ui.add(Slider::new(&mut stabilizer, 0..=Stabilizer::MAX_LEVEL));
+            group(ui, Key::PropStability, Slider::new(&mut stabilizer, 0..=Stabilizer::MAX_LEVEL));
         });
     });
     let p = studio.preset();

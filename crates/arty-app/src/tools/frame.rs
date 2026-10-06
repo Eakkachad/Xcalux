@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CanvasTool, ToolCtx, ToolInput};
 use crate::commands::{self, Command};
-use crate::panels::section;
+use crate::panels::{fill_slider, section};
 use crate::shell::Shell;
 use crate::studio::{FrameMode, Rgb, Studio, Tool};
 use crate::text::{Key, t};
@@ -891,14 +891,16 @@ pub fn border_ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell, id: 
             let on_r = ui.checkbox(&mut on, "");
             ui.end_row();
             ui.label(t(Key::FrameWidth));
-            let w_r = ui.add_enabled(
-                on,
-                egui::Slider::new(&mut w_mm, 0.05..=10.0)
-                    .clamping(egui::SliderClamping::Never)
-                    .logarithmic(true)
-                    .max_decimals(2)
-                    .suffix(" mm"),
-            );
+            let w_r = ui
+                .add_enabled_ui(on, |ui| {
+                    let slider = egui::Slider::new(&mut w_mm, 0.05..=10.0)
+                        .clamping(egui::SliderClamping::Never)
+                        .logarithmic(true)
+                        .max_decimals(2)
+                        .suffix(" mm");
+                    fill_slider(ui, slider)
+                })
+                .inner;
             ui.end_row();
             ui.label(t(Key::FrameColor));
             let c_r = ui.color_edit_button_rgb(&mut rgb);

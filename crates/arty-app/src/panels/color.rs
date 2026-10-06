@@ -5,7 +5,7 @@ use std::f32::consts::TAU;
 use egui::{Color32, CornerRadius, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2, pos2};
 use egui_phosphor::regular as icon;
 
-use super::section;
+use super::{fill_slider, section};
 use crate::shell::UiMode;
 use crate::studio::{Rgb, Studio, hsv_to_rgb};
 use crate::theme;
@@ -21,7 +21,9 @@ enum WheelDrag {
 }
 
 pub fn wheel_ui(ui: &mut egui::Ui, studio: &mut Studio) {
-    let side = ui.available_width().clamp(120.0, 260.0);
+    // As wide as the panel, and no taller than what is left of it.
+    let room = ui.clip_rect().bottom() - ui.cursor().top() - 4.0;
+    let side = ui.available_width().min(room).clamp(120.0, 260.0);
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side), Sense::click_and_drag());
     let center = rect.center();
     let r_out = side * 0.5 - 2.0;
@@ -144,7 +146,7 @@ fn sliders(ui: &mut egui::Ui, studio: &mut Studio) {
         for (label, i, max) in [("H", 0, 360.0f32), ("S", 1, 100.0), ("V", 2, 100.0)] {
             ui.label(label);
             let mut val = hsv[i] * max;
-            if ui.add(egui::Slider::new(&mut val, 0.0..=max).max_decimals(0)).changed() {
+            if fill_slider(ui, egui::Slider::new(&mut val, 0.0..=max).max_decimals(0)).changed() {
                 hsv[i] = (val / max).clamp(0.0, if i == 0 { 0.9999 } else { 1.0 });
                 changed = true;
             }

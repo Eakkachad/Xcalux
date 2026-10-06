@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CanvasTool, ToolCtx, ToolInput};
 use crate::commands::Command;
+use crate::panels::fill_slider;
 use crate::shell::Shell;
 use crate::studio::Studio;
 use crate::text::{Key, t};
@@ -231,7 +232,7 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
         ui.end_row();
 
         ui.label(t(Key::FillTolerance));
-        ui.add(percent(&mut o.tolerance));
+        fill_slider(ui, percent(&mut o.tolerance));
         ui.end_row();
 
         ui.label(t(Key::FillCloseGap));
@@ -244,7 +245,7 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
         ui.end_row();
 
         ui.label(t(Key::FillAreaScaling));
-        ui.add(Slider::new(&mut o.area_scale, -10..=10).suffix(" px"));
+        fill_slider(ui, Slider::new(&mut o.area_scale, -10..=10).suffix(" px"));
         ui.end_row();
 
         ui.label("");
@@ -261,7 +262,7 @@ pub fn property_ui(ui: &mut egui::Ui, studio: &mut Studio, _shell: &mut Shell) {
         ui.end_row();
 
         ui.label(t(Key::FillOpacity));
-        ui.add(percent(&mut o.opacity));
+        fill_slider(ui, percent(&mut o.opacity));
         ui.end_row();
 
         ui.label(t(Key::FillBlend));
