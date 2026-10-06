@@ -1,6 +1,8 @@
 //! UI-side state shared by panels, menus and dialogs (not part of the
 //! document model).
 
+use std::path::PathBuf;
+
 use arty_core::{LayerId, PageSetup, TILE_SIZE, TilePixels};
 use arty_render::SyncStats;
 use serde::{Deserialize, Serialize};
@@ -8,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::commands::SelModify;
 use crate::files::AutosaveSettings;
 use crate::machine::{Machine, Tier};
+use crate::recent::Recent;
 use crate::text::{self, Key, Lang, t};
 use crate::theme::ThemeKind;
 
@@ -189,6 +192,10 @@ pub enum FileRequest {
     Open,
     Save,
     SaveAs,
+    /// Open `Shell::open_path` (a recent file, a dropped file).
+    OpenPath,
+    /// Back to the home screen.
+    Home,
 }
 
 impl Default for NewDocForm {
@@ -210,6 +217,8 @@ pub struct Shell {
     pub new_doc: NewDocForm,
     pub export_requested: bool,
     pub file_request: Option<FileRequest>,
+    /// The file `FileRequest::OpenPath` opens.
+    pub open_path: Option<PathBuf>,
     pub autosave: AutosaveSettings,
     pub quit_requested: bool,
     pub reset_layout_requested: bool,
@@ -232,6 +241,12 @@ pub struct Shell {
     pub machine: Machine,
     /// Performance setting (saved).
     pub perf: PerfMode,
+    /// Recently opened and saved files (saved).
+    pub recent: Recent,
+    /// The home screen is showing (set each frame).
+    pub home_open: bool,
+    /// Show Home now: the file controller has dealt with unsaved changes.
+    pub home_requested: bool,
 }
 
 impl Shell {
@@ -248,6 +263,7 @@ impl Shell {
             new_doc: NewDocForm::default(),
             export_requested: false,
             file_request: None,
+            open_path: None,
             autosave: AutosaveSettings::default(),
             quit_requested: false,
             reset_layout_requested: false,
@@ -260,6 +276,9 @@ impl Shell {
             home_at_start: crate::home::default_show(),
             machine: Machine::default(),
             perf: PerfMode::default(),
+            recent: Recent::default(),
+            home_open: false,
+            home_requested: false,
         }
     }
 

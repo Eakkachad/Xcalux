@@ -14,11 +14,13 @@ use serde::{Deserialize, Serialize};
 use crate::bench::{self, Bench, BenchDialogs};
 use crate::canvas::CanvasPane;
 use crate::commands::{self, Command, SelModify};
+use crate::dnd;
 use crate::export;
 use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::home::{self, Home};
 use crate::machine::{self, Machine};
 use crate::panels::{self, Layouts, PreviewCache, Tab, ThumbCache, Viewer};
+use crate::recent::Recent;
 use crate::shell::{self, FileRequest, Fit, PAGE_PRESETS, PerfMode, Shell, UiMode, new_doc_text};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
 use crate::text::{self, Key, Lang, display_preset_name, t};
@@ -54,6 +56,9 @@ struct Persisted {
     /// Auto in profiles from before the setting.
     #[serde(default)]
     perf: PerfMode,
+    /// Recent files, newest first (recent.rs).
+    #[serde(default)]
+    recent: Vec<String>,
 }
 
 /// Mode and per-mode docks from the saved settings: a fresh profile starts in
@@ -177,7 +182,9 @@ impl ArtyApp {
         let mut lang = Lang::default();
         let mut home_at_start = home::default_show();
         let mut perf = PerfMode::default();
+        let mut recent = Recent::default();
         if let Some(p) = saved {
+            recent = Recent::from_saved(&p.recent);
             home_at_start = p.home_at_start;
             perf = p.perf;
             theme_kind = p.theme;
@@ -203,6 +210,9 @@ impl ArtyApp {
             theme_kind = bench::theme().unwrap_or(theme_kind);
             lang = bench::lang().unwrap_or(lang);
             perf = bench::perf().unwrap_or(PerfMode::Auto);
+            if let Some(paths) = bench::recent() {
+                recent = Recent::from_paths(paths);
+            }
         }
         // What main.rs started the surface with (the render state is created from it).
         let started = cc.wgpu_render_state.as_ref().map_or(studio.input.display_sync.surface_config(false), |r| r.surface_config);
@@ -231,6 +241,7 @@ impl ArtyApp {
         shell.home_at_start = home_at_start;
         shell.machine = machine;
         shell.perf = perf;
+        shell.recent = recent;
         if let Some(page) = bench::newdoc() {
             shell.new_doc_open = true;
             if let Some((w, h, dpi)) = page {
@@ -278,6 +289,7 @@ impl ArtyApp {
         egui::MenuBar::new().ui(ui, |ui| {
             let studio = &mut self.studio;
             let shell = &mut self.shell;
+            let home_open = self.home.open;
             let item = |ui: &mut egui::Ui, cmd: Command, studio: &mut Studio, shell: &mut Shell| {
                 let label = match cmd {
                     Command::ClearLayer if studio.doc.has_selection() => t(Key::CmdClearSelection),
@@ -292,8 +304,13 @@ impl ArtyApp {
                     ui.close();
                 }
             };
+            let home = ui.add_enabled(!home_open, egui::Button::new(RichText::new(icon::HOUSE).size(16.0)));
+            if home.on_hover_text(t(Key::CmdHome)).on_disabled_hover_text(t(Key::CmdHome)).clicked() {
+                commands::execute(Command::Home, studio, shell);
+            }
+            ui.separator();
             ui.menu_button(t(Key::MenuFile), |ui| {
-                for cmd in [Command::NewDocument, Command::Open, Command::Save, Command::SaveAs, Command::ExportPng] {
+                for cmd in [Command::Home, Command::NewDocument, Command::Open, Command::Save, Command::SaveAs, Command::ExportPng] {
                     item(ui, cmd, studio, shell);
                 }
                 ui.separator();
@@ -697,7 +714,13 @@ impl eframe::App for ArtyApp {
         if !self.canvas.is_busy() && !self.shell.new_doc_open && !self.files.has_modal() {
             commands::handle_shortcuts(&ctx, &mut self.studio, &mut self.shell);
         }
+        self.shell.home_open = self.home.open;
         self.files.tick(&ctx, &mut self.studio, &mut self.shell);
+        if std::mem::take(&mut self.shell.home_requested) {
+            self.home.show(&self.studio, &mut self.files);
+        }
+        let blocked = self.shell.new_doc_open || self.files.has_modal();
+        dnd::handle(&ctx, &mut self.studio, &mut self.shell, blocked);
         self.home.sync(&self.studio, &mut self.files);
         self.thumbs.sync_doc(self.studio.doc_epoch);
         if self.shell.export_requested {
@@ -729,6 +752,7 @@ impl eframe::App for ArtyApp {
         tools::page::dialogs(&ctx, &mut self.studio, &mut self.shell);
         self.files.ui(&ctx, &mut self.studio, &mut self.shell);
         self.toasts(&ctx);
+        dnd::overlay(&ctx, &self.shell.theme.palette());
         if let (Some(b), Some(t)) = (&mut self.bench, frame_start) {
             b.frame_done(&ctx, t.elapsed(), &self.studio, &mut self.files, self.running_sync);
         }
@@ -762,6 +786,7 @@ impl eframe::App for ArtyApp {
             simple_dock: Some(self.layouts.simple.clone()),
             home_at_start: self.shell.home_at_start,
             perf: self.shell.perf,
+            recent: self.shell.recent.to_saved(),
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
     }
@@ -801,6 +826,7 @@ mod tests {
             simple_dock: None,
             home_at_start: false,
             perf: PerfMode::Light,
+            recent: vec!["C:\\art\\a.arty".to_owned()],
         }
     }
 
@@ -961,6 +987,22 @@ mod tests {
         st.0.insert(STORAGE_KEY.to_owned(), format!("{})", &text[..start]));
         let old: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without perf loads");
         assert_eq!(old.perf, PerfMode::Auto);
+    }
+
+    /// Recent files round-trip; profiles from before them start with none.
+    #[test]
+    fn recent_files_persist() {
+        let mut st = MemStorage::default();
+        let p = default_persisted();
+        eframe::set_value(&mut st, STORAGE_KEY, &p);
+        let back: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("loads");
+        assert_eq!(Recent::from_saved(&back.recent).to_saved(), ["C:\\art\\a.arty"]);
+
+        let text = st.0[STORAGE_KEY].clone();
+        let start = text.find(",recent:").expect("recent written");
+        st.0.insert(STORAGE_KEY.to_owned(), format!("{})", &text[..start]));
+        let old: Persisted = eframe::get_value(&st, STORAGE_KEY).expect("a blob without recent loads");
+        assert!(old.recent.is_empty());
     }
 
     #[test]

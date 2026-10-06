@@ -13,5 +13,5 @@ pub mod view;
 mod render_tests;
 
 pub use gpu::CanvasGpu;
-pub use upload::{CanvasSync, RowJob, SyncStats, Worker};
+pub use upload::{CanvasSync, Overview, RowJob, SyncStats, Worker};
 pub use view::{Affine2, View, ZOOM_STEPS};

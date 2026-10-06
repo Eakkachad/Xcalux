@@ -91,6 +91,15 @@ pub fn autosave_due(settings: &AutosaveSettings, s: &AutosaveState) -> Due {
     Due::After((IDLE_SECS - idle).min(3.0 * interval - elapsed))
 }
 
+/// The page thumbnail cut from the canvas's overview, when that is current for the document;
+/// `None` otherwise (the IO thread then flattens the page itself).
+fn page_thumbnail(studio: &Studio) -> Option<arty_io::thumb::Thumbnail> {
+    let (w, h, px) = studio.overview.image()?;
+    (studio.overview.rev == Some(studio.doc.revision()))
+        .then(|| arty_io::thumb::from_overview(&studio.doc, w, h, px, arty_render::upload::OVERVIEW_SCALE))
+        .flatten()
+}
+
 /// `VIEW` v1: `u8 ver, f32 zoom, f32 rotation, u8 flip_x, f32 cx, f32 cy`.
 pub fn encode_view(v: &View) -> Vec<u8> {
     let mut b = Vec::with_capacity(VIEW_LEN);
@@ -146,6 +155,10 @@ impl FileDialogs for NativeDialogs {
 enum Then {
     New,
     Open,
+    /// Open `FileController::pending_open`.
+    OpenPath,
+    /// Show the home screen.
+    Home,
     Quit,
     /// Restore `FileController::restore`.
     Restore,
@@ -226,6 +239,8 @@ pub struct FileController {
     hold_recovery: bool,
     /// The recovery file chosen in the prompt, restored by `Then::Restore`.
     restore: Option<RecoveryEntry>,
+    /// The file chosen on the home screen or dropped, opened by `Then::OpenPath`.
+    pending_open: Option<PathBuf>,
     allow_close: bool,
     closing: bool,
     now: f64,
@@ -272,6 +287,7 @@ impl FileController {
             found: Vec::new(),
             hold_recovery: false,
             restore: None,
+            pending_open: None,
             allow_close: false,
             closing: false,
             now: 0.0,
@@ -491,6 +507,7 @@ impl FileController {
             sections: self.extra_sections.clone(),
             layer_ext: self.layer_ext.clone(),
             title: self.name.clone(),
+            thumb: None,
         }
     }
 
@@ -506,6 +523,14 @@ impl FileController {
         match req {
             FileRequest::New => self.guard_unsaved(Then::New, studio, shell),
             FileRequest::Open => self.guard_unsaved(Then::Open, studio, shell),
+            FileRequest::OpenPath => {
+                self.pending_open = shell.open_path.take();
+                if self.pending_open.is_some() {
+                    self.guard_unsaved(Then::OpenPath, studio, shell);
+                }
+            }
+            FileRequest::Home if !shell.home_open => self.guard_unsaved(Then::Home, studio, shell),
+            FileRequest::Home => {}
             FileRequest::Save => self.save(None, studio),
             FileRequest::SaveAs => self.save_as(None, studio),
         }
@@ -524,6 +549,12 @@ impl FileController {
         match then {
             Then::New => shell.new_doc_open = true,
             Then::Open => self.open(),
+            Then::OpenPath => {
+                if let Some(path) = self.pending_open.take() {
+                    self.open_file(path);
+                }
+            }
+            Then::Home => shell.home_requested = true,
             Then::Quit => {
                 self.allow_close = true;
                 shell.quit_requested = true;
@@ -561,6 +592,13 @@ impl FileController {
             return;
         }
         let Some(path) = self.dialogs.open_path() else { return };
+        self.open_file(path);
+    }
+
+    fn open_file(&mut self, path: PathBuf) {
+        if self.io_or_report().is_none() {
+            return;
+        }
         let Some(io) = &self.io else { return };
         let ticket = io.send(Request::Open { path: path.clone() });
         self.job = Some(Job::Load { ticket, path: Some(path), restore: false });
@@ -600,7 +638,8 @@ impl FileController {
     }
 
     fn send_save(&mut self, path: PathBuf, overwrite_external: bool, then: Option<Then>, studio: &Studio) {
-        let ex = self.extras(&studio.view);
+        let mut ex = self.extras(&studio.view);
+        ex.thumb = page_thumbnail(studio);
         let Some(io) = self.io_or_report() else { return };
         let doc = &studio.doc;
         let (rev, key) = (doc.revision(), change_key(doc));
@@ -652,6 +691,7 @@ impl FileController {
                 self.captured = Some(key);
                 self.captured_at = self.now;
                 self.set_name(file_name(&path));
+                shell.recent.touch(&path);
                 studio.notice = Some(match stats.selection_saved {
                     SelectionSave::Binarized => t(Key::ToastSavedSelectionBinarized).into(),
                     SelectionSave::Dropped => t(Key::ToastSavedSelectionDropped).into(),
@@ -751,6 +791,9 @@ impl FileController {
             studio.fit_pending = false;
         }
         shell.renaming = None;
+        if let (false, Some(p)) = (restore, &path) {
+            shell.recent.touch(p);
+        }
         self.epoch = studio.doc_epoch;
         let name = match (&path, &asked) {
             (Some(p), _) => file_name(p),
@@ -814,9 +857,7 @@ impl FileController {
                         }
                         if ui.button(t(Key::NewDocCancel)).clicked() {
                             keep = false;
-                            if *then == Then::Restore {
-                                self.restore = None;
-                            }
+                            self.drop_pending(*then);
                         }
                     });
                 }
@@ -887,13 +928,22 @@ impl FileController {
         let dismissable = matches!(modal, Modal::Unsaved(_) | Modal::Lossy(_) | Modal::External { .. } | Modal::Message { .. });
         if dismissable && response.should_close() {
             keep = false;
-            if matches!(modal, Modal::Unsaved(Then::Restore)) {
-                self.restore = None;
+            if let Modal::Unsaved(then) = modal {
+                self.drop_pending(then);
             }
         }
         // A button may have opened the next dialog.
         if keep && self.modal.is_none() {
             self.modal = Some(modal);
+        }
+    }
+
+    /// The prompt was cancelled: forget what `then` was going to open.
+    fn drop_pending(&mut self, then: Then) {
+        match then {
+            Then::Restore => self.restore = None,
+            Then::OpenPath => self.pending_open = None,
+            Then::New | Then::Open | Then::Home | Then::Quit => {}
         }
     }
 
@@ -1222,6 +1272,107 @@ mod tests {
         assert!(!r.fc.is_dirty(&r.studio.doc));
         assert_eq!(r.fc.path.as_deref(), Some(a.as_path()));
         assert_eq!(r.fc.title(), "a.arty — ARTY");
+    }
+
+    /// A save's thumbnail is cut from the canvas overview while that is current for the
+    /// document, and is left to the IO thread otherwise.
+    #[test]
+    fn page_thumbnail_needs_a_current_overview() {
+        use arty_render::upload::{CanvasSync, OVERVIEW_LEVEL, mip_images};
+        use arty_render::gpu::UploadRect;
+
+        let mut studio = Studio::new(Document::new(512, 256, 72));
+        let id = studio.doc.active();
+        let (grid, dirty) = studio.doc.paint_target(id).unwrap();
+        let mut red = arty_core::tile::new_tile_box();
+        red.as_flattened_mut().fill([arty_core::fix15::ONE_U16, 0, 0, arty_core::fix15::ONE_U16]);
+        grid.insert(TileCoord::new(0, 0), red.into());
+        dirty.mark(TileCoord::new(0, 0));
+        assert!(page_thumbnail(&studio).is_none(), "no sync yet");
+
+        // What the canvas sync does for the whole page.
+        let o = &mut studio.overview;
+        assert!(o.fit(512, 256));
+        let r = UploadRect { layer: 0, x: 0, y: 0, w: 8, h: 4 };
+        let mut staging = Vec::new();
+        CanvasSync::prepare_staging(&mut staging, &studio.doc, &[r]);
+        o.store(&r, mip_images(&r, &staging).0[OVERVIEW_LEVEL]);
+        o.rev = Some(studio.doc.revision());
+        let (w, h, px) = page_thumbnail(&studio).expect("current");
+        assert_eq!((w, h, px.len()), (64, 32, 64 * 32 * 4), "an eighth of the page");
+        assert_eq!(&px[..4], [255, 0, 0, 255], "the red tile is at the top left");
+        assert_eq!(&px[(8 * 64) * 4..][..4], [255, 255, 255, 255], "below it the paper");
+
+        // Any change, or another document, makes it stale.
+        let mut p = studio.doc.layer(id).unwrap().props.clone();
+        p.opacity = 0.5;
+        studio.doc.set_props(id, p);
+        assert!(page_thumbnail(&studio).is_none(), "the revision moved on");
+        studio.overview.rev = Some(studio.doc.revision());
+        assert!(page_thumbnail(&studio).is_some());
+        studio.replace_document(Document::new(512, 256, 72));
+        assert!(page_thumbnail(&studio).is_none(), "a new document, even with the same size");
+    }
+
+    /// Saves and opens fill the recent list; a path from Home or a drop opens
+    /// without the picker, after the same question about changes; Home asks too.
+    #[test]
+    fn recent_files_open_by_path_and_home_asks_about_changes() {
+        let mut r = Rig::new("recent");
+        let (a, b) = (r.dir.join("a.arty"), r.dir.join("b.arty"));
+        r.answers.borrow_mut().save = vec![a.clone(), b.clone()];
+        for (i, want) in [vec![a.clone()], vec![b.clone(), a.clone()]].into_iter().enumerate() {
+            r.paint();
+            r.shell.file_request = Some(FileRequest::SaveAs);
+            r.settle(1.0 + i as f64);
+            assert_eq!(r.shell.recent.paths(), want);
+        }
+
+        // Unsaved changes are asked about; then the file opens with no picker.
+        r.paint();
+        r.shell.open_path = Some(a.clone());
+        r.shell.file_request = Some(FileRequest::OpenPath);
+        r.at(3.0);
+        assert!(matches!(r.fc.modal, Some(Modal::Unsaved(Then::OpenPath))));
+        assert_eq!(r.shell.open_path, None, "taken by the controller");
+        r.fc.modal = None;
+        r.fc.proceed(Then::OpenPath, &mut r.shell); // Don't Save
+        assert!(matches!(r.fc.modal, Some(Modal::Loading(_))));
+        r.settle(3.0);
+        assert_eq!(r.answers.borrow().asked_open, 0);
+        assert_eq!(r.fc.path.as_deref(), Some(a.as_path()));
+        assert_eq!(r.shell.recent.paths(), [a.clone(), b.clone()], "an open moves the file to the front");
+
+        // Cancelling the question forgets the file.
+        r.paint();
+        r.shell.open_path = Some(b.clone());
+        r.shell.file_request = Some(FileRequest::OpenPath);
+        r.at(4.0);
+        r.fc.drop_pending(Then::OpenPath);
+        assert_eq!(r.fc.pending_open, None);
+
+        // Home asks about changes too, and is reached once they are dealt with.
+        r.shell.file_request = Some(FileRequest::Home);
+        r.fc.modal = None;
+        r.at(5.0);
+        assert!(matches!(r.fc.modal, Some(Modal::Unsaved(Then::Home))));
+        assert!(!r.shell.home_requested);
+        r.fc.modal = None;
+        r.fc.proceed(Then::Home, &mut r.shell);
+        assert!(r.shell.home_requested);
+        // A clean document goes straight there; on Home already, nothing happens.
+        r.shell.home_requested = false;
+        r.shell.file_request = Some(FileRequest::Save);
+        r.settle(6.0);
+        r.shell.file_request = Some(FileRequest::Home);
+        r.at(7.0);
+        assert!(r.shell.home_requested && r.fc.modal.is_none());
+        r.shell.home_requested = false;
+        r.paint();
+        r.shell.home_open = true;
+        r.shell.file_request = Some(FileRequest::Home);
+        r.at(8.0);
+        assert!(!r.shell.home_requested && r.fc.modal.is_none());
     }
 
     #[test]
