@@ -28,8 +28,12 @@ try {
 
     & (Join-Path $PSScriptRoot 'notices.ps1')
     if (-not $SkipBuild) {
-        cargo build --release -p arty-app
-        if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+        # cargo prints its progress on stderr, which Windows PowerShell 5.1 would treat as an error.
+        $ErrorActionPreference = 'Continue'
+        cargo build --release -p arty-app 2>&1 | ForEach-Object { "$_" }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = 'Stop'
+        if ($code -ne 0) { throw 'cargo build failed' }
     }
 } finally { Pop-Location }
 
