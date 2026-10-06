@@ -77,7 +77,7 @@ fn b5() -> &'static MangaPreset {
 }
 
 /// A B5 manuscript page at 350 dpi with its page setup, a frame folder of
-/// `layout` on the inner frame and an active "Ink" layer above it. Built
+/// `layout` on the inner frame whose layer, "Ink", is active. Built
 /// as the new document's starting state (no undo steps).
 pub fn first_manga_page(layout: PanelLayout, frame: &FrameOptions) -> Document {
     let (w, h, page) = PageSetup::from_mm(b5(), MANGA_DPI);
@@ -87,11 +87,12 @@ pub fn first_manga_page(layout: PanelLayout, frame: &FrameOptions) -> Document {
     let (gap_h, gap_v) = frame.gaps(MANGA_DPI);
     let panels = layout.rects(area, gap_h, gap_v).into_iter().filter_map(Panel::rect).collect();
     let shape = FrameShape { panels, border: frame.border(MANGA_DPI) };
-    if let Some(folder) = add_frame_folder(&mut doc, shape) {
-        doc.set_active(folder);
-        if let Some(ink) = doc.add_raster_layer() {
-            rename(&mut doc, ink, t(Key::HomeInkLayer));
-        }
+    // Ink is the frame folder's own layer, so the panels clip it (as in CSP).
+    if let Some(folder) = add_frame_folder(&mut doc, shape)
+        && let Some(&ink) = doc.layer(folder).and_then(|l| l.children()).and_then(|c| c.first())
+    {
+        rename(&mut doc, ink, t(Key::HomeInkLayer));
+        doc.set_active(ink);
     }
     doc
 }
@@ -304,15 +305,14 @@ mod tests {
             assert!(page.bleed > 0.0 && page.safe > 0.0 && page.inner.w > 0.0);
             assert_eq!(page.trim.w, 2508.0);
 
-            // Layer 1, the frame folder (with its child), Ink on top and active.
+            // Layer 1 and the frame folder, whose own layer is Ink and active.
             let root = doc.root();
-            assert_eq!(root.len(), 3);
+            assert_eq!(root.len(), 2);
             let folder = root[1];
             let ink = doc.active();
-            assert_eq!(root[2], ink);
             assert_eq!(doc.layer(ink).unwrap().props.name, "Ink");
             assert!(doc.layer(ink).unwrap().raster().is_some());
-            assert_eq!(doc.frame_folder_of(ink), None, "ink is above the frames");
+            assert_eq!(doc.frame_folder_of(ink), Some(folder), "ink is clipped by the panels");
 
             let frame = doc.frame(folder).expect("frame folder");
             let panels = &frame.shape().panels;
