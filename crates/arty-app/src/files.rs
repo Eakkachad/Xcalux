@@ -219,8 +219,11 @@ pub struct FileController {
     last_trim: f64,
     focused: bool,
     modal: Option<Modal>,
-    /// Recovery files found while another dialog was open.
+    /// Recovery files found while another dialog was open, or while the
+    /// home screen lists them.
     found: Vec<RecoveryEntry>,
+    /// The home screen is up: found recovery files wait in `found`.
+    hold_recovery: bool,
     /// The recovery file chosen in the prompt, restored by `Then::Restore`.
     restore: Option<RecoveryEntry>,
     allow_close: bool,
@@ -267,6 +270,7 @@ impl FileController {
             focused: true,
             modal: None,
             found: Vec::new(),
+            hold_recovery: false,
             restore: None,
             allow_close: false,
             closing: false,
@@ -291,6 +295,42 @@ impl FileController {
     /// A dialog of this controller is open (document shortcuts are off).
     pub fn has_modal(&self) -> bool {
         self.modal.is_some()
+    }
+
+    /// While `hold`, recovery files are listed by the home screen instead
+    /// of the recovery prompt. Letting go drops the list as Later does: the
+    /// files are offered again next time.
+    pub fn hold_recovery(&mut self, hold: bool) {
+        if self.hold_recovery && !hold {
+            self.found.clear();
+        }
+        self.hold_recovery = hold;
+    }
+
+    /// Recovery files waiting for the home screen.
+    pub fn found_recovery(&self) -> &[RecoveryEntry] {
+        if self.hold_recovery { &self.found } else { &[] }
+    }
+
+    /// Restore found file `i` (the rest are offered again next time). False
+    /// while a load or save runs.
+    pub fn restore_found(&mut self, i: usize, dirty: bool) -> bool {
+        let Some(entry) = self.found.get(i).cloned() else { return false };
+        let started = self.choose_restore(entry, dirty);
+        if started {
+            self.found.clear();
+        }
+        started
+    }
+
+    /// Delete found file `i`.
+    pub fn discard_found(&mut self, i: usize) {
+        if i < self.found.len() {
+            let entry = self.found.remove(i);
+            if let Some(io) = &self.io {
+                io.send(Request::Discard { entry });
+            }
+        }
     }
 
     /// The open dialog is the loading one (bench.rs).
@@ -346,7 +386,7 @@ impl FileController {
         while let Some(e) = self.io.as_ref().and_then(IoService::try_recv) {
             self.on_event(e, studio, shell);
         }
-        if self.modal.is_none() && !self.found.is_empty() {
+        if self.modal.is_none() && !self.hold_recovery && !self.found.is_empty() {
             self.modal = Some(Modal::Recovery(std::mem::take(&mut self.found)));
         }
 
@@ -639,7 +679,7 @@ impl FileController {
                 if entries.is_empty() {
                     return;
                 }
-                if self.modal.is_none() {
+                if self.modal.is_none() && !self.hold_recovery {
                     self.modal = Some(Modal::Recovery(entries));
                 } else {
                     self.found = entries;
@@ -1273,6 +1313,43 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    /// While the home screen is up, found files are listed there instead of
+    /// the prompt; letting go of them keeps them on disk for next time.
+    #[test]
+    fn home_screen_lists_recovery_files() {
+        let mut r = Rig::new("home-recovery");
+        r.fc.hold_recovery(true);
+        let entry = crashed_session(&r);
+        r.fc.io.as_ref().unwrap().send(Request::ScanRecovery);
+        r.settle(1.0);
+        assert!(r.fc.modal.is_none(), "no prompt over the home screen");
+        assert_eq!(r.fc.found_recovery().len(), 1);
+        r.fc.hold_recovery(false);
+        r.settle(2.0);
+        assert!(r.fc.modal.is_none() && r.fc.found_recovery().is_empty(), "dismissed like Later");
+        assert!(entry.path.exists());
+
+        r.fc.hold_recovery(true);
+        r.fc.io.as_ref().unwrap().send(Request::ScanRecovery);
+        r.settle(3.0);
+        assert!(r.fc.restore_found(0, false));
+        assert!(r.fc.found_recovery().is_empty());
+        r.settle(4.0);
+        let id = r.studio.doc.active();
+        let px = r.studio.doc.layer(id).unwrap().raster().unwrap().get(TileCoord::new(0, 0)).unwrap()[0][0];
+        assert_eq!(px, [1, 2, 3, 4], "restored");
+
+        let mut r = Rig::new("home-discard");
+        r.fc.hold_recovery(true);
+        let entry = crashed_session(&r);
+        r.fc.io.as_ref().unwrap().send(Request::ScanRecovery);
+        r.settle(1.0);
+        r.fc.discard_found(0);
+        r.settle(2.0);
+        assert!(r.fc.found_recovery().is_empty());
+        assert!(!entry.path.exists(), "discarded");
     }
 
     #[test]

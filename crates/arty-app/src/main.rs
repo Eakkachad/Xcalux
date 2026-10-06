@@ -10,6 +10,7 @@ mod demo;
 mod export;
 mod files;
 pub mod gpu_setup;
+mod home;
 mod panels;
 mod shell;
 mod studio;
