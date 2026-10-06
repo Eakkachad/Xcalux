@@ -295,6 +295,7 @@ dependencies = [
  "arty-testkit",
  "hokusai",
  "serde",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

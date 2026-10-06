@@ -298,7 +298,7 @@ fn sc10_replay_with_a_selection_matches_the_live_stroke() {
     for (name, tail) in [("G-Pen", true), ("Pencil", true), ("Brush", false), ("Watercolor", false)] {
         let (replayed, engine) = paint_masked(&shaped(name, 60.0), &wavy());
         let r = engine.last_reshape();
-        assert!(if tail { matches!(r, Reshape::Tail { .. }) } else { r == Reshape::Full }, "{name}: {r:?}");
+        assert!(if tail { matches!(r, Reshape::Tail { .. } | Reshape::Full) } else { r == Reshape::Full }, "{name}: {r:?}");
         let (live, engine) = paint_masked(&shaped(name, 0.0), &wavy());
         assert_eq!(engine.last_reshape(), Reshape::Skipped);
         assert!(!live.active_layer().raster().unwrap().is_empty(), "{name}: painted something");

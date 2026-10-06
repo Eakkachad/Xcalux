@@ -1,10 +1,14 @@
-//! B004 & B022: cost of pen-up stroke reshaping (exit taper / post correction).
+//! B004, B022 & B023: cost of pen-up stroke reshaping (exit taper / post correction).
 //!
 //! Measures pen-up reshape cost for typical strokes (including the in-app
 //! bench stroke: Inking Pen 8 px, 2 s contacts on an A4 350 dpi page)
-//! comparing 100 ms baseline against 16 ms adaptive budget, with detailed
-//! timing breakdown of end() (drain, post correction, clip/tail cost, restore,
-//! dab replay, recording finish).
+//! comparing:
+//! 1. 100 ms baseline (synchronous full replay)
+//! 2. 16 ms adaptive budget (synchronous tail replay fallback)
+//! 3. Zero-Wait Pen-Up (speculative prefix replay on worker thread)
+//!
+//! Reports min, median (p50), p99 of end() ms, worker CPU time per stroke,
+//! and detailed timing breakdown.
 //!
 //! ```text
 //! cargo run --release -p arty-brush --example bench_replay
@@ -80,28 +84,56 @@ fn in_app_bench_path(cx: f32, cy: f32, side: f32) -> Vec<InputSample> {
 }
 
 #[allow(dead_code)]
-struct Row {
-    label: String,
-    mode: &'static str,
-    budget_label: &'static str,
-    len: f32,
-    samples: usize,
+#[derive(Clone)]
+struct StrokeStat {
     live_ms: f64,
     end_ms: f64,
+    worker_cpu_ms: f64,
     dabs: u64,
     px: u64,
     reshape: Reshape,
     breakdown: EndBreakdown,
 }
 
-fn run_stroke(label: &str, p: &BrushPreset, mode: &'static str, budget_ms: f64, budget_label: &'static str, pts: &[InputSample], doc_w: u32, doc_h: u32) -> Row {
+#[allow(dead_code)]
+struct AggregatedRow {
+    label: String,
+    mode: &'static str,
+    budget_label: &'static str,
+    len: f32,
+    samples: usize,
+    end_min_ms: f64,
+    end_p50_ms: f64,
+    end_p99_ms: f64,
+    worker_cpu_ms: f64,
+    dabs: u64,
+    px: u64,
+    reshape: Reshape,
+    breakdown: EndBreakdown,
+}
+
+fn measure_stroke_once(
+    p: &BrushPreset,
+    speculative: bool,
+    budget_ms: Option<f64>,
+    pts: &[InputSample],
+    doc_w: u32,
+    doc_h: u32,
+    pace_us: u64,
+) -> StrokeStat {
     let mut doc = Document::new(doc_w, doc_h, 350);
     let mut engine = StrokeEngine::new();
     engine.configure(p, [0.1, 0.1, 0.1]);
-    engine.set_replay_budget(budget_ms);
+    engine.set_speculative_replay(speculative);
+    if let Some(b) = budget_ms {
+        engine.set_replay_budget(b);
+    }
     let t = Instant::now();
     engine.begin(&mut doc, pts[0]).expect("raster layer");
     for s in &pts[1..] {
+        if pace_us > 0 {
+            std::thread::sleep(std::time::Duration::from_micros(pace_us));
+        }
         engine.feed(&mut doc, *s);
     }
     let live_ms = t.elapsed().as_secs_f64() * 1e3;
@@ -109,23 +141,62 @@ fn run_stroke(label: &str, p: &BrushPreset, mode: &'static str, budget_ms: f64, 
     let t = Instant::now();
     let edit = engine.end(&mut doc);
     let end_ms = t.elapsed().as_secs_f64() * 1e3;
+    let worker_cpu_ms = engine.worker_cpu_time_us() as f64 / 1000.0;
     drop(edit);
+
+    StrokeStat {
+        live_ms,
+        end_ms,
+        worker_cpu_ms,
+        dabs: live.dabs,
+        px: live.px,
+        reshape: engine.last_reshape(),
+        breakdown: engine.last_breakdown(),
+    }
+}
+
+fn run_stroke_multi(
+    label: &str,
+    p: &BrushPreset,
+    mode: &'static str,
+    speculative: bool,
+    budget_ms: Option<f64>,
+    budget_label: &'static str,
+    pts: &[InputSample],
+    doc_w: u32,
+    doc_h: u32,
+    pace_us: u64,
+    repeats: usize,
+) -> AggregatedRow {
+    let mut runs = Vec::with_capacity(repeats);
+    for _ in 0..repeats {
+        runs.push(measure_stroke_once(p, speculative, budget_ms, pts, doc_w, doc_h, pace_us));
+    }
+    runs.sort_by(|a, b| a.end_ms.partial_cmp(&b.end_ms).unwrap());
+    let end_min_ms = runs[0].end_ms;
+    let end_p50_ms = runs[runs.len() / 2].end_ms;
+    let end_p99_ms = runs[((runs.len() as f64 * 0.99).ceil() as usize).min(runs.len()) - 1].end_ms;
+
+    let med = &runs[runs.len() / 2];
     let mut len = 0.0f32;
     for w in pts.windows(2) {
         len += (w[1].x - w[0].x).hypot(w[1].y - w[0].y);
     }
-    Row {
+
+    AggregatedRow {
         label: label.into(),
         mode,
         budget_label,
         len,
         samples: pts.len(),
-        live_ms,
-        end_ms,
-        dabs: live.dabs,
-        px: live.px,
-        reshape: engine.last_reshape(),
-        breakdown: engine.last_breakdown(),
+        end_min_ms,
+        end_p50_ms,
+        end_p99_ms,
+        worker_cpu_ms: med.worker_cpu_ms,
+        dabs: med.dabs,
+        px: med.px,
+        reshape: med.reshape,
+        breakdown: med.breakdown,
     }
 }
 
@@ -134,43 +205,48 @@ fn preset(name: &str) -> BrushPreset {
 }
 
 fn main() {
-    println!("=== ARTY Pen-Up Reshape Bench (B004 / B022) ===");
+    println!("=== ARTY Pen-Up Reshape Bench (B004 / B022 / B023) ===");
     println!("Calibrated startup rate: {:.3} ns/px", arty_brush::engine::startup_rate());
     println!();
 
     let inking = preset("Inking Pen");
-    // In-app bench window 1920x1009 has ~929 px canvas viewport height fitting the 4175 px A4 page (zoom ~0.222).
     let doc_side = 1009.0 * (A4_H as f32 / 929.0);
     let in_app_pts = in_app_bench_path(A4_W as f32 / 2.0, A4_H as f32 / 2.0, doc_side);
 
-    // 1. In-app bench stroke profile (A4 350 dpi, Inking Pen 8 px, 2 s contact):
-    println!("### Typical in-app bench stroke: Inking Pen 8 px, 2 s contact on A4 350 dpi");
-    let in_app_100ms = run_stroke("Inking Pen 8 (A4)", &inking, "shipped (taper+corr)", 100.0, "100 ms baseline", &in_app_pts, A4_W, A4_H);
-    let in_app_16ms = run_stroke("Inking Pen 8 (A4)", &inking, "shipped (taper+corr)", 16.0, "16 ms adaptive", &in_app_pts, A4_W, A4_H);
+    // Pace simulating real 2-second in-app pen drawing (480 samples over 2000 ms = ~4.16 ms per sample)
+    let in_app_pace_us = 4166;
 
-    println!("| budget | live ms | end() ms | reshape | dabs | px (M) | drain ms | corr ms | clip ms | rest ms | rep ms | fin ms |");
-    println!("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|");
-    for r in [&in_app_100ms, &in_app_16ms] {
+    // 1. In-app bench stroke profile (A4 350 dpi, Inking Pen 8 px, 2 s contact):
+    println!("### Typical in-app bench stroke: Inking Pen 8 px, 2 s contact on A4 350 dpi (5 repeats interleaved)");
+    println!("| Mode | Budget | Reshape | end() p50 (ms) | end() p99 (ms) | end() min (ms) | Worker CPU (ms) | px (M) | rep ms | rest ms |");
+    println!("|---|---|---|---:|---:|---:|---:|---:|---:|---:|");
+
+    let modes = [
+        ("Baseline (sync)", false, Some(100.0), "100 ms baseline"),
+        ("Adaptive E21", false, Some(16.0), "16 ms adaptive"),
+        ("Zero-Wait B023", true, None, "Zero-Wait"),
+    ];
+
+    for (name, spec, bud, lbl) in modes {
+        let r = run_stroke_multi("Inking Pen 8 (A4)", &inking, name, spec, bud, lbl, &in_app_pts, A4_W, A4_H, in_app_pace_us, 5);
         let b = &r.breakdown;
         println!(
-            "| {} | {:.1} | {:.2} | {:?} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
+            "| {} | {} | {:?} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
+            r.mode,
             r.budget_label,
-            r.live_ms,
-            r.end_ms,
             r.reshape,
-            r.dabs,
+            r.end_p50_ms,
+            r.end_p99_ms,
+            r.end_min_ms,
+            r.worker_cpu_ms,
             r.px as f64 / 1e6,
-            b.drain_us as f64 / 1e3,
-            b.correct_us as f64 / 1e3,
-            b.clip_cost_us as f64 / 1e3,
-            b.restore_us as f64 / 1e3,
             b.replay_us as f64 / 1e3,
-            b.finish_us as f64 / 1e3,
+            b.restore_us as f64 / 1e3,
         );
     }
     println!();
 
-    // 2. Full survey across presets and lengths (B004 paths):
+    // 2. Full survey across presets and lengths (4096x4096 page):
     let sized = |name: &str, size: f32| BrushPreset { size, stabilizer: 0, ..preset(name) };
     let brushes = [
         ("G-Pen 8", sized("G-Pen", 8.0)),
@@ -178,32 +254,34 @@ fn main() {
         ("Brush 24", sized("Brush", 24.0)),
         ("Airbrush 120", sized("Airbrush", 120.0)),
         ("G-Pen 500", sized("G-Pen", 500.0)),
-        ("G-Pen 2000", sized("G-Pen", 2000.0)),
     ];
 
-    println!("### Suite survey across stroke lengths (4096×4096 page)");
-    println!("| brush | shaping | budget | length px | live ms | end() ms | reshape | dab px (M) | rep ms | rest ms |");
-    println!("|---|---|---|---:|---:|---:|---|---:|---:|---:|");
+    println!("### Suite survey across stroke lengths (4096×4096 page, interleaved repeats)");
+    println!("| Preset | Length px | Mode | end() p50 ms | end() p99 ms | Worker CPU ms | Reshape | px (M) |");
+    println!("|---|---:|---|---:|---:|---:|---|---:|");
+
     for (label, p) in &brushes {
         for len in [2_000.0, 10_000.0, 40_000.0] {
             let pts = path(len);
             let full = BrushPreset { taper_out: 80.0, post_correction: 3, ..p.clone() };
-            // Run baseline 100 ms and adaptive 16 ms:
-            for (b_ms, b_lbl) in [(100.0, "100ms"), (16.0, "16ms")] {
-                let r = run_stroke(label, &full, "taper+corr", b_ms, b_lbl, &pts, PAGE, PAGE);
-                let b = &r.breakdown;
+
+            for (m_name, spec, bud, lbl) in [
+                ("Baseline", false, Some(100.0), "100ms"),
+                ("Adaptive E21", false, Some(16.0), "16ms"),
+                ("Zero-Wait", true, None, "ZeroWait"),
+            ] {
+                // Short pacing (200 us) to test concurrent worker pipeline
+                let r = run_stroke_multi(label, &full, m_name, spec, bud, lbl, &pts, PAGE, PAGE, 200, 3);
                 println!(
-                    "| {} | {} | {} | {:.0} | {:.1} | {:.1} | {:?} | {:.2} | {:.1} | {:.2} |",
+                    "| {} | {:.0} | {} | {:.2} | {:.2} | {:.2} | {:?} | {:.2} |",
                     r.label,
-                    r.mode,
-                    r.budget_label,
                     r.len,
-                    r.live_ms,
-                    r.end_ms,
+                    r.mode,
+                    r.end_p50_ms,
+                    r.end_p99_ms,
+                    r.worker_cpu_ms,
                     r.reshape,
                     r.px as f64 / 1e6,
-                    b.replay_us as f64 / 1e3,
-                    b.restore_us as f64 / 1e3,
                 );
             }
         }

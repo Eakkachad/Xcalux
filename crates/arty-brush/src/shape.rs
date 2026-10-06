@@ -66,6 +66,54 @@ pub fn correction_sigma_px(level: u8, view_zoom: f32) -> f32 {
     CORRECTION_SIGMA[level.min(MAX_CORRECTION) as usize] / view_zoom.max(1e-3)
 }
 
+/// Station step `h` (px) for post correction `sigma_px`.
+#[inline]
+pub fn station_step(sigma_px: f32) -> f32 {
+    let sigma = if sigma_px.is_finite() { sigma_px.max(0.0) } else { 0.0 };
+    (sigma / 3.0).clamp(0.5, 4.0)
+}
+
+/// Kernel half-width in stations for post-correction with `sigma` and station step `h`.
+#[inline]
+pub fn correction_taps(sigma_px: f32, h: f32) -> usize {
+    let sigma = if sigma_px.is_finite() { sigma_px.max(0.0) } else { 0.0 };
+    if sigma > 0.0 && h > 0.0 {
+        ((3.0 * sigma / h).ceil() as usize).min(MAX_TAPS / 2)
+    } else {
+        0
+    }
+}
+
+/// How far from the stroke end (in document arc length px) samples remain unstable.
+/// Samples farther than this from the current live end are strictly final.
+#[inline]
+pub fn unstable_reach(taper_out: f32, sigma_px: f32) -> f32 {
+    let h = station_step(sigma_px);
+    let taps = correction_taps(sigma_px, h);
+    let corr_reach = taps as f32 * h;
+    taper_out.max(corr_reach)
+}
+
+#[inline]
+fn point_at_arc(src: &[ShapeSample], s: f32) -> [f32; 2] {
+    let s = s.max(0.0);
+    let mut seg_s = 0.0f32;
+    for w in src.windows(2) {
+        let len = seg_len(&w[0], &w[1]);
+        if seg_s + len >= s || len == 0.0 {
+            let u = if len > 0.0 { ((s - seg_s) / len).clamp(0.0, 1.0) } else { 0.0 };
+            return [w[0].x + (w[1].x - w[0].x) * u, w[0].y + (w[1].y - w[0].y) * u];
+        }
+        seg_s += len;
+    }
+    if let Some(last) = src.last() {
+        [last.x, last.y]
+    } else {
+        [0.0, 0.0]
+    }
+}
+
+
 /// Resample `src` at uniform arc spacing, then Gaussian-smooth x/y. Returns the largest
 /// displacement the smoothing applied (px). Reuses `out`/`scratch`; no allocation once warm.
 ///
@@ -87,19 +135,18 @@ pub fn correct_path(src: &[ShapeSample], sigma_px: f32, out: &mut Vec<ShapeSampl
         h = total / (MAX_CORRECTED_SAMPLES - 2) as f32;
     }
 
-    // Uniform stations s_j = j·h, then the exact last point. h is shrunk so
-    // the path holds a whole number of steps: the last gap is h too, and the
-    // odd reflection then continues a straight end exactly.
-    let stations = ((total / h).ceil() as usize).clamp(2, MAX_CORRECTED_SAMPLES - 2);
-    h = total / stations as f32;
+    // Fixed stations s_j = j·h up to total, then the exact last point. h is fixed
+    // so existing stations s_j never shift as new samples arrive, making the stable
+    // prefix invariant to future points!
+    let num_steps = ((total / h).floor() as usize).clamp(1, MAX_CORRECTED_SAMPLES - 2);
     let last = src[src.len() - 1];
     // Walk the source polyline once. `seg` is the current segment's start
     // index; `seg_s`/`seg_t` its arc length and cumulative time (excluding
     // the first sample's dt, which `out[0]` keeps).
     let (mut seg, mut seg_s, mut seg_t) = (0usize, 0.0f32, 0.0f64);
     let mut prev_t = 0.0f64;
-    for j in 0..stations {
-        let s = j as f32 * h;
+    for j in 0..=num_steps {
+        let s = (j as f32 * h).min(total);
         let mut len = seg_len(&src[seg], &src[seg + 1]);
         while seg + 2 < src.len() && seg_s + len < s {
             seg_s += len;
@@ -123,10 +170,17 @@ pub fn correct_path(src: &[ShapeSample], sigma_px: f32, out: &mut Vec<ShapeSampl
         });
     }
     let t_end: f64 = src[1..].iter().map(|s| s.dt).sum();
-    out.push(ShapeSample { dt: t_end - prev_t, ..last });
+    if (num_steps as f32 * h) < total - 1e-4 {
+        out.push(ShapeSample { dt: (t_end - prev_t).max(0.0), ..last });
+    } else if let Some(last_out) = out.last_mut() {
+        last_out.dt += (t_end - prev_t).max(0.0);
+    }
     if let Some(first) = out.first_mut() {
         let s0 = src[0];
         (first.x, first.y) = (s0.x, s0.y);
+    }
+    if let Some(end) = out.last_mut() {
+        (end.x, end.y) = (last.x, last.y);
     }
     scratch.extend(out.iter().map(|s| [s.x, s.y]));
 
@@ -145,17 +199,23 @@ pub fn correct_path(src: &[ShapeSample], sigma_px: f32, out: &mut Vec<ShapeSampl
     for wk in &mut w[..=taps] {
         *wk /= wsum;
     }
-    // Odd reflection: p[-i] = 2p₀ − p[i], p[n-1+i] = 2p[n-1] − p[n-1-i].
-    let at = |i: isize| -> [f32; 2] {
-        let last = n as isize - 1;
-        if i < 0 {
-            let (o, p) = (scratch[0], scratch[(-i) as usize]);
+    // Odd reflection: p[-i] = 2p₀ − p[i], and for points past the end, reflect
+    // arc length across total: s_refl = 2*total - i*h, ensuring odd reflection
+    // continues straight lines exactly even when total is not an integer multiple of h.
+    let at = |idx: isize| -> [f32; 2] {
+        let s = idx as f32 * h;
+        if idx < 0 {
+            let (o, p) = (scratch[0], scratch[(-idx) as usize]);
             [2.0 * o[0] - p[0], 2.0 * o[1] - p[1]]
-        } else if i > last {
-            let (o, p) = (scratch[last as usize], scratch[(2 * last - i) as usize]);
+        } else if s > total {
+            let s_refl = (2.0 * total - s).max(0.0);
+            let p = point_at_arc(src, s_refl);
+            let o = [last.x, last.y];
             [2.0 * o[0] - p[0], 2.0 * o[1] - p[1]]
+        } else if (idx as usize) < scratch.len() {
+            scratch[idx as usize]
         } else {
-            scratch[i as usize]
+            [last.x, last.y]
         }
     };
     let mut shift = 0.0f32;
@@ -443,4 +503,50 @@ mod tests {
         assert_eq!(correction_sigma_px(200, 1.0), 12.0);
         assert!(correction_sigma_px(3, 0.0).is_finite());
     }
+
+    #[test]
+    fn stable_prefix_is_bit_identical_across_stroke_growth() {
+        // Generate a random polyline with wobble.
+        let mut r = rand_iter(1337);
+        let mut pts = Vec::new();
+        let (mut x, mut y) = (50.0f32, 50.0f32);
+        for _ in 0..300 {
+            x += 2.0 + r.next().unwrap() * 2.0;
+            y += (r.next().unwrap() - 0.5) * 4.0;
+            let pressure = 0.3 + 0.6 * r.next().unwrap();
+            pts.push(ShapeSample { x, y, pressure, dt: 0.005, ..Default::default() });
+        }
+
+        let short_pts = &pts[..120];
+        let long_pts = &pts[..250];
+
+        for sigma in [1.5f32, 2.25, 3.0, 5.0] {
+            let (mut out_short, mut scr_short) = (Vec::new(), Vec::new());
+            let (mut out_long, mut scr_long) = (Vec::new(), Vec::new());
+
+            correct_path(short_pts, sigma, &mut out_short, &mut scr_short);
+            correct_path(long_pts, sigma, &mut out_long, &mut scr_long);
+
+            let h = station_step(sigma);
+            let taps = correction_taps(sigma, h);
+            let corr_reach = taps as f32 * h;
+            let short_total: f32 = short_pts.windows(2).map(|w| seg_len(&w[0], &w[1])).sum();
+            let cutoff = short_total - corr_reach;
+
+            let mut checked = 0;
+            for (j, (s, l)) in out_short.iter().zip(&out_long).enumerate() {
+                let station_s = j as f32 * h;
+                if station_s > cutoff {
+                    break;
+                }
+                assert_eq!(s.x.to_bits(), l.x.to_bits(), "sigma {sigma} station {j}: x differed");
+                assert_eq!(s.y.to_bits(), l.y.to_bits(), "sigma {sigma} station {j}: y differed");
+                assert_eq!(s.pressure.to_bits(), l.pressure.to_bits(), "sigma {sigma} station {j}: pressure differed");
+                assert_eq!(s.dt.to_bits(), l.dt.to_bits(), "sigma {sigma} station {j}: dt differed");
+                checked += 1;
+            }
+            assert!(checked > 30, "sigma {sigma}: expected > 30 stable stations, checked {checked}");
+        }
+    }
 }
+
