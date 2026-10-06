@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shell::{FileRequest, Shell};
 use crate::studio::Studio;
+use crate::text::{Key, t};
 
 /// Seconds without input before a due autosave runs.
 const IDLE_SECS: f64 = 2.0;
@@ -599,8 +600,8 @@ impl FileController {
     fn on_event(&mut self, e: IoEvent, studio: &mut Studio, shell: &mut Shell) {
         match e {
             IoEvent::Saved { ticket, path, rev, stats } => {
-                let Some(Job::Save { ticket: t, key, then, .. }) = &self.job else { return };
-                if *t != ticket {
+                let Some(Job::Save { ticket: job_ticket, key, then, .. }) = &self.job else { return };
+                if *job_ticket != ticket {
                     return;
                 }
                 let (key, then) = (*key, *then);
@@ -612,9 +613,9 @@ impl FileController {
                 self.captured_at = self.now;
                 self.set_name(file_name(&path));
                 studio.notice = Some(match stats.selection_saved {
-                    SelectionSave::Binarized => "Saved; the selection was too detailed and its soft edges were made hard".into(),
-                    SelectionSave::Dropped => "Saved without the selection, which was too large to store".into(),
-                    SelectionSave::None | SelectionSave::Exact => format!("Saved {}", path.display()),
+                    SelectionSave::Binarized => t(Key::ToastSavedSelectionBinarized).into(),
+                    SelectionSave::Dropped => t(Key::ToastSavedSelectionDropped).into(),
+                    SelectionSave::None | SelectionSave::Exact => format!("{} {}", t(Key::ToastSaved), path.display()),
                 });
                 self.path = Some(path);
                 if let Some(then) = then {
@@ -743,9 +744,9 @@ impl FileController {
             (done * 100).checked_div(total).map_or_else(String::new, |p| format!(" {p}%"))
         };
         match (&self.job, self.autosave) {
-            (Some(Job::Save { .. }), _) => Some(format!("Saving…{}", pct())),
-            (Some(Job::Load { .. }), _) => Some(format!("Opening…{}", pct())),
-            (None, Some(_)) => Some("Autosaving…".to_owned()),
+            (Some(Job::Save { .. }), _) => Some(format!("{}{}", t(Key::StatusSaving), pct())),
+            (Some(Job::Load { .. }), _) => Some(format!("{}{}", t(Key::StatusOpening), pct())),
+            (None, Some(_)) => Some(t(Key::StatusAutosaving).to_owned()),
             (None, None) => None,
         }
     }

@@ -39,15 +39,16 @@ impl Tab {
         [Tab::SubTool, Tab::ToolProperty, Tab::BrushSize, Tab::Color, Tab::ColorSet, Tab::Layers, Tab::Navigator];
 
     pub fn title(self) -> String {
+        use crate::text::{Key, t};
         let (i, name) = match self {
-            Tab::Canvas => (icon::IMAGE_SQUARE, "Canvas"),
-            Tab::SubTool => (icon::PEN_NIB, "Sub Tool"),
-            Tab::ToolProperty => (icon::SLIDERS_HORIZONTAL, "Tool Property"),
-            Tab::BrushSize => (icon::CIRCLE_HALF, "Brush Size"),
-            Tab::Color => (icon::PALETTE, "Color"),
-            Tab::ColorSet => (icon::SQUARES_FOUR, "Color Set"),
-            Tab::Layers => (icon::STACK, "Layer"),
-            Tab::Navigator => (icon::COMPASS, "Navigator"),
+            Tab::Canvas => (icon::IMAGE_SQUARE, t(Key::TabCanvas)),
+            Tab::SubTool => (icon::PEN_NIB, t(Key::TabSubTool)),
+            Tab::ToolProperty => (icon::SLIDERS_HORIZONTAL, t(Key::TabToolProperty)),
+            Tab::BrushSize => (icon::CIRCLE_HALF, t(Key::TabBrushSize)),
+            Tab::Color => (icon::PALETTE, t(Key::TabColor)),
+            Tab::ColorSet => (icon::SQUARES_FOUR, t(Key::TabColorSet)),
+            Tab::Layers => (icon::STACK, t(Key::TabLayers)),
+            Tab::Navigator => (icon::COMPASS, t(Key::TabNavigator)),
         };
         format!("{i}  {name}")
     }
