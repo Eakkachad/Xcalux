@@ -37,6 +37,7 @@ pollster = "0.4"
 arty-testkit.workspace = true
 # Tests hold the IO thread with `Request::Pause`.
 arty-io = { workspace = true, features = ["fault-injection"] }
+skrifa = "0.44"
 
 [lints]
 workspace = true

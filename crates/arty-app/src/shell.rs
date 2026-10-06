@@ -6,6 +6,7 @@ use arty_render::SyncStats;
 
 use crate::commands::SelModify;
 use crate::files::AutosaveSettings;
+use crate::text::{self, Key, Lang, t};
 use crate::theme::ThemeKind;
 
 pub struct NewDocForm {
@@ -56,12 +57,40 @@ pub fn page_memory_heavy((layer, gpu): (u64, u64), ram: Option<u64>) -> bool {
     ram.is_some_and(|r| layer * 10 + gpu > r / 2)
 }
 
+/// The localized name of a preset at `index`.
+pub fn preset_name(index: usize) -> &'static str {
+    match index {
+        0 => t(Key::PresetMangaB4_350),
+        1 => t(Key::PresetMangaB5_350),
+        2 => t(Key::PresetA4_350),
+        3 => t(Key::PresetMangaB4_600),
+        4 => t(Key::PresetA4_600),
+        5 => t(Key::PresetWebtoon),
+        6 => t(Key::PresetIllustration),
+        7 => t(Key::PresetSquare),
+        _ => PAGE_PRESETS.get(index).map_or("", |p| p.0),
+    }
+}
+
 /// New Page dialog strings.
 pub mod new_doc_text {
-    pub const CUSTOM: &str = "Custom";
-    pub const PER_LAYER: &str = "MB / layer";
-    pub const GPU: &str = "MB GPU";
-    pub const HEAVY: &str = "10 layers would use over half of this computer's memory; it may slow down or freeze.";
+    use crate::text::{Key, t};
+
+    pub fn custom() -> &'static str {
+        t(Key::NewDocCustom)
+    }
+
+    pub fn per_layer() -> &'static str {
+        t(Key::NewDocPerLayer)
+    }
+
+    pub fn gpu() -> &'static str {
+        t(Key::NewDocGpu)
+    }
+
+    pub fn heavy() -> &'static str {
+        t(Key::NewDocHeavy)
+    }
 }
 
 /// A File menu action waiting for the file controller (it may first ask
@@ -84,6 +113,7 @@ impl Default for NewDocForm {
 pub struct Shell {
     pub theme: ThemeKind,
     pub theme_dirty: bool,
+    pub lang: Lang,
     pub canvas_center_px: [f32; 2],
     pub cursor_doc: Option<[f32; 2]>,
     pub last_sync: SyncStats,
@@ -114,6 +144,7 @@ impl Shell {
         Self {
             theme,
             theme_dirty: true,
+            lang: text::current_lang(),
             canvas_center_px: [0.0; 2],
             cursor_doc: None,
             last_sync: SyncStats::default(),
@@ -131,6 +162,11 @@ impl Shell {
             sel_dialog: None,
             new_doc_page: None,
         }
+    }
+
+    pub fn set_lang(&mut self, lang: Lang) {
+        self.lang = lang;
+        text::set_current_lang(lang);
     }
 
     pub fn toggle_theme(&mut self) {

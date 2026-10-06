@@ -19,6 +19,7 @@ use crate::files::{self, AutosaveSettings, FileController, NativeDialogs};
 use crate::panels::{self, PreviewCache, Tab, ThumbCache, Viewer};
 use crate::shell::{self, FileRequest, PAGE_PRESETS, Shell, new_doc_text};
 use crate::studio::{DisplaySync, InputSettings, Rgb, Studio};
+use crate::text::{self, Key, Lang, t};
 use crate::theme::{self, ThemeKind};
 use crate::tools::{self, ToolOptions};
 
@@ -38,6 +39,8 @@ struct Persisted {
     autosave: AutosaveSettings,
     #[serde(default)]
     tool_opts: ToolOptions,
+    #[serde(default)]
+    lang: Lang,
 }
 
 pub struct ArtyApp {
@@ -67,21 +70,29 @@ pub struct ArtyApp {
 /// is named as what the next start gives (main.rs starts Fast vsync as Low latency).
 fn latency_text(st: PenStats, frame_ms: f32, running: DisplaySync, selected: DisplaySync) -> String {
     let pen = if st.native {
-        format!("pen {:.0} Hz · in→frame {:.1} ms (max {:.1})", st.rate_hz, st.age_ms, st.age_max_ms)
+        format!(
+            "{} {:.0} Hz · {} {:.1} ms ({} {:.1})",
+            t(Key::StatusPen),
+            st.rate_hz,
+            t(Key::StatusInToFrame),
+            st.age_ms,
+            t(Key::StatusMax),
+            st.age_max_ms
+        )
     } else {
-        "pen: system".to_owned()
+        t(Key::StatusPenSystem).to_owned()
     };
-    let mut s = format!("{pen} · frame {frame_ms:.1} ms · {}", running.label());
+    let mut s = format!("{pen} · {} {frame_ms:.1} ms · {}", t(Key::StatusFrame), running.label());
     if selected != running {
         let next = DisplaySync::from_surface_config(selected.surface_config(false), false).unwrap_or(selected);
         if next == running {
-            s.push_str(&format!(" ({} not applied)", selected.label()));
+            s.push_str(&format!(" ({} {})", selected.label(), t(Key::StatusNotApplied)));
         } else {
-            s.push_str(&format!(" ({} after restart)", next.label()));
+            s.push_str(&format!(" ({} {})", next.label(), t(Key::StatusAfterRestart)));
         }
     }
     if st.dropped > 0 {
-        s.push_str(&format!(" · dropped {}", st.dropped));
+        s.push_str(&format!(" · {} {}", t(Key::StatusDropped), st.dropped));
     }
     s
 }
@@ -106,9 +117,11 @@ impl ArtyApp {
         let mut dock = panels::default_layout();
         let mut theme_kind = ThemeKind::Dark;
         let mut autosave = AutosaveSettings::default();
+        let mut lang = Lang::default();
         if let Some(p) = saved {
             theme_kind = p.theme;
             autosave = p.autosave;
+            lang = p.lang;
             if p.layout_version == LAYOUT_VERSION {
                 dock = p.dock;
             }
@@ -143,7 +156,9 @@ impl ArtyApp {
         let io = IoService::spawn(io_config, move || ctx.request_repaint());
         let pen = arty_pen::install(cc);
         let bench = Bench::from_env(studio.doc_epoch, pen.as_ref());
+        text::set_current_lang(lang);
         let mut shell = Shell::new(theme_kind);
+        shell.lang = lang;
         shell.autosave = autosave;
         let dialogs: Box<dyn files::FileDialogs> = match bench.as_ref().and_then(|b| b.open.as_ref()) {
             Some(_) => {
@@ -183,7 +198,7 @@ impl ArtyApp {
             let shell = &mut self.shell;
             let item = |ui: &mut egui::Ui, cmd: Command, studio: &mut Studio, shell: &mut Shell| {
                 let label = match cmd {
-                    Command::ClearLayer if studio.doc.has_selection() => "Clear Selected Area",
+                    Command::ClearLayer if studio.doc.has_selection() => t(Key::CmdClearSelection),
                     _ => cmd.label(),
                 };
                 let mut b = egui::Button::new(label);
@@ -195,19 +210,19 @@ impl ArtyApp {
                     ui.close();
                 }
             };
-            ui.menu_button("File", |ui| {
+            ui.menu_button(t(Key::MenuFile), |ui| {
                 for cmd in [Command::NewDocument, Command::Open, Command::Save, Command::SaveAs, Command::ExportPng] {
                     item(ui, cmd, studio, shell);
                 }
                 ui.separator();
                 item(ui, Command::PageSetup, studio, shell);
                 ui.separator();
-                ui.menu_button("Autosave", |ui| {
-                    if ui.selectable_label(shell.autosave.enabled, "Autosave enabled").clicked() {
+                ui.menu_button(t(Key::AutosaveMenu), |ui| {
+                    if ui.selectable_label(shell.autosave.enabled, t(Key::AutosaveEnabled)).clicked() {
                         commands::execute(Command::ToggleAutosave, studio, shell);
                     }
                     ui.horizontal(|ui| {
-                        ui.label("Every");
+                        ui.label(t(Key::AutosaveEvery));
                         let range = files::MIN_INTERVAL_SECS..=3600;
                         ui.add(egui::DragValue::new(&mut shell.autosave.interval_secs).range(range).suffix(" s"));
                     });
@@ -215,7 +230,7 @@ impl ArtyApp {
                 ui.separator();
                 item(ui, Command::Quit, studio, shell);
             });
-            ui.menu_button("Edit", |ui| {
+            ui.menu_button(t(Key::MenuEdit), |ui| {
                 for cmd in [Command::Undo, Command::Redo, Command::ClearLayer, Command::FillSelection] {
                     item(ui, cmd, studio, shell);
                 }
@@ -232,7 +247,7 @@ impl ArtyApp {
                     item(ui, cmd, studio, shell);
                 }
             });
-            ui.menu_button("Layer", |ui| {
+            ui.menu_button(t(Key::MenuLayer), |ui| {
                 for cmd in [
                     Command::NewLayer,
                     Command::NewFolder,
@@ -252,7 +267,7 @@ impl ArtyApp {
                     item(ui, cmd, studio, shell);
                 }
             });
-            ui.menu_button("Select", |ui| {
+            ui.menu_button(t(Key::MenuSelect), |ui| {
                 for cmd in [Command::SelectAll, Command::Deselect, Command::InvertSelection] {
                     item(ui, cmd, studio, shell);
                 }
@@ -261,7 +276,7 @@ impl ArtyApp {
                     item(ui, Command::SelectionDialog(m), studio, shell);
                 }
             });
-            ui.menu_button("View", |ui| {
+            ui.menu_button(t(Key::MenuView), |ui| {
                 for cmd in [
                     Command::ZoomIn,
                     Command::ZoomOut,
@@ -284,7 +299,7 @@ impl ArtyApp {
                     }
                 }
             });
-            ui.menu_button("Window", |ui| {
+            ui.menu_button(t(Key::MenuWindow), |ui| {
                 for tab in Tab::PANELS {
                     let open = self.dock.find_tab(&tab).is_some();
                     if ui.selectable_label(open, tab.title()).clicked() {
@@ -306,14 +321,14 @@ impl ArtyApp {
             // Quick undo/redo on the right, CSP command-bar style.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let theme_icon = if shell.theme == ThemeKind::Dark { icon::SUN } else { icon::MOON };
-                if ui.button(theme_icon).on_hover_text("Toggle light/dark").clicked() {
+                if ui.button(theme_icon).on_hover_text(t(Key::CmdToggleTheme)).clicked() {
                     shell.toggle_theme();
                 }
                 ui.separator();
-                if ui.add_enabled(studio.history.can_redo(), egui::Button::new(icon::ARROW_U_UP_RIGHT)).on_hover_text("Redo").clicked() {
+                if ui.add_enabled(studio.history.can_redo(), egui::Button::new(icon::ARROW_U_UP_RIGHT)).on_hover_text(t(Key::CmdRedo)).clicked() {
                     studio.redo();
                 }
-                if ui.add_enabled(studio.history.can_undo(), egui::Button::new(icon::ARROW_U_UP_LEFT)).on_hover_text("Undo").clicked() {
+                if ui.add_enabled(studio.history.can_undo(), egui::Button::new(icon::ARROW_U_UP_LEFT)).on_hover_text(t(Key::CmdUndo)).clicked() {
                     studio.undo();
                 }
             });
@@ -349,19 +364,19 @@ impl ArtyApp {
                     ui.separator();
                 }
                 let mb = s.doc.pixel_bytes() as f64 / (1024.0 * 1024.0);
-                ui.label(weak(format!("{} layers · {mb:.1} MB", s.doc.layer_count())));
+                ui.label(weak(format!("{} {} · {mb:.1} MB", s.doc.layer_count(), t(Key::StatusLayers))));
                 ui.separator();
                 if s.input.show_latency {
                     let frame_ms = ui.input(|i| i.stable_dt) * 1000.0;
                     let text = latency_text(self.canvas.pen_stats(), frame_ms, self.running_sync, s.input.display_sync);
                     ui.label(weak(text)).on_hover_text(
-                        "in→frame: age of the newest pen sample when the canvas used it (OS timestamp to frame). \
+                        "in to frame: age of the newest pen sample when the canvas used it (OS timestamp to frame). \
                          It does not include rendering, presenting or the display.",
                     );
                     ui.separator();
                 }
                 let st = self.shell.last_sync;
-                ui.label(weak(format!("composite {} tiles {:.1} ms", st.tiles, st.millis)));
+                ui.label(weak(format!("{} {} {} {:.1} ms", t(Key::StatusComposite), st.tiles, t(Key::StatusTiles), st.millis)));
             });
         });
     }
@@ -372,14 +387,14 @@ impl ArtyApp {
         }
         let modal = egui::Modal::new(egui::Id::new("new-doc")).show(ctx, |ui| {
             ui.set_width(360.0);
-            ui.heading("New Page");
+            ui.heading(t(Key::NewDocHeading));
             ui.add_space(6.0);
             let form = &mut self.shell.new_doc;
             let current = shell::preset_for(form.width, form.height, form.dpi);
-            let shown = current.map_or(new_doc_text::CUSTOM, |i| PAGE_PRESETS[i].0);
+            let shown = current.map_or_else(new_doc_text::custom, shell::preset_name);
             egui::ComboBox::from_id_salt("page-preset").width(340.0).selected_text(shown).show_ui(ui, |ui| {
-                for (i, (name, w, h, dpi)) in PAGE_PRESETS.iter().enumerate() {
-                    if ui.selectable_label(current == Some(i), *name).clicked() {
+                for (i, (_name, w, h, dpi)) in PAGE_PRESETS.iter().enumerate() {
+                    if ui.selectable_label(current == Some(i), shell::preset_name(i)).clicked() {
                         form.width = *w;
                         form.height = *h;
                         form.dpi = *dpi;
@@ -396,13 +411,13 @@ impl ArtyApp {
             ui.add_space(6.0);
             egui::Grid::new("new-doc-grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 let max = arty_render::gpu::MAX_PAGE_SIDE;
-                ui.label("Width");
+                ui.label(t(Key::NewDocWidth));
                 ui.add(egui::DragValue::new(&mut form.width).range(64..=max).suffix(" px"));
                 ui.end_row();
-                ui.label("Height");
+                ui.label(t(Key::NewDocHeight));
                 ui.add(egui::DragValue::new(&mut form.height).range(64..=max).suffix(" px"));
                 ui.end_row();
-                ui.label("Resolution");
+                ui.label(t(Key::NewDocResolution));
                 ui.add(egui::DragValue::new(&mut form.dpi).range(72..=1200).suffix(" dpi"));
                 ui.end_row();
                 ui.label("");
@@ -411,18 +426,18 @@ impl ArtyApp {
                 ui.end_row();
                 let m = shell::page_memory(form.width, form.height);
                 ui.label("");
-                ui.weak(format!("≈{} {} · {} {}", shell::mib(m.0), new_doc_text::PER_LAYER, shell::mib(m.1), new_doc_text::GPU));
+                ui.weak(format!("≈{} {} · {} {}", shell::mib(m.0), new_doc_text::per_layer(), shell::mib(m.1), new_doc_text::gpu()));
                 ui.end_row();
                 if shell::page_memory_heavy(m, arty_io::physical_memory()) {
                     ui.label("");
-                    ui.add(egui::Label::new(RichText::new(new_doc_text::HEAVY).color(ui.visuals().warn_fg_color)).wrap());
+                    ui.add(egui::Label::new(RichText::new(new_doc_text::heavy()).color(ui.visuals().warn_fg_color)).wrap());
                     ui.end_row();
                 }
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                let create = ui.button(RichText::new("Create").strong()).clicked();
-                let cancel = ui.button("Cancel").clicked();
+                let create = ui.button(RichText::new(t(Key::NewDocCreate)).strong()).clicked();
+                let cancel = ui.button(t(Key::NewDocCancel)).clicked();
                 (create, cancel)
             })
             .inner
@@ -592,6 +607,7 @@ impl eframe::App for ArtyApp {
             swatches: self.studio.color.swatches.clone(),
             autosave: self.shell.autosave,
             tool_opts: self.studio.opts.clone(),
+            lang: self.shell.lang,
         };
         eframe::set_value(storage, STORAGE_KEY, &p);
     }
@@ -626,6 +642,7 @@ mod tests {
             swatches: vec![[0.1, 0.2, 0.3]],
             autosave: AutosaveSettings::default(),
             tool_opts: ToolOptions::default(),
+            lang: Lang::En,
         }
     }
 

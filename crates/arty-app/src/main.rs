@@ -13,6 +13,7 @@ pub mod gpu_setup;
 mod panels;
 mod shell;
 mod studio;
+pub mod text;
 mod theme;
 mod tools;
 

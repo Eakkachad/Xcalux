@@ -50,10 +50,32 @@ impl ThemeKind {
     }
 }
 
-pub fn install_fonts(ctx: &egui::Context) {
+pub const NOTO_SANS_THAI_UI: &[u8] =
+    include_bytes!("../assets/fonts/NotoSansThaiUI-Regular-static.ttf");
+pub const NOTO_SANS_THAI_UI_NAME: &str = "NotoSansThaiUI-Regular";
+
+pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        NOTO_SANS_THAI_UI_NAME.to_owned(),
+        egui::FontData::from_static(NOTO_SANS_THAI_UI).into(),
+    );
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .push(NOTO_SANS_THAI_UI_NAME.to_owned());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .push(NOTO_SANS_THAI_UI_NAME.to_owned());
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-    ctx.set_fonts(fonts);
+    fonts
+}
+
+pub fn install_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(font_definitions());
 }
 
 pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
@@ -122,7 +144,7 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
         style.spacing.slider_width = 120.0;
         style.text_styles = [
             (TextStyle::Small, FontId::new(10.5, FontFamily::Proportional)),
-            (TextStyle::Body, FontId::new(12.5, FontFamily::Proportional)),
+            (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
             (TextStyle::Button, FontId::new(12.5, FontFamily::Proportional)),
             (TextStyle::Heading, FontId::new(15.0, FontFamily::Proportional)),
             (TextStyle::Monospace, FontId::new(12.0, FontFamily::Monospace)),

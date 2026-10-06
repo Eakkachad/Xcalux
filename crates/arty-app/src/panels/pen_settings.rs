@@ -3,14 +3,19 @@
 use super::curve_editor;
 use super::property::percent;
 use super::section;
+use crate::shell::Shell;
 use crate::studio::{DisplaySync, Studio};
+use crate::text::{Key, Lang, t};
 
-pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
+pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
     egui::CollapsingHeader::new("Input & display").default_open(false).show(ui, |ui| {
         section(ui, "PEN PRESSURE");
         curve_editor::ui(ui, &mut studio.input.pressure_curve);
         ui.add_space(6.0);
         egui::Grid::new("input-settings").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+            ui.label(t(Key::LanguageLabel));
+            language_combo(ui, shell);
+            ui.end_row();
             ui.label("Mouse pressure");
             ui.add(percent(&mut studio.input.mouse_pressure));
             ui.end_row();
@@ -31,6 +36,19 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio) {
             ui.end_row();
         });
     });
+}
+
+fn language_combo(ui: &mut egui::Ui, shell: &mut Shell) {
+    let current = shell.lang;
+    egui::ComboBox::from_id_salt("language-switch")
+        .selected_text(current.name())
+        .show_ui(ui, |ui| {
+            for l in Lang::ALL {
+                if ui.selectable_label(current == l, l.name()).clicked() {
+                    shell.set_lang(l);
+                }
+            }
+        });
 }
 
 fn sync_hover(s: DisplaySync) -> &'static str {

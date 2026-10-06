@@ -32,7 +32,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
             Tool::Brush(_) => {}
         }
         frame_border(ui, studio, shell);
-        super::pen_settings::ui(ui, studio);
+        super::pen_settings::ui(ui, studio, shell);
         return;
     }
 
@@ -116,7 +116,7 @@ pub fn ui(ui: &mut egui::Ui, studio: &mut Studio, shell: &mut Shell) {
 
     frame_border(ui, studio, shell);
     ui.add_space(6.0);
-    super::pen_settings::ui(ui, studio);
+    super::pen_settings::ui(ui, studio, shell);
 }
 
 /// The active layer's border settings when it is a frame folder (the frame

@@ -37,16 +37,24 @@ pub enum Tool {
 
 impl Tool {
     pub fn label(self) -> &'static str {
+        use crate::text::{Key, t};
         match self {
-            Tool::Brush(g) => g.label(),
-            Tool::Eyedropper => "Eyedropper",
-            Tool::Hand => "Hand",
-            Tool::Rotate => "Rotate",
-            Tool::Zoom => "Zoom",
-            Tool::Select => "Selection",
-            Tool::MagicWand => "Magic Wand",
-            Tool::Fill => "Fill",
-            Tool::Move => "Move",
+            Tool::Brush(g) => match g {
+                BrushGroup::Pen => t(Key::ToolPen),
+                BrushGroup::Pencil => t(Key::ToolPencil),
+                BrushGroup::Brush => t(Key::ToolBrush),
+                BrushGroup::Airbrush => t(Key::ToolAirbrush),
+                BrushGroup::Blend => t(Key::ToolBlend),
+                BrushGroup::Eraser => t(Key::ToolEraser),
+            },
+            Tool::Eyedropper => t(Key::ToolEyedropper),
+            Tool::Hand => t(Key::ToolHand),
+            Tool::Rotate => t(Key::ToolRotate),
+            Tool::Zoom => t(Key::ToolZoom),
+            Tool::Select => t(Key::ToolSelect),
+            Tool::MagicWand => t(Key::ToolMagicWand),
+            Tool::Fill => t(Key::ToolFill),
+            Tool::Move => t(Key::ToolMove),
             Tool::Frame(m) => m.label(),
         }
     }
@@ -61,10 +69,11 @@ pub enum FrameMode {
 
 impl FrameMode {
     pub fn label(self) -> &'static str {
+        use crate::text::{Key, t};
         match self {
-            FrameMode::Rect => "Rectangle Frame",
-            FrameMode::Cut => "Divide Frame",
-            FrameMode::Edit => "Frame Edit",
+            FrameMode::Rect => t(Key::FrameModeRect),
+            FrameMode::Cut => t(Key::FrameModeCut),
+            FrameMode::Edit => t(Key::FrameModeEdit),
         }
     }
 }
